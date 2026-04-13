@@ -243,7 +243,7 @@ class UI(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(3, 0, 0, 0)
         layout.setSpacing(5)
-        #layout.addWidget(self.title_bar)
+        layout.addWidget(self.title_bar)
         layout.addLayout(content_layout)
 
         # Set main layout
