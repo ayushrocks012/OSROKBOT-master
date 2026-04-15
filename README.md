@@ -1,79 +1,97 @@
+# OSROKBOT
 
-# OSROKBOT - Open Source Rise of Kingdoms Bot
+OSROKBOT is a Windows desktop automation bot for Rise of Kingdoms. It uses a
+small PyQt control panel, screenshot/image recognition, OCR, and state-machine
+workflows to run repetitive in-game tasks.
 
-OSROKBOT is a highly customizable, open-source bot for Rise of Kingdoms. Utilizing state machines and image detection, it provides a powerful platform for automation within the game. It is designed to be scalable, working with any 16:9 ratio screen.
+## Requirements
 
-This bot is not intended for mainstream users as it requires setup and likely some thinkering with the project. More than anything, this project should be a fun example for developers to play with.
+- Windows 10 or Windows 11.
+- Python 3.13.
+- Rise of Kingdoms running in a visible window named `Rise of Kingdoms`.
+- Tesseract OCR installed locally for OCR-based workflows.
+- A stable `1280x720` game window is recommended because the image templates in
+  `Media/` were captured around that resolution.
 
-## Actions
+## Install
 
-- **Scout Exploration:** Scouts explore fog and structures when available.
-- **Farm Barbarians:** Farms barbarians at the pre-set level with lohar (you can change the commander) or all commanders in the field.
-![Farming Barbarians](Media/Readme/farmbarbs.gif)
+Open PowerShell in the project root and install the dependencies:
 
-- **Farm Resources:** Farms resources at the automaticly chosen gatherers. For this, it is recommended that you use 720p res for now.
-![Farming Resources](Media/Readme/farmrss.gif)
-- **Catcha Recogniztion:** Will pause when captcha is detected and email you. You can then manually solve the captcha and the bot will continue.
-- **Lyceum:** Will automatically do the lyceum event.
-![Lyceum](Media/Readme/lyceum.gif)
-- **Lyceum Midterm:** Will automatically do the lyceum midterm and finals event.
-<img src="Media/Readme/lyceumwin1.png" width="800">
-<img src="Media/Readme/lyceumwin2.png" width="800">
-
-
-
-## Features
-
-- **Highly Customizable:** Developers can implement new actions or create new state machines using the actions and images already provided.
-- **Image Detection:** Uses sophisticated image detection techniques (it's literally just match template for now lol) to identify and respond to in-game events.
-- **Screen Positioning:** Works seamlessly with various screen positions and resolutions.
-- **Predefined Actions:** Comes with a set of predefined actions (find and click image, manual click position, press key, send email, chatgpt, extract text from image, etc), making it easy to extend or build new functionalities.
-- **Predefined State Machines:** Machine use actions in states, states points to new state depending on success result of the action. (For now it's, lyceum, lyceum midterm, farm rss, farm barbs and detect captcha).
-
-## Getting Started
-
-### [Quick tutorial for starting programmers](https://youtu.be/xBQC3M0O-B8)
-
-### Prerequisites
-
-- **Tesseract:** OSROKBOT requires [Tesseract binaries.](https://github.com/UB-Mannheim/tesseract/wiki) You must install them on your system.
-- **Env:** Install Python
-- **Python Libraries:** Install the required Python libraries by running (after running there may be errors related to other non installed libs, just install them for now):
-
-  ```bash
-  pip install -r requirements.txt
-  ```
-
-### Configuration
-
-Create a `.env` file in the project root directory with the following content:
-
-```env
-OPENAI_KEY=your_openai_key
-TESSERACT_PATH=your_tesseract_path
-EMAIL=your_email
-ANTIALIAS_METHOD=LANCZOS
+```powershell
+cd C:\path\to\OSROKBOT-master
+python -m pip install -r requirements.txt
 ```
 
-Replace the placeholders with your actual values.
+If PyQt5 reports a Qt DLL load error on Python 3.13, reinstall the PyQt trio into
+the same user site:
 
-### Usage
+```powershell
+python -m pip install --user --force-reinstall PyQt5==5.15.11 PyQt5-Qt5==5.15.2 PyQt5_sip==12.18.0
+```
 
-You can create new state machines or actions using the existing framework. Feel free to screenshot your images for new state machines or different actions.
-Remember to run the script as administrator.
+## Configure
 
-## Development
+Create or update `.env` in the project root:
 
-Developers can extend OSROKBOT by implementing new actions or creating new state machines. The project provides a robust set of tools for working with images and actions.
+```dotenv
+TESSERACT_PATH=C:\Program Files\Tesseract-OCR\tesseract.exe
+ANTIALIAS_METHOD=LANCZOS
+EMAIL=your-email@example.com
+OPENAI_KEY=your-openai-api-key
+```
 
-## Support
+Configuration notes:
 
-If you need help or have any questions, please open an issue on the GitHub repository.
+- `TESSERACT_PATH` is required for Lyceum/OCR workflows.
+- `EMAIL` is used by the captcha notification workflow.
+- `OPENAI_KEY` is only needed when Lyceum falls back to ChatGPT.
+- Keep `.env` private. It is intentionally ignored by Git.
 
-## License
+## Run
 
-OSROKBOT is open-source and available under the [MIT License](LICENSE).
+Start Rise of Kingdoms first, then run:
 
-## Acknowledgments
+```powershell
+python Classes\UI.py
+```
 
-Special thanks to the community and contributors (me) who have helped make OSROKBOT a reality.
+The overlay appears near the game window. Choose a workflow from the dropdown,
+optionally keep captcha detection enabled, and press the play button.
+
+## Available Workflows
+
+- `farm_rss_new`: OCR-aware resource gathering.
+- `farm_rss`: basic resource gathering.
+- `farm_food`, `farm_wood`, `farm_stone`, `farm_gold`: single-resource gathering.
+- `farm_barb`, `farm_barb_all`: barbarian farming flows.
+- `farm_gems`: continuous gem-deposit scanner.
+- `lyceum`, `lyceumMid`: Lyceum quiz helpers.
+
+## Project Layout
+
+```text
+Classes/
+  Actions/              Individual bot actions.
+  UI.py                 PyQt control overlay.
+  OS_ROKBOT.py          Run loop, pause/stop state, worker threads.
+  action_sets.py        Workflow state-machine definitions.
+  context.py            Shared runtime state for one bot run.
+  state_machine.py      State transition engine.
+  image_finder.py       OpenCV template matching.
+  window_handler.py     Game-window lookup and screenshots.
+Media/                  Image templates and UI icons.
+roklyceum.csv           Lyceum question/answer database.
+requirements.txt        Python dependencies.
+```
+
+## Verification
+
+Run these checks after code changes:
+
+```powershell
+python -m compileall Classes
+python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports ok')"
+```
+
+Do not run live automation checks unless the game window is open and you are
+ready for mouse/keyboard input to be controlled.

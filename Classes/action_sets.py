@@ -16,6 +16,14 @@ from state_machine import StateMachine
 from Actions.find_gems_action import FindGemAction
 from helpers import Helpers
 
+
+# Transition convention used throughout this file:
+# machine.add_state("state", Action(), "success_state", "failure_state")
+# If the failure target is omitted, StateMachine retries the same state.
+# Each workflow below includes flow comments describing how success and failure
+# transitions recover, retry, or move the bot forward.
+
+
 class ActionSets:
     def __init__(self, OS_ROKBOT):
         self.OS_ROKBOT = OS_ROKBOT
@@ -24,6 +32,9 @@ class ActionSets:
         return StateMachine()
     
     def scout_explore(self):
+        # Flow: open scout reports, claim unexplored targets, then send scouts
+        # back out. Missing day/night icons alternate between each other until
+        # one is visible; report failures fall through to the next report type.
         machine = self.create_machine()
         machine.add_state("explorenight", FindAndClickImageAction('Media/explorenight.png', offset_y=25), "openmsgs", "exploreday")
         
@@ -82,6 +93,9 @@ class ActionSets:
     
 
     def farm_barb (self):
+        # Flow: normalize to city/bird view, search barbarians, attack with an
+        # existing Lohar troop if possible, otherwise create a new troop. Any
+        # missing search/attack UI restarts from the escape/city-view recovery.
         machine = self.create_machine()
         machine.add_state("restart", PressKeyAction('escape'), "cityview")
         machine.add_state("cityview", PressKeyAction('space',delay=.3), "birdview","cityview")
@@ -106,6 +120,9 @@ class ActionSets:
         return machine
     
     def farm_barb_all (self):
+        # Flow: same barbarian search loop as farm_barb, but clicks the general
+        # troop position instead of image-matching Lohar. Failures restart the
+        # search so the bot does not remain on a stale combat screen.
         machine = self.create_machine()
         machine.add_state("restart", PressKeyAction('escape'), "cityview")
         machine.add_state("cityview", PressKeyAction('space',delay=.3), "birdview","cityview")
@@ -130,6 +147,8 @@ class ActionSets:
         return machine
     
     def train_troops (self):
+        # Flow: open the stable, spend available speedups if present, then train
+        # T1 cavalry. Failed UI lookups return to stable/restart to re-sync.
         machine = self.create_machine()
         machine.add_state("restart", PressKeyAction('escape'), "stable")
         machine.add_state("stable", FindAndClickImageAction('Media/stable.png', offset_x=10), "speedupicon","restart")
@@ -148,6 +167,9 @@ class ActionSets:
         return machine
     
     def farm_rss (self):
+        # Flow: go to bird view, choose a random resource icon, search, gather,
+        # and send a march. Failures rotate back through resource search or
+        # restart so missed buttons are retried.
         machine = self.create_machine()
         
         machine.add_state("pause", PressKeyAction('escape', post_delay=65), "restart")
@@ -174,6 +196,8 @@ class ActionSets:
         return machine
     
     def farm_rss_new (self):
+        # Flow: OCR the march count before gathering. If marches are full, wait;
+        # otherwise gather a random resource and loop back to the OCR check.
         machine = self.create_machine()
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4,delay=1), "test2")
@@ -202,6 +226,8 @@ class ActionSets:
         return machine
     
     def farm_gems (self):
+        # Flow: sweep the map for gem deposits. Both success and failure return
+        # to state "2" because this mode is a continuous scanner.
         machine = self.create_machine()
         #machine.add_state("0", PressKeyAction('space',post_delay=4), "1")
         #machine.add_state("1", PressKeyAction('space'), "2")
@@ -211,6 +237,8 @@ class ActionSets:
         return machine
     
     def loharjr (self):
+        # Flow: scan for marauders, attack, refill AP if needed, then watch for
+        # victory/defeat. Failed scans return to state "0" to re-center/retry.
         machine = self.create_machine()
         machine.add_state("0", PressKeyAction('space',post_delay=4), "1")
         machine.add_state("1", PressKeyAction('space'), "2")
@@ -243,6 +271,8 @@ class ActionSets:
         return machine
 
     def loharjrt (self):
+        # Flow: open inventory, use a Lohar Jr item, start a rally, then stop the
+        # automation. Missing inventory/rally UI returns to inventory recovery.
         machine = self.create_machine()
         
         machine.add_state("inventory", PressKeyAction('i'), "other")
@@ -260,6 +290,8 @@ class ActionSets:
         return machine
     
     def farm_wood (self):
+        # Flow: OCR march capacity, search wood, gather, send march, and recheck
+        # capacity. Full marches wait before retrying.
         machine = self.create_machine()
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4), "test2")
@@ -285,6 +317,8 @@ class ActionSets:
         return machine
     
     def farm_food (self):
+        # Flow: OCR march capacity, search food, gather, send march, and recheck
+        # capacity. Full marches wait before retrying.
         machine = self.create_machine()
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4), "test2")
@@ -310,6 +344,8 @@ class ActionSets:
         return machine
     
     def farm_stone (self):
+        # Flow: OCR march capacity, search stone, gather, send march, and recheck
+        # capacity. Full marches wait before retrying.
         machine = self.create_machine()
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4), "test2")
@@ -335,6 +371,8 @@ class ActionSets:
         return machine
     
     def farm_gold (self):
+        # Flow: wait until the army UI is visible, OCR march capacity, search
+        # gold, gather, and loop through the army/march-capacity check.
         machine = self.create_machine()
         machine.add_state("pause1",  ManualSleepAction(delay=10), "armyc")
         machine.add_state("armyc", FindImageAction('Media/armyc.png'), "test","pause1")
@@ -361,6 +399,8 @@ class ActionSets:
         return machine
 
     def email_captcha (self):
+        # Flow: run beside the selected workflow, watch for the captcha chest,
+        # email the configured recipient, then pause the bot for manual action.
         machine = self.create_machine()
         machine.add_state("findcaptcha",  FindAndClickImageAction('Media/captchachest.png',delay=11), "notify","findcaptcha")
         machine.add_state("notify",  SendEmailAction(), "pause")
@@ -370,6 +410,8 @@ class ActionSets:
     
 
     def lyceum (self):
+        # Flow: screenshot/OCR the question and four answers, answer from the CSV
+        # database when confidence is high, otherwise fall back to ChatGPT.
         machine = self.create_machine()
         machine.add_state("sstittle",  ScreenshotAction(33.7,77,33.5,43), "ettitle")
         machine.add_state("ettitle", ExtractTextAction(description= "Q"), "ssq1")
@@ -387,6 +429,8 @@ class ActionSets:
         return machine
     
     def lyceumMid (self):
+        # Flow: wait for a manual keypress per midterm question, OCR the prompt
+        # and answers, then move the mouse to the selected answer.
         machine = self.create_machine()
         machine.add_state("keypress", WaitForKeyPressAction('k', "for the next question"), "sstittle","keypress")
         machine.add_state("sstittle",  ScreenshotAction(33.7,80,39.5,49), "ettitle")

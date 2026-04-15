@@ -1,7 +1,19 @@
-# .gitignore
-
-# Ignore Python compiled files
+# Local secrets and runtime configuration.
 .env
+
+# Python caches and bytecode.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Generated screenshots/debug images.
 /*.png
-Classes/__pycache__/
-Classes/Actions/__pycache__/
+idk.png
+testprocessed.png
+
+# Local editor/backup files.
+*.bak
+*.tmp
+*.old
+*.orig
+*~

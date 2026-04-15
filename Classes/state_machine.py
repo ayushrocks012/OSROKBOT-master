@@ -1,4 +1,13 @@
 class StateMachine:
+    """Small deterministic state machine for automation workflows.
+
+    States are registered with `add_state(name, action, success, failure)`.
+    `action` must be an `Action`-compatible object exposing `perform(context)`.
+    `execute(context)` runs the current state once, then moves to the success
+    or failure target according to the action's boolean result. A missing
+    failure target intentionally retries the same state.
+    """
+
     def __init__(self):
         self.states = {}
         self.current_state = None

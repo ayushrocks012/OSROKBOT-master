@@ -1,4 +1,7 @@
+import os
 import sys
+from pathlib import Path
+
 from PyQt5 import QtWidgets, QtGui, QtCore
 
 from action_sets import ActionSets
@@ -9,10 +12,18 @@ from window_handler import WindowHandler
 from context import Context
 import threading
 
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def asset_path(*parts):
+    return str(PROJECT_ROOT.joinpath(*parts))
+
+
 class UI(QtWidgets.QWidget):
     def __init__(self, window_title, delay=0):
         super().__init__()
-        
+        os.chdir(PROJECT_ROOT)
 
         self.OS_ROKBOT = OSROKBOT(window_title, delay)
         self.OS_ROKBOT.signal_emitter.pause_toggled.connect(self.on_pause_toggled) # Connect the signal to the slot
@@ -23,7 +34,7 @@ class UI(QtWidgets.QWidget):
         self.timer.timeout.connect(self.update_position)
         self.timer.start(10)
         # Colors and styles
-        self.setStyleSheet("""
+        stylesheet = """
         QWidget {
             background-color: #2a2a2a;
         }
@@ -65,7 +76,7 @@ class UI(QtWidgets.QWidget):
             border-radius: 5px;
         }
         QComboBox::down-arrow {
-            image: url(Media/UI/down_arrow.svg);
+            image: url(__DOWN_ARROW_ICON__);
             padding-top: 2px;
             width: 10px;
             height: 10px;           
@@ -78,7 +89,12 @@ class UI(QtWidgets.QWidget):
             color: #f5f5f5;
         }
         
-    """)
+    """
+        stylesheet = stylesheet.replace(
+            "__DOWN_ARROW_ICON__",
+            asset_path("Media", "UI", "down_arrow.svg").replace("\\", "/"),
+        )
+        self.setStyleSheet(stylesheet)
 
         # Title Bar
         self.title_bar = QtWidgets.QWidget()
@@ -127,7 +143,7 @@ class UI(QtWidgets.QWidget):
         button_layout.setAlignment(QtCore.Qt.AlignLeft)
         # Create the Play Button
         self.play_button = QtWidgets.QPushButton()
-        self.play_icon = QtGui.QIcon("Media/UI/play_icon.svg")
+        self.play_icon = QtGui.QIcon(asset_path("Media", "UI", "play_icon.svg"))
         self.play_button.setIcon(self.play_icon)
         self.play_button.setIconSize(QtCore.QSize(24, 24))
         self.play_button.clicked.connect(self.start_automation)
@@ -135,7 +151,7 @@ class UI(QtWidgets.QWidget):
 
         # Create the Stop Button
         self.stop_button = QtWidgets.QPushButton()
-        self.stop_icon = QtGui.QIcon("Media/UI/stop_icon.svg")
+        self.stop_icon = QtGui.QIcon(asset_path("Media", "UI", "stop_icon.svg"))
         self.stop_button.setIcon(self.stop_icon)
         self.stop_button.setIconSize(QtCore.QSize(24, 24))
         self.stop_button.clicked.connect(self.stop_automation)
@@ -143,8 +159,8 @@ class UI(QtWidgets.QWidget):
 
         # Create the Pause/Unpause Button
         self.pause_button = QtWidgets.QPushButton()
-        self.pause_icon = QtGui.QIcon("Media/UI/pause_icon.svg")
-        self.unpause_icon = QtGui.QIcon("Media/UI/play_icon.svg")
+        self.pause_icon = QtGui.QIcon(asset_path("Media", "UI", "pause_icon.svg"))
+        self.unpause_icon = QtGui.QIcon(asset_path("Media", "UI", "play_icon.svg"))
         self.pause_button.setIcon(self.pause_icon)
         self.pause_button.setIconSize(QtCore.QSize(24, 24))
         self.pause_button.clicked.connect(self.toggle_pause)
@@ -361,9 +377,8 @@ class UI(QtWidgets.QWidget):
         event.accept()
         
 if __name__ == "__main__":
-    import os
     # Change working directory to project root so Media/ paths resolve correctly
-    os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+    os.chdir(PROJECT_ROOT)
     # Activate Rise of Kingdoms window first
     WindowHandler().activate_window('Rise of Kingdoms')
     app = QtWidgets.QApplication(sys.argv)

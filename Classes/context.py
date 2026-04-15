@@ -7,7 +7,18 @@ DEFAULT_WINDOW_TITLE = "Rise of Kingdoms"
 
 @dataclass
 class Context:
-    """Runtime state shared by state machines during one automation run."""
+    """Runtime state shared by every state machine in one automation run.
+
+    Inputs:
+        ui_instance: Optional PyQt UI object that started the run.
+        bot: Optional OSROKBOT instance controlling pause/stop state.
+        signal_emitter: Optional Qt signal bridge for UI status updates.
+        window_title: Target game window title used by window/input actions.
+
+    Outputs:
+        Actions mutate `Q`, `A`, `B`, `C`, `D`, and `extracted` with OCR
+        results. Actions also call `emit_state()` to update the UI safely.
+    """
 
     ui_instance: Optional[Any] = None
     bot: Optional[Any] = None
