@@ -100,14 +100,32 @@ class InputController:
 
     def sample_click_target(self, x, y, window_rect=None):
         noise = self.coordinate_noise_px
-        sampled_x = int(round(x + random.randint(-noise, noise))) if noise else int(round(x))
-        sampled_y = int(round(y + random.randint(-noise, noise))) if noise else int(round(y))
+        if noise:
+            sigma = max(0.1, noise / 2)
+            x_offset = self._clamp(random.gauss(0, sigma), -noise, noise)
+            y_offset = self._clamp(random.gauss(0, sigma), -noise, noise)
+            sampled_x = int(round(x + x_offset))
+            sampled_y = int(round(y + y_offset))
+        else:
+            sampled_x = int(round(x))
+            sampled_y = int(round(y))
 
         if window_rect:
             sampled_x = self._clamp(sampled_x, int(window_rect.left), int(window_rect.left + window_rect.width))
             sampled_y = self._clamp(sampled_y, int(window_rect.top), int(window_rect.top + window_rect.height))
 
         return sampled_x, sampled_y
+
+    def hotkey(self, *keys, context=None):
+        active_context = self._context(context)
+        if not self.check_interlock(active_context):
+            return False
+        try:
+            pyautogui.hotkey(*keys)
+        except Exception as exc:
+            print(colored(f"Error during hotkey '{'+'.join(keys)}': {exc}", "red"))
+            return False
+        return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
 
     def smooth_move_to(self, x, y, context=None, duration=None, window_rect=None):
         active_context = self._context(context)

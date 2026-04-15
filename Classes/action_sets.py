@@ -15,6 +15,7 @@ from Actions.wait_for_keypress_action import WaitForKeyPressAction
 from state_machine import StateMachine
 from Actions.find_gems_action import FindGemAction
 from helpers import Helpers
+from state_monitor import GameStateMonitor
 
 
 # Transition convention used throughout this file:
@@ -36,6 +37,49 @@ class ActionSets:
     @staticmethod
     def map_view_precondition():
         return FindImageAction('Media/ficon.png', delay=0, search_region=(0, 0, 1, 1))
+
+    @staticmethod
+    def idle_march_precondition(required=1):
+        def precondition(context=None):
+            return GameStateMonitor(context).has_idle_march_slots(required)
+        return precondition
+
+    @staticmethod
+    def ap_precondition(required=GameStateMonitor.DEFAULT_BARBARIAN_AP_COST):
+        def precondition(context=None):
+            return GameStateMonitor(context).has_action_points(required)
+        return precondition
+
+    @staticmethod
+    def march_and_ap_precondition(required_slots=1, required_ap=GameStateMonitor.DEFAULT_BARBARIAN_AP_COST):
+        def precondition(context=None):
+            monitor = GameStateMonitor(context)
+            return (
+                monitor.has_idle_march_slots(required_slots)
+                and monitor.has_action_points(required_ap)
+            )
+        return precondition
+
+    @staticmethod
+    def map_and_march_precondition(required_slots=1):
+        def precondition(context=None):
+            monitor = GameStateMonitor(context)
+            return (
+                monitor.is_map_view()
+                and monitor.has_idle_march_slots(required_slots)
+            )
+        return precondition
+
+    @staticmethod
+    def map_march_and_ap_precondition(required_slots=1, required_ap=GameStateMonitor.DEFAULT_BARBARIAN_AP_COST):
+        def precondition(context=None):
+            monitor = GameStateMonitor(context)
+            return (
+                monitor.is_map_view()
+                and monitor.has_idle_march_slots(required_slots)
+                and monitor.has_action_points(required_ap)
+            )
+        return precondition
     
     def scout_explore(self):
         # Flow: open scout reports, claim unexplored targets, then send scouts
@@ -103,10 +147,18 @@ class ActionSets:
         # existing Lohar troop if possible, otherwise create a new troop. Any
         # missing search/attack UI restarts from the escape/city-view recovery.
         machine = self.create_machine()
+        machine.add_state("low_ap_fallback", PressKeyAction('escape', post_delay=60), "cityview", "cityview")
         machine.add_state("restart", PressKeyAction('escape'), "cityview")
         machine.add_state("cityview", PressKeyAction('space',delay=.3), "birdview","cityview")
         machine.add_state("birdview", PressKeyAction('f',delay=.3), "barbland","cityview")
-        machine.add_state("barbland", FindAndClickImageAction('Media/barbland.png',delay=.3), "searchaction","restart")
+        machine.add_state(
+            "barbland",
+            FindAndClickImageAction('Media/barbland.png',delay=.3),
+            "searchaction",
+            "restart",
+            precondition=self.march_and_ap_precondition(),
+            fallback_state="low_ap_fallback",
+        )
         machine.add_state("searchaction", FindAndClickImageAction('Media/searchaction.png'), "arrow","restart")
         machine.add_state("arrow", FindAndClickImageAction('Media/arrow.png',delay=1.5, offset_y=105), "attackaction","restart")
         machine.add_state("attackaction", FindAndClickImageAction('Media/attackaction.png',delay=.3), "lohar","restart")
@@ -130,10 +182,18 @@ class ActionSets:
         # troop position instead of image-matching Lohar. Failures restart the
         # search so the bot does not remain on a stale combat screen.
         machine = self.create_machine()
+        machine.add_state("low_ap_fallback", PressKeyAction('escape', post_delay=60), "cityview", "cityview")
         machine.add_state("restart", PressKeyAction('escape'), "cityview")
         machine.add_state("cityview", PressKeyAction('space',delay=.3), "birdview","cityview")
         machine.add_state("birdview", PressKeyAction('f',delay=.3), "barbland","cityview")
-        machine.add_state("barbland", FindAndClickImageAction('Media/barbland.png',delay=.3), "searchaction","restart")
+        machine.add_state(
+            "barbland",
+            FindAndClickImageAction('Media/barbland.png',delay=.3),
+            "searchaction",
+            "restart",
+            precondition=self.march_and_ap_precondition(),
+            fallback_state="low_ap_fallback",
+        )
         machine.add_state("searchaction", FindAndClickImageAction('Media/searchaction.png'), "arrow","restart")
         machine.add_state("arrow", FindAndClickImageAction('Media/arrow.png',delay=1.5, offset_y=105), "attackaction","restart")
         machine.add_state("attackaction", FindAndClickImageAction('Media/attackaction.png',delay=.3), "lohar","restart")
@@ -178,11 +238,19 @@ class ActionSets:
         # restart so missed buttons are retried.
         machine = self.create_machine()
         
+        machine.add_state("no_march_fallback", ManualSleepAction(delay=60), "cityview")
         machine.add_state("pause", PressKeyAction('escape', post_delay=65), "restart")
         machine.add_state("restart", PressKeyAction('escape'), "checkesc")
         machine.add_state("checkesc", FindAndClickImageAction('Media/escx.png'), "cityview","cityview",)
         machine.add_state("cityview", PressKeyAction('space'), "birdview")
-        machine.add_state("birdview",FindAndClickImageAction('Media/ficon.png'), Helpers.getRandomRss(),"restart")
+        machine.add_state(
+            "birdview",
+            FindAndClickImageAction('Media/ficon.png'),
+            Helpers.getRandomRss(),
+            "restart",
+            precondition=self.idle_march_precondition(),
+            fallback_state="no_march_fallback",
+        )
 
         machine.add_state("logicon", FindAndClickImageAction('Media/logicon.png'), "searchaction","restart")
         machine.add_state("cornicon", FindAndClickImageAction('Media/cornicon.png'), "searchaction","restart")
@@ -205,6 +273,7 @@ class ActionSets:
         # Flow: OCR the march count before gathering. If marches are full, wait;
         # otherwise gather a random resource and loop back to the OCR check.
         machine = self.create_machine()
+        machine.add_state("no_march_fallback", ManualSleepAction(delay=60), "test")
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4,delay=1), "test2")
         machine.add_state("test2", ExtractTextAction(description= "marchcount"), "birdview","pause1")
@@ -212,7 +281,14 @@ class ActionSets:
         machine.add_state("restart", PressKeyAction('escape'), "checkesc")
         machine.add_state("checkesc", FindAndClickImageAction('Media/escx.png'), "cityview","cityview",)
         machine.add_state("cityview", PressKeyAction('space'), "birdview")
-        machine.add_state("birdview",FindAndClickImageAction('Media/ficon.png'), Helpers.getRandomRss(),"restart")
+        machine.add_state(
+            "birdview",
+            FindAndClickImageAction('Media/ficon.png'),
+            Helpers.getRandomRss(),
+            "restart",
+            precondition=self.idle_march_precondition(),
+            fallback_state="no_march_fallback",
+        )
 
         machine.add_state("logicon", FindAndClickImageAction('Media/logicon.png'), "searchaction","restart")
         machine.add_state("cornicon", FindAndClickImageAction('Media/cornicon.png'), "searchaction","restart")
@@ -240,13 +316,14 @@ class ActionSets:
         # If the map/search icon is missing, press space to recover map view
         # before scanning for world objects again.
         machine.add_state("switchmap", PressKeyAction('space', post_delay=1), "2", "switchmap")
+        machine.add_state("no_march_fallback", ManualSleepAction(delay=60), "2")
         machine.add_state(
             "2",
             FindGemAction(),
             "2",
             "2",
-            precondition=self.map_view_precondition(),
-            fallback_state="switchmap",
+            precondition=self.map_and_march_precondition(),
+            fallback_state="no_march_fallback",
         )
 
         machine.set_initial_state("2")
@@ -256,6 +333,7 @@ class ActionSets:
         # Flow: scan for marauders, attack, refill AP if needed, then watch for
         # victory/defeat. Failed scans return to state "0" to re-center/retry.
         machine = self.create_machine()
+        machine.add_state("low_ap_fallback", PressKeyAction('escape', post_delay=60), "0", "0")
         machine.add_state("0", PressKeyAction('space',post_delay=4), "1")
         machine.add_state("1", PressKeyAction('space'), "2")
         # World-object scanning requires map view; if that marker is missing,
@@ -265,8 +343,8 @@ class ActionSets:
             FindMarauderAction(),
             "3",
             "0",
-            precondition=self.map_view_precondition(),
-            fallback_state="0",
+            precondition=self.map_march_and_ap_precondition(),
+            fallback_state="low_ap_fallback",
         )
         machine.add_state("3", FindAndClickImageAction('Media/attackaction.png',delay=.3), "4","0")
         machine.add_state("4", FindAndClickImageAction('Media/newtroopaction.png',delay=.3), "5","5f")
@@ -318,6 +396,7 @@ class ActionSets:
         # Flow: OCR march capacity, search wood, gather, send march, and recheck
         # capacity. Full marches wait before retrying.
         machine = self.create_machine()
+        machine.add_state("no_march_fallback", ManualSleepAction(delay=60), "test")
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4), "test2")
         machine.add_state("test2", ExtractTextAction(description= "marchcount"), "restart","pause1")
@@ -325,7 +404,14 @@ class ActionSets:
         machine.add_state("restart", PressKeyAction('escape'), "checkesc")
         machine.add_state("checkesc", FindAndClickImageAction('Media/escx.png'), "cityview","cityview",)
         machine.add_state("cityview", PressKeyAction('space'), "birdview")
-        machine.add_state("birdview",FindAndClickImageAction('Media/ficon.png'), "logicon","restart")
+        machine.add_state(
+            "birdview",
+            FindAndClickImageAction('Media/ficon.png'),
+            "logicon",
+            "restart",
+            precondition=self.idle_march_precondition(),
+            fallback_state="no_march_fallback",
+        )
 
         machine.add_state("logicon", FindAndClickImageAction('Media/logicon.png'), "searchaction","restart")
         machine.add_state("searchaction", FindAndClickImageAction('Media/searchaction.png'), "arrow","logicon")
@@ -345,6 +431,7 @@ class ActionSets:
         # Flow: OCR march capacity, search food, gather, send march, and recheck
         # capacity. Full marches wait before retrying.
         machine = self.create_machine()
+        machine.add_state("no_march_fallback", ManualSleepAction(delay=60), "test")
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4), "test2")
         machine.add_state("test2", ExtractTextAction(description= "marchcount"), "restart","pause1")
@@ -352,7 +439,14 @@ class ActionSets:
         machine.add_state("restart", PressKeyAction('escape'), "checkesc")
         machine.add_state("checkesc", FindAndClickImageAction('Media/escx.png'), "cityview","cityview",)
         machine.add_state("cityview", PressKeyAction('space'), "birdview")
-        machine.add_state("birdview",FindAndClickImageAction('Media/ficon.png'), "cornicon","restart")
+        machine.add_state(
+            "birdview",
+            FindAndClickImageAction('Media/ficon.png'),
+            "cornicon",
+            "restart",
+            precondition=self.idle_march_precondition(),
+            fallback_state="no_march_fallback",
+        )
 
         machine.add_state("cornicon", FindAndClickImageAction('Media/cornicon.png'), "searchaction","restart")
         machine.add_state("searchaction", FindAndClickImageAction('Media/searchaction.png'), "arrow","cornicon")
@@ -372,6 +466,7 @@ class ActionSets:
         # Flow: OCR march capacity, search stone, gather, send march, and recheck
         # capacity. Full marches wait before retrying.
         machine = self.create_machine()
+        machine.add_state("no_march_fallback", ManualSleepAction(delay=60), "test")
         machine.add_state("pause1",  ManualSleepAction(delay=10), "test")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.4), "test2")
         machine.add_state("test2", ExtractTextAction(description= "marchcount"), "restart","pause1")
@@ -379,7 +474,14 @@ class ActionSets:
         machine.add_state("restart", PressKeyAction('escape'), "checkesc")
         machine.add_state("checkesc", FindAndClickImageAction('Media/escx.png'), "cityview","cityview",)
         machine.add_state("cityview", PressKeyAction('space'), "birdview")
-        machine.add_state("birdview",FindAndClickImageAction('Media/ficon.png'), "stoneicon","restart")
+        machine.add_state(
+            "birdview",
+            FindAndClickImageAction('Media/ficon.png'),
+            "stoneicon",
+            "restart",
+            precondition=self.idle_march_precondition(),
+            fallback_state="no_march_fallback",
+        )
 
         machine.add_state("stoneicon", FindAndClickImageAction('Media/stoneicon.png'), "searchaction","restart")
         machine.add_state("searchaction", FindAndClickImageAction('Media/searchaction.png'), "arrow","stoneicon")
@@ -399,6 +501,7 @@ class ActionSets:
         # Flow: wait until the army UI is visible, OCR march capacity, search
         # gold, gather, and loop through the army/march-capacity check.
         machine = self.create_machine()
+        machine.add_state("no_march_fallback", ManualSleepAction(delay=60), "armyc")
         machine.add_state("pause1",  ManualSleepAction(delay=10), "armyc")
         machine.add_state("armyc", FindImageAction('Media/armyc.png'), "test","pause1")
         machine.add_state("test",  ScreenshotAction(96,98,18.6,20.5), "test2")
@@ -407,7 +510,14 @@ class ActionSets:
         machine.add_state("restart", PressKeyAction('escape'), "checkesc")
         machine.add_state("checkesc", FindAndClickImageAction('Media/escx.png'), "cityview","cityview",)
         machine.add_state("cityview", PressKeyAction('space'), "birdview")
-        machine.add_state("birdview",FindAndClickImageAction('Media/ficon.png'), "goldicon","restart")
+        machine.add_state(
+            "birdview",
+            FindAndClickImageAction('Media/ficon.png'),
+            "goldicon",
+            "restart",
+            precondition=self.idle_march_precondition(),
+            fallback_state="no_march_fallback",
+        )
 
         machine.add_state("goldicon", FindAndClickImageAction('Media/goldicon.png'), "searchaction","restart")
         machine.add_state("searchaction", FindAndClickImageAction('Media/searchaction.png'), "arrow","goldicon")

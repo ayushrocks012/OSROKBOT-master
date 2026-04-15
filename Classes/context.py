@@ -30,6 +30,10 @@ class Context:
     C: Optional[str] = None
     D: Optional[str] = None
     extracted: dict[str, Any] = field(default_factory=dict)
+    idle_march_slots: Optional[int] = None
+    idle_march_slots_checked_at: Optional[float] = None
+    action_points: Optional[int] = None
+    action_points_checked_at: Optional[float] = None
 
     @property
     def UI(self):

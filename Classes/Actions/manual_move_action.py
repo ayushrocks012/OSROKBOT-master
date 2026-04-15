@@ -1,29 +1,15 @@
-from Actions.action import Action
-from window_handler import WindowHandler
+from Actions.window_percent_action import WindowPointInputAction
 from input_controller import InputController
 
 
-class ManualMoveAction(Action):
-    def __init__(self,x=50,y=50, delay=0, remember_position=False, post_delay=0.0):
-        super().__init__(delay=delay, post_delay=post_delay)
-        self.window_handler = WindowHandler()
-        self.window_title = 'Rise of Kingdoms'
-        self.x = x
-        self.y = y
-        self.remember_position = remember_position
+class ManualMoveAction(WindowPointInputAction):
+    def __init__(self, x=50, y=50, delay=0, remember_position=False, post_delay=0.0):
+        super().__init__(x=x, y=y, delay=delay, remember_position=remember_position, post_delay=post_delay)
 
-
-
-    def execute(self, context=None):
-        window_title = context.window_title if context else self.window_title
-        window = self.window_handler.get_window(window_title)
-        if not window:
-            return False
-        click_x = int(window.left + window.width * self.x / 100)
-        click_y = int(window.top + window.height * self.y / 100)
+    def execute_input(self, context, window, target_x, target_y):
         return InputController(context=context).move_to(
-            click_x,
-            click_y,
+            target_x,
+            target_y,
             window_rect=window,
             remember_position=self.remember_position,
         )

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import os
+import sys
 from pathlib import Path
 
 
@@ -187,11 +188,48 @@ def check_tesseract_path() -> list[str]:
     return []
 
 
+def check_ui_map_coordinates() -> list[str]:
+    failures: list[str] = []
+    if str(CLASSES_DIR) not in sys.path:
+        sys.path.insert(0, str(CLASSES_DIR))
+
+    try:
+        from helpers import UIMap
+    except Exception as exc:
+        return [f"Unable to import UIMap from Classes/helpers.py: {exc}"]
+
+    for name, value in vars(UIMap).items():
+        if name.startswith("_") or not name.isupper():
+            continue
+        if not isinstance(value, tuple):
+            failures.append(f"UIMap.{name} must be a tuple, got {type(value).__name__}")
+            continue
+        if len(value) != 4:
+            failures.append(f"UIMap.{name} must contain 4 values: (x, y, width, height)")
+            continue
+        if not all(isinstance(item, (int, float)) for item in value):
+            failures.append(f"UIMap.{name} contains non-numeric values: {value!r}")
+            continue
+
+        x, y, width, height = value
+        if x < 0 or y < 0 or width <= 0 or height <= 0:
+            failures.append(f"UIMap.{name} has invalid origin or size: {value!r}")
+            continue
+        if x > 1 or y > 1 or width > 1 or height > 1:
+            failures.append(f"UIMap.{name} values must be normalized between 0.0 and 1.0: {value!r}")
+            continue
+        if x + width > 1.0 or y + height > 1.0:
+            failures.append(f"UIMap.{name} extends outside normalized screen bounds: {value!r}")
+
+    return failures
+
+
 def main() -> int:
     checks = {
         "action set image paths": check_action_set_images,
         "state-machine transitions": check_state_machine_transitions,
         "TESSERACT_PATH": check_tesseract_path,
+        "UIMap coordinates": check_ui_map_coordinates,
     }
 
     failures: list[str] = []

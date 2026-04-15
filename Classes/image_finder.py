@@ -1,3 +1,6 @@
+from datetime import datetime
+from pathlib import Path
+
 import cv2
 import numpy as np
 from input_controller import InputController
@@ -25,6 +28,26 @@ class ImageFinder:
         self.max_raw_matches_per_scale = 250
         self._template_cache = {}
         self._sift = None
+
+    def save_screenshot(self, screenshot, label="diagnostic", output_dir="diagnostics"):
+        """Save a screenshot for recovery/debugging and return the saved path."""
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        safe_label = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in label)
+        filename = f"{safe_label}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
+        path = output_path / filename
+
+        try:
+            if hasattr(screenshot, "save"):
+                screenshot.save(path)
+            else:
+                cv2.imwrite(str(path), screenshot)
+        except Exception as exc:
+            print(colored(f"Unable to save diagnostic screenshot: {exc}", "red"))
+            return None
+
+        print(colored(f"Diagnostic screenshot saved: {path}", "yellow"))
+        return path
 
     def _get_scaling_factor(self, screenshot):
         win_width = screenshot.shape[1]
@@ -122,38 +145,67 @@ class ImageFinder:
             )
         return resized_template, resized_mask
 
-    def _match_image(self, target_image_path, screenshot, search_region=None):
-        """Return multi-scale template matches for a screenshot.
-
-        `search_region` narrows matching to a scaled ROI but returned match
-        coordinates are still relative to the full screenshot, preserving
-        compatibility with click actions.
-        """
-        screenshot_gray, screenshot_cv = self._to_gray_screenshot(screenshot)
-        template, mask = self._load_template(target_image_path)
-
-        base_scale = self._get_scaling_factor(screenshot_gray)
+    def _prepare_search_area(self, screenshot_gray, base_scale, search_region):
         region = self._scale_search_region(search_region, base_scale, screenshot_gray.shape)
-        region_offset_x = 0
-        region_offset_y = 0
-        search_gray = screenshot_gray
-        if region:
-            region_offset_x, region_offset_y, region_w, region_h = region
-            search_gray = screenshot_gray[
-                region_offset_y:region_offset_y + region_h,
-                region_offset_x:region_offset_x + region_w,
-            ]
+        if not region:
+            return None, 0, 0, screenshot_gray
 
-        if template is None:
-            return base_scale, [], 0, 0, None, screenshot_cv
+        region_offset_x, region_offset_y, region_w, region_h = region
+        search_gray = screenshot_gray[
+            region_offset_y:region_offset_y + region_h,
+            region_offset_x:region_offset_x + region_w,
+        ]
+        return region, region_offset_x, region_offset_y, search_gray
 
+    def _match_template_at_scale(self, target_image_path, search_gray, resized_template, resized_mask, scale):
+        method = cv2.TM_CCORR_NORMED if resized_mask is not None else cv2.TM_CCOEFF_NORMED
+        try:
+            if resized_mask is not None:
+                result = cv2.matchTemplate(
+                    search_gray,
+                    resized_template,
+                    method,
+                    mask=resized_mask,
+                )
+            else:
+                result = cv2.matchTemplate(search_gray, resized_template, method)
+        except cv2.error as exc:
+            print(colored(f"Unable to match {target_image_path} at scale {scale}: {exc}", "red"))
+            return None
+
+        return np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _result_to_match_records(self, result, template_w, template_h, scale, region_offset_x, region_offset_y):
+        locations = np.where(result >= self.threshold)
+        if not locations[0].size:
+            return []
+
+        scores = result[locations]
+        if scores.size > self.max_raw_matches_per_scale:
+            top_indexes = np.argpartition(scores, -self.max_raw_matches_per_scale)[-self.max_raw_matches_per_scale:]
+        else:
+            top_indexes = np.arange(scores.size)
+
+        records = []
+        for index in top_indexes:
+            y = int(locations[0][index])
+            x = int(locations[1][index])
+            records.append((
+                x + region_offset_x,
+                y + region_offset_y,
+                template_w,
+                template_h,
+                scale[0],
+                scale[1],
+                float(scores[index]),
+            ))
+        return records
+
+    def _find_scaled_matches(self, target_image_path, search_gray, template, mask, base_scale, region_offset_x, region_offset_y):
         best_scale = base_scale
         best_max_val = 0
         best_template = template
         matches = []
-        method_without_mask = cv2.TM_CCOEFF_NORMED
-        method_with_mask = cv2.TM_CCORR_NORMED
-        method_name = "masked multi-scale template" if mask is not None else "multi-scale template"
 
         for scale_multiplier in self.scale_multipliers:
             scale = (base_scale[0] * scale_multiplier, base_scale[1] * scale_multiplier)
@@ -165,57 +217,38 @@ class ImageFinder:
             if template_h > search_gray.shape[0] or template_w > search_gray.shape[1]:
                 continue
 
-            method = method_with_mask if resized_mask is not None else method_without_mask
-            try:
-                if resized_mask is not None:
-                    result = cv2.matchTemplate(
-                        search_gray,
-                        resized_template,
-                        method,
-                        mask=resized_mask,
-                    )
-                else:
-                    result = cv2.matchTemplate(search_gray, resized_template, method)
-            except cv2.error as exc:
-                print(colored(f"Unable to match {target_image_path} at scale {scale}: {exc}", "red"))
+            result = self._match_template_at_scale(
+                target_image_path,
+                search_gray,
+                resized_template,
+                resized_mask,
+                scale,
+            )
+            if result is None:
                 continue
 
-            result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
             max_val = float(result.max()) if result.size else 0
             if max_val > best_max_val:
                 best_max_val = max_val
                 best_scale = scale
                 best_template = resized_template
 
-            locations = np.where(result >= self.threshold)
-            if not locations[0].size:
-                continue
-
-            scores = result[locations]
-            if scores.size > self.max_raw_matches_per_scale:
-                top_indexes = np.argpartition(scores, -self.max_raw_matches_per_scale)[-self.max_raw_matches_per_scale:]
-            else:
-                top_indexes = np.arange(scores.size)
-
-            for index in top_indexes:
-                y = int(locations[0][index])
-                x = int(locations[1][index])
-                score = float(scores[index])
-                matches.append((
-                    x + region_offset_x,
-                    y + region_offset_y,
+            matches.extend(
+                self._result_to_match_records(
+                    result,
                     template_w,
                     template_h,
-                    scale[0],
-                    scale[1],
-                    score,
-                ))
+                    scale,
+                    region_offset_x,
+                    region_offset_y,
+                )
+            )
 
-        boxes = self._match_records_to_boxes(matches)
-        picked_boxes = ImageFinder.non_max_suppression_fast(boxes, 0.3)
-        picked_matches = self._boxes_to_match_records(picked_boxes)
+        return best_scale, best_max_val, best_template, matches
 
-        for box in picked_boxes:
+    @staticmethod
+    def _draw_match_boxes(screenshot_cv, boxes):
+        for box in boxes:
             start_x, start_y, end_x, end_y = box[:4]
             cv2.rectangle(
                 screenshot_cv,
@@ -224,6 +257,42 @@ class ImageFinder:
                 (255, 0, 255),
                 2,
             )
+
+    def _match_image(self, target_image_path, screenshot, search_region=None):
+        """Return multi-scale template matches for a screenshot.
+
+        `search_region` narrows matching to a scaled ROI but returned match
+        coordinates are still relative to the full screenshot, preserving
+        compatibility with click actions.
+        """
+        screenshot_gray, screenshot_cv = self._to_gray_screenshot(screenshot)
+        template, mask = self._load_template(target_image_path)
+
+        base_scale = self._get_scaling_factor(screenshot_gray)
+        region, region_offset_x, region_offset_y, search_gray = self._prepare_search_area(
+            screenshot_gray,
+            base_scale,
+            search_region,
+        )
+
+        if template is None:
+            return base_scale, [], 0, 0, None, screenshot_cv
+
+        method_name = "masked multi-scale template" if mask is not None else "multi-scale template"
+        best_scale, best_max_val, best_template, matches = self._find_scaled_matches(
+            target_image_path,
+            search_gray,
+            template,
+            mask,
+            base_scale,
+            region_offset_x,
+            region_offset_y,
+        )
+
+        boxes = self._match_records_to_boxes(matches)
+        picked_boxes = ImageFinder.non_max_suppression_fast(boxes, 0.3)
+        picked_matches = self._boxes_to_match_records(picked_boxes)
+        self._draw_match_boxes(screenshot_cv, picked_boxes)
 
         if self.debug_output:
             cv2.imwrite("screenshot.png", screenshot_cv)

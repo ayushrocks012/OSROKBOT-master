@@ -1,25 +1,17 @@
-from Actions.action import Action
-from window_handler import WindowHandler
+from Actions.window_percent_action import WindowPercentAction
 from colorsys import rgb_to_hsv
 
-class CheckColorAction(Action):
-    def __init__(self,x=50,y=50, delay=0, post_delay=0.0):
-        super().__init__(delay=delay, post_delay=post_delay)
-        self.window_handler = WindowHandler()
-        self.window_title = 'Rise of Kingdoms'
-        self.x = x
-        self.y = y
 
-
+class CheckColorAction(WindowPercentAction):
+    def __init__(self, x=50, y=50, delay=0, post_delay=0.0):
+        super().__init__(x=x, y=y, delay=delay, post_delay=post_delay)
 
     def execute(self, context=None):
-        window_title = context.window_title if context else self.window_title
-        screenshot, win = self.window_handler.screenshot_window(window_title)
+        screenshot, _ = self.screenshot_window(context)
         if screenshot is None:
             return False
 
-        x = int(screenshot.width * self.x / 100)
-        y = int(screenshot.height * self.y / 100)
+        x, y = self.resolve_screenshot_point(screenshot)
         # Extract the color at the center of the screenshot
         color = screenshot.getpixel((x, y))
         

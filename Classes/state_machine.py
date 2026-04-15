@@ -9,12 +9,17 @@ class StateMachine:
     Optional preconditions can verify screen state before an action runs. A
     precondition can be another Action-like object, a callable that accepts the
     current Context, or a simple boolean. Failed preconditions transition to
-    `fallback_state` when provided, otherwise the normal failure target.
+    `fallback_state` when provided, otherwise the normal failure target. After
+    repeated precondition failures for the same state, global recovery clears
+    modal UI, toggles city/map, then restarts the client when an unknown state
+    persists and an explicit restart hook or client path is configured.
     """
 
     def __init__(self):
         self.states = {}
         self.current_state = None
+        self.precondition_failures = {}
+        self.precondition_recovery_threshold = 3
 
     def add_state(
         self,
@@ -55,10 +60,19 @@ class StateMachine:
         ) = self.states[self.current_state]
 
         if precondition and not self._precondition_passes(precondition, context):
+            failure_count = self.precondition_failures.get(self.current_state, 0) + 1
+            self.precondition_failures[self.current_state] = failure_count
+
+            if failure_count >= self.precondition_recovery_threshold:
+                self.precondition_failures[self.current_state] = 0
+                self.global_recovery(context)
+                return False
+
             next_state = fallback_state or next_state_on_failure
             self.current_state = next_state() if callable(next_state) else next_state
             return False
 
+        self.precondition_failures[self.current_state] = 0
         result = state.perform(context)
 
         next_state = next_state_on_success if result else next_state_on_failure
@@ -72,3 +86,88 @@ class StateMachine:
         if callable(precondition):
             return bool(precondition(context))
         return bool(precondition)
+
+    @staticmethod
+    def _emit_recovery_state(context, state_text):
+        if context:
+            context.emit_state(state_text)
+
+    @staticmethod
+    def _is_known_state(state, GameState):
+        return state in {GameState.CITY, GameState.MAP}
+
+    def _recovery_close_menus(self, monitor, controller, context, GameState):
+        print("Recovery tier 1: close menu/blockers.")
+        self._emit_recovery_state(context, "Recovery tier 1\nclose menu")
+
+        for _ in range(3):
+            monitor.clear_blockers()
+            state = monitor.current_state()
+            if self._is_known_state(state, GameState):
+                print(f"Recovery tier 1 found state: {state.value}")
+                return True
+            if not controller.key_press("escape", hold_seconds=0.1, context=context):
+                return False
+            if not controller.wait(0.4, context=context):
+                return False
+        return False
+
+    def _recovery_toggle_view(self, monitor, controller, context, GameState):
+        print("Recovery tier 2: toggle city/map view.")
+        self._emit_recovery_state(context, "Recovery tier 2\ntoggle view")
+
+        for _ in range(4):
+            monitor.clear_blockers()
+            state = monitor.current_state()
+            if self._is_known_state(state, GameState):
+                print(f"Recovery tier 2 found state: {state.value}")
+                return True
+            if not controller.key_press("space", hold_seconds=0.1, context=context):
+                return False
+            if not controller.wait(0.8, context=context):
+                return False
+        return False
+
+    def _recovery_restart_game(self, monitor, controller, context, GameState):
+        state = monitor.current_state()
+        if state != GameState.UNKNOWN:
+            print(f"StateMachine global recovery ended without confirming a known state: {state.value}")
+            return False
+
+        print("Recovery tier 3: restart client.")
+        self._emit_recovery_state(context, "Recovery tier 3\nrestart client")
+        if not monitor.restart_client():
+            return False
+
+        for _ in range(10):
+            state = monitor.current_state()
+            if self._is_known_state(state, GameState):
+                print(f"Recovery tier 3 found state: {state.value}")
+                return True
+            if not controller.wait(1, context=context):
+                return False
+
+        print(f"StateMachine global recovery ended without confirming a known state: {state.value}")
+        return False
+
+    def global_recovery(self, context=None):
+        """Tiered recovery: close menus, toggle view, then restart if unknown."""
+        from input_controller import InputController
+        from state_monitor import GameState, GameStateMonitor
+        from window_handler import WindowHandler
+
+        monitor = GameStateMonitor(context=context)
+        controller = InputController(context=context)
+        window_title = context.window_title if context and getattr(context, "window_title", None) else "Rise of Kingdoms"
+
+        print("StateMachine global recovery started.")
+        self._emit_recovery_state(context, "Global recovery\nclearing UI")
+
+        WindowHandler().activate_window(window_title)
+        monitor.save_diagnostic_screenshot(f"recovery_{self.current_state or 'unknown'}")
+
+        return (
+            self._recovery_close_menus(monitor, controller, context, GameState)
+            or self._recovery_toggle_view(monitor, controller, context, GameState)
+            or self._recovery_restart_game(monitor, controller, context, GameState)
+        )
