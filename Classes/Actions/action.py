@@ -1,5 +1,9 @@
 from abc import ABC, abstractmethod
-import time
+
+from input_controller import DelayPolicy, InputController
+
+
+DEFAULT_DELAY_POLICY = DelayPolicy()
 
 
 class Action(ABC):
@@ -45,9 +49,13 @@ class Action(ABC):
     def perform(self, context=None):
         if context:
             context.emit_state(self.status_text)
-        time.sleep(getattr(self, "delay", 0))
+        if not DEFAULT_DELAY_POLICY.wait(getattr(self, "delay", 0), context):
+            return False
+        if not InputController.is_allowed(context):
+            return False
         result = self.execute(context) if context else self.execute()
-        time.sleep(getattr(self, "post_delay", 0))
+        if not DEFAULT_DELAY_POLICY.wait(getattr(self, "post_delay", 0), context):
+            return False
         return result
 
     @abstractmethod

@@ -5,10 +5,10 @@ import os
 from dotenv import load_dotenv
 from Actions.manual_click_action import ManualClickAction
 from Actions.manual_move_action import ManualMoveAction
-import time
 from termcolor import colored
 import csv 
 from Actions.check_color_action import CheckColorAction
+from input_controller import DelayPolicy
 
 class ChatGPTAction(Action):
     def __init__(self,midterm=False, filepath="string.txt", delay=0, post_delay=0):
@@ -39,7 +39,8 @@ class ChatGPTAction(Action):
             
             with open('roklyceum.csv', mode='a', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
-                time.sleep(.5)
+                if not DelayPolicy().wait(.5, context):
+                    return
                 if context:
                     if CheckColorAction(40,48).execute(context):
                         writer.writerow([context.Q, context.A])

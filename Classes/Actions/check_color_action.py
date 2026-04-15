@@ -1,4 +1,3 @@
-import time
 from Actions.action import Action
 from window_handler import WindowHandler
 from colorsys import rgb_to_hsv
@@ -21,9 +20,6 @@ class CheckColorAction(Action):
 
         x = int(screenshot.width * self.x / 100)
         y = int(screenshot.height * self.y / 100)
-        screenshot.save("idk.png")
-        print("x ", x, " y ", y)
-
         # Extract the color at the center of the screenshot
         color = screenshot.getpixel((x, y))
         

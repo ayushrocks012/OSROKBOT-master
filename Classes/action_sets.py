@@ -19,6 +19,8 @@ from helpers import Helpers
 
 # Transition convention used throughout this file:
 # machine.add_state("state", Action(), "success_state", "failure_state")
+# Optional preconditions verify the expected screen before the action runs;
+# use fallback_state to recover when the UI is not in the required view.
 # If the failure target is omitted, StateMachine retries the same state.
 # Each workflow below includes flow comments describing how success and failure
 # transitions recover, retry, or move the bot forward.
@@ -30,6 +32,10 @@ class ActionSets:
     
     def create_machine(self):
         return StateMachine()
+
+    @staticmethod
+    def map_view_precondition():
+        return FindImageAction('Media/ficon.png', delay=0, search_region=(0, 0, 1, 1))
     
     def scout_explore(self):
         # Flow: open scout reports, claim unexplored targets, then send scouts
@@ -231,7 +237,17 @@ class ActionSets:
         machine = self.create_machine()
         #machine.add_state("0", PressKeyAction('space',post_delay=4), "1")
         #machine.add_state("1", PressKeyAction('space'), "2")
-        machine.add_state("2",FindGemAction(),"2","2")
+        # If the map/search icon is missing, press space to recover map view
+        # before scanning for world objects again.
+        machine.add_state("switchmap", PressKeyAction('space', post_delay=1), "2", "switchmap")
+        machine.add_state(
+            "2",
+            FindGemAction(),
+            "2",
+            "2",
+            precondition=self.map_view_precondition(),
+            fallback_state="switchmap",
+        )
 
         machine.set_initial_state("2")
         return machine
@@ -242,7 +258,16 @@ class ActionSets:
         machine = self.create_machine()
         machine.add_state("0", PressKeyAction('space',post_delay=4), "1")
         machine.add_state("1", PressKeyAction('space'), "2")
-        machine.add_state("2",FindMarauderAction(),"3","0")
+        # World-object scanning requires map view; if that marker is missing,
+        # fall back to the existing view-reset sequence instead of scanning stale UI.
+        machine.add_state(
+            "2",
+            FindMarauderAction(),
+            "3",
+            "0",
+            precondition=self.map_view_precondition(),
+            fallback_state="0",
+        )
         machine.add_state("3", FindAndClickImageAction('Media/attackaction.png',delay=.3), "4","0")
         machine.add_state("4", FindAndClickImageAction('Media/newtroopaction.png',delay=.3), "5","5f")
         machine.add_state("5f", ManualClickAction(96,80), "6f")

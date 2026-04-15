@@ -3,13 +3,14 @@ from image_finder import ImageFinder
 from window_handler import WindowHandler
 
 class FindAndClickImageAction(Action):
-    def __init__(self, image: str,offset_x= 0, offset_y= 0, delay=0.2, post_delay=0, max_matches=0 ):
+    def __init__(self, image: str,offset_x= 0, offset_y= 0, delay=0.2, post_delay=0, max_matches=0, search_region=None ):
         super().__init__(delay=delay, post_delay=post_delay)
         self.image_finder = ImageFinder()
         self.image = image
         self.max_matches = max_matches
         self.offset_x = offset_x
         self.offset_y = offset_y
+        self.search_region = search_region
         self.window_handler = WindowHandler()
         self.window_title = 'Rise of Kingdoms'
 
@@ -20,7 +21,15 @@ class FindAndClickImageAction(Action):
         if screenshot is None or win is None:
             return False
         
-        found, x, y, pick_len = self.image_finder.find_image_coordinates(self.image, screenshot, win, self.offset_x, self.offset_y, self.max_matches)
+        found, x, y, pick_len = self.image_finder.find_image_coordinates(
+            self.image,
+            screenshot,
+            win,
+            self.offset_x,
+            self.offset_y,
+            self.max_matches,
+            search_region=self.search_region,
+        )
         
         if found:
             if (pick_len >= self.max_matches and self.max_matches != 0):
@@ -29,8 +38,8 @@ class FindAndClickImageAction(Action):
                 return True
                 
             if x is not None and y is not None:
-                controller = InputController()
-                return controller.click(x, y)
+                controller = InputController(context=context)
+                return controller.click(x, y, window_rect=win)
             return False
                 
         else:

@@ -18,7 +18,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from window_handler import WindowHandler
-from PIL import Image
 import cv2
 import numpy as np
 import time

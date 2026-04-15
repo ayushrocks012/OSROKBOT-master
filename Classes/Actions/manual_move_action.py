@@ -1,7 +1,8 @@
-import time
 from Actions.action import Action
 from window_handler import WindowHandler
-import pyautogui
+from input_controller import InputController
+
+
 class ManualMoveAction(Action):
     def __init__(self,x=50,y=50, delay=0, remember_position=False, post_delay=0.0):
         super().__init__(delay=delay, post_delay=post_delay)
@@ -14,22 +15,15 @@ class ManualMoveAction(Action):
 
 
     def execute(self, context=None):
-        time.sleep(self.delay)
-
-        try:
-            prev_active_window = pyautogui.getActiveWindow()
-        except Exception:
-            prev_active_window = None
-        prev_mouse_x, prev_mouse_y = pyautogui.position()
         window_title = context.window_title if context else self.window_title
         window = self.window_handler.get_window(window_title)
         if not window:
             return False
         click_x = int(window.left + window.width * self.x / 100)
         click_y = int(window.top + window.height * self.y / 100)
-        pyautogui.moveTo(click_x, click_y)
-        if prev_active_window:
-            prev_active_window.activate()
-        if self.remember_position:
-            pyautogui.moveTo(prev_mouse_x, prev_mouse_y)
-        return True
+        return InputController(context=context).move_to(
+            click_x,
+            click_y,
+            window_rect=window,
+            remember_position=self.remember_position,
+        )

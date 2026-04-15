@@ -19,8 +19,6 @@ class SendEmailAction(Action):
         self.smtp_port = smtp_port
 
     def execute(self, context=None):
-        
-        time.sleep(self.delay)
         msg = MIMEMultipart()
         msg['From'] = self.from_email
         msg['To'] = os.getenv('EMAIL')
