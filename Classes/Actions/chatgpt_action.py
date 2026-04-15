@@ -7,20 +7,16 @@ from Actions.manual_click_action import ManualClickAction
 from Actions.manual_move_action import ManualMoveAction
 import time
 from termcolor import colored
-import os
 import csv 
-from global_vars import GlobalVars
 from Actions.check_color_action import CheckColorAction
 
 class ChatGPTAction(Action):
     def __init__(self,midterm=False, filepath="string.txt", delay=0, post_delay=0):
-        
+        super().__init__(delay=delay, post_delay=post_delay)
         load_dotenv()
         openai.api_key = os.getenv('OPENAI_KEY')
         self.message = ""
         self.midterm = midterm
-        self.delay = delay
-        self.post_delay = post_delay
         self.messages = [{"role": "system", "content": "You are a quizz assistant in the game Rise of Kingdoms."}]
         self.functions = [
         {
@@ -39,24 +35,29 @@ class ChatGPTAction(Action):
             },
         }
         ]
-    def checkCorrect(self):
+    def checkCorrect(self, context=None):
             
             with open('roklyceum.csv', mode='a', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
                 time.sleep(.5)
-                if CheckColorAction(40,48).execute():
-                    writer.writerow([GlobalVars().Q, GlobalVars().A])
-                elif CheckColorAction(60,50).execute():
-                    writer.writerow([GlobalVars().Q, GlobalVars().B])
-                elif CheckColorAction(40,58).execute():
-                    writer.writerow([GlobalVars().Q, GlobalVars().C])
-                elif CheckColorAction(60,58).execute():
-                    writer.writerow([GlobalVars().Q, GlobalVars().D])
+                if context:
+                    if CheckColorAction(40,48).execute(context):
+                        writer.writerow([context.Q, context.A])
+                    elif CheckColorAction(60,50).execute(context):
+                        writer.writerow([context.Q, context.B])
+                    elif CheckColorAction(40,58).execute(context):
+                        writer.writerow([context.Q, context.C])
+                    elif CheckColorAction(60,58).execute(context):
+                        writer.writerow([context.Q, context.D])
+                else:
+                    print("Warning: Context missing in checkCorrect")
 
-
-    def execute(self):
+    def execute(self, context=None):
         #os.system('cls')
-        self.message = "Question:" +  GlobalVars().Q + "\n" + "A:" + GlobalVars().A + "\n" + "B:" + GlobalVars().B + "\n" + "C:" + GlobalVars().C + "\n" + "D:" + GlobalVars().D
+        if context:
+            self.message = "Question:" +  (context.Q or "") + "\n" + "A:" + (context.A or "") + "\n" + "B:" + (context.B or "") + "\n" + "C:" + (context.C or "") + "\n" + "D:" + (context.D or "")
+        else:
+            self.message = "Question:\nA:\nB:\nC:\nD:"
         print("\n\n")
         self.messages.append({"role": "user", "content": (self.message)},)
         chat = openai.chat.completions.create(
@@ -80,29 +81,29 @@ class ChatGPTAction(Action):
         # Switch case for reply A, B, C, D, or E
         if not self.midterm:
             if function_response == "A":
-                ManualClickAction(40,48).execute()
+                ManualClickAction(40,48).perform(context)
             elif function_response == "B":
-                ManualClickAction(60,50).execute()
+                ManualClickAction(60,50).perform(context)
             elif function_response == "C":
-                ManualClickAction(40,58).execute()
+                ManualClickAction(40,58).perform(context)
             elif function_response == "D":
-                ManualClickAction(60,58).execute()
+                ManualClickAction(60,58).perform(context)
             else:
                 print("")
-            self.checkCorrect()
+            self.checkCorrect(context)
             
         else:
             if function_response == "A":
-                ManualMoveAction(37,55).execute()
+                ManualMoveAction(37,55).perform(context)
                 print("------A---")
             elif function_response == "B":
-                ManualMoveAction(60,55).execute()
+                ManualMoveAction(60,55).perform(context)
                 print("------B---")
             elif function_response == "C":
-                ManualMoveAction(37,63).execute()
+                ManualMoveAction(37,63).perform(context)
                 print("------C---")
             elif function_response == "D":
-                ManualMoveAction(60,63).execute()
+                ManualMoveAction(60,63).perform(context)
                 print("------D---")
                     
 

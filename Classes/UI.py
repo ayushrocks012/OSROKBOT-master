@@ -6,7 +6,7 @@ from OS_ROKBOT import OSROKBOT
 import pygetwindow as gw
 import time
 from window_handler import WindowHandler
-from global_vars import GLOBAL_VARS
+from context import Context
 import threading
 
 class UI(QtWidgets.QWidget):
@@ -267,7 +267,6 @@ class UI(QtWidgets.QWidget):
         self.setWindowOpacity(0.75)
         self.show()
         WindowHandler().activate_window("OSROKBOT")
-        GLOBAL_VARS.UI = self
 
     def currentState(self, state_text):
         self.current_state_label.setText(state_text)
@@ -323,9 +322,16 @@ class UI(QtWidgets.QWidget):
                 actions_groups = [action_group]
                 if self.check_captcha_checkbutton.isChecked():
                     actions_groups.append(self.action_sets.email_captcha())
-                self.OS_ROKBOT.start(actions_groups)
-                self.status_label.setText(' Running')
-                self.status_label.setStyleSheet("color: green;font-weight: bold;")
+
+                context = Context(
+                    ui_instance=self,
+                    bot=self.OS_ROKBOT,
+                    signal_emitter=self.OS_ROKBOT.signal_emitter,
+                    window_title=self.target_title,
+                )
+                if self.OS_ROKBOT.start(actions_groups, context):
+                    self.status_label.setText(' Running')
+                    self.status_label.setStyleSheet("color: green;font-weight: bold;")
             self.play_button.hide()
             self.stop_button.show()
             self.pause_button.show()

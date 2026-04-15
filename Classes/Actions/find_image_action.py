@@ -1,20 +1,22 @@
 from Actions.action import Action
 from image_finder import ImageFinder
 from window_handler import WindowHandler
-import time
+
 
 class FindImageAction(Action):
     def __init__(self, image: str, count: int = 1, delay=0.1, post_delay=0):
+        super().__init__(delay=delay, post_delay=post_delay)
         self.image_finder = ImageFinder()
         self.image = image
         self.window_handler = WindowHandler()
         self.window_title = 'Rise of Kingdoms'
-        self.delay = delay
-        self.post_delay = post_delay
         self.count = count  # Number of times the image must be found
 
-    def execute(self):
-        screenshot, win = self.window_handler.screenshot_window(self.window_title)
+    def execute(self, context=None):
+        window_title = context.window_title if context else self.window_title
+        screenshot, win = self.window_handler.screenshot_window(window_title)
+        if screenshot is None:
+            return False
         scaling_factor, matches, num_matches, _, _, _ = self.image_finder._match_image(self.image, screenshot)
 
         # Check if the number of matches is greater or equal to the specified count

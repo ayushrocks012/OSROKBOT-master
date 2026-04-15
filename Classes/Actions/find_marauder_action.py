@@ -1,7 +1,4 @@
 from Actions.action import Action
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from Actions.action import Action
 from window_handler import WindowHandler
 from Actions.find_and_click_image_action import FindAndClickImageAction
 import pyautogui 
@@ -9,12 +6,12 @@ import time
 
 class FindMarauderAction(Action):
     def __init__(self, delay=0.1, post_delay=0):
-        self.delay = delay
-        self.post_delay =post_delay
+        super().__init__(delay=delay, post_delay=post_delay)
 
-    def execute(self):
+    def execute(self, context=None):
         time.sleep(self.delay)
-        WindowHandler().activate_window()
+        window_title = context.window_title if context else "Rise of Kingdoms"
+        WindowHandler().activate_window(window_title)
         for duration in range(1, 40):  # Loop for 1 to 5 seconds
             if duration % 4 == 1:  # Arrow left
                 key = 'left'
@@ -31,10 +28,10 @@ class FindMarauderAction(Action):
                 pyautogui.keyDown(key)
                 time.sleep(0.4)
                 pyautogui.keyUp(key)
-                if (FindAndClickImageAction('Media/marauder.png').perform()):
+                if (FindAndClickImageAction('Media/marauder.png').perform(context)):
                     return True
             
             print(duration)
-            
+        return False
 
         

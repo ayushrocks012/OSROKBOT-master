@@ -34,5 +34,6 @@ class WindowHandler:
                     win.restore()
                 win.activate()
         except Exception as e:
-            print(f"Failed to activate window '{title}': {e}")
+            if "Error code from Windows: 0" not in str(e):
+                print(f"Failed to activate window '{title}': {e}")
         return 

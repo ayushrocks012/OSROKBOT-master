@@ -1,17 +1,16 @@
 from Actions.action import Action
 import pytesseract
-import time
-from PIL import Image, ImageFilter, ImageEnhance,ImageOps
-import cv2
-import numpy as np
+from PIL import Image, ImageOps
 from dotenv import load_dotenv
 import os
-from global_vars import GlobalVars
 
 # Load the .env file
 load_dotenv()
-pytesseract.pytesseract.tesseract_cmd = os.getenv('TESSERACT_PATH')
-ANTIALIAS_METHOD = getattr(Image, os.getenv('ANTIALIAS_METHOD'))
+tesseract_path = os.getenv('TESSERACT_PATH')
+if tesseract_path:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_path
+DEFAULT_ANTIALIAS_METHOD = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+ANTIALIAS_METHOD = getattr(Image, os.getenv('ANTIALIAS_METHOD') or "LANCZOS", DEFAULT_ANTIALIAS_METHOD)
 
 
 
@@ -19,12 +18,10 @@ ANTIALIAS_METHOD = getattr(Image, os.getenv('ANTIALIAS_METHOD'))
 
 class ExtractTextAction(Action):
     def __init__(self, image_path="test.png", description="", aggregate=False, delay=0, post_delay =0):
-        
+        super().__init__(delay=delay, post_delay=post_delay)
         self.image_path = image_path
         self.description = description
         self.aggregate = aggregate
-        self.delay = delay
-        self.post_delay = post_delay
 
     def preprocess_image(self, image_path):
         # Open the image file
@@ -51,7 +48,7 @@ class ExtractTextAction(Action):
         
         return img
 
-    def execute(self):
+    def execute(self, context=None):
         
         img = self.preprocess_image(self.image_path)
         try:
@@ -71,16 +68,10 @@ class ExtractTextAction(Action):
         text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6 -c tessedit_char_blacklist=|')
         text = text.replace("\n", "")
         print(text)
-        if(self.description == "Q"):
-            GlobalVars().Q=text.replace(",","").replace("\"","")
-        if(self.description == "A"):
-            GlobalVars().A=text.replace(",","").replace("\"","")
-        if(self.description == "B"):
-            GlobalVars().B=text.replace(",","").replace("\"","")
-        if(self.description == "C"):
-            GlobalVars().C=text.replace(",","").replace("\"","")
-        if(self.description == "D"):
-            GlobalVars().D=text.replace(",","").replace("\"","")
+        if context:
+            context.set_extracted_text(self.description, text)
+        else:
+            print("Warning: No context provided to ExtractTextAction.")
         
 
         

@@ -205,7 +205,7 @@ class ActionSets:
         machine = self.create_machine()
         #machine.add_state("0", PressKeyAction('space',post_delay=4), "1")
         #machine.add_state("1", PressKeyAction('space'), "2")
-        machine.add_state("2",FindGemAction(),"3")
+        machine.add_state("2",FindGemAction(),"2","2")
 
         machine.set_initial_state("2")
         return machine
@@ -214,7 +214,7 @@ class ActionSets:
         machine = self.create_machine()
         machine.add_state("0", PressKeyAction('space',post_delay=4), "1")
         machine.add_state("1", PressKeyAction('space'), "2")
-        machine.add_state("2",FindMarauderAction(),"3")
+        machine.add_state("2",FindMarauderAction(),"3","0")
         machine.add_state("3", FindAndClickImageAction('Media/attackaction.png',delay=.3), "4","0")
         machine.add_state("4", FindAndClickImageAction('Media/newtroopaction.png',delay=.3), "5","5f")
         machine.add_state("5f", ManualClickAction(96,80), "6f")

@@ -29,9 +29,17 @@ class ImageFinder:
         target_image = cv2.imread(target_image_path)
 
         scaling_factor = self._get_scaling_factor(screenshot_cv)
+        if target_image is None:
+            print(colored(f"Template image not found: {target_image_path}", "red"))
+            return scaling_factor, [], 0, 0, None, screenshot_cv
+
         resized_img = cv2.resize(target_image, None, fx=scaling_factor[0], fy=scaling_factor[1], interpolation=cv2.INTER_AREA)
 
-        result = cv2.matchTemplate(screenshot_cv, resized_img, cv2.TM_CCOEFF_NORMED)
+        try:
+            result = cv2.matchTemplate(screenshot_cv, resized_img, cv2.TM_CCOEFF_NORMED)
+        except cv2.error as exc:
+            print(colored(f"Unable to match {target_image_path}: {exc}", "red"))
+            return scaling_factor, [], 0, 0, target_image, screenshot_cv
 
         # find all matches above threshold
         locations = np.where(result >= self.threshold)

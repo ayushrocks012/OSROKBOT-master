@@ -1,40 +1,46 @@
 from abc import ABC, abstractmethod
-from window_handler import WindowHandler
-import global_vars
 import time
 
+
 class Action(ABC):
-    def __init__(self, skip_check_first_time: bool):
+    def __init__(self, skip_check_first_time: bool = False, delay=0, post_delay=0):
         self.skip_check_first_time = skip_check_first_time
         self.first_run = True
         self.performance_multiplier = 1
+        self.delay = delay
+        self.post_delay = post_delay
 
+    @property
+    def status_text(self):
+        details = ""
+        if hasattr(self, "image") and self.image != "Media/captchachest.png":
+            details = str(self.image)
+        elif hasattr(self, "key"):
+            details = str(self.key)
 
-    def perform(self):
-        
-        tempString=""
-        try:  
-            if self.image != "Media/captchachest.png":
-                tempString = self.__class__.__name__+ "\n"
-                tempString+=str(self.image)+ "\n"
-                tempString+=str(self.delay)+ "s delay\n"
-                tempString+=str(self.post_delay)+ "s post_delay\n"
-        except AttributeError:
-            try:  
-                tempString = self.__class__.__name__+ "\n"
-                tempString+=str(self.key)+ "\n"
-                tempString+=str(self.delay)+ "s delay\n"
-                tempString+=str(self.post_delay)+ "s post_delay\n"
-            except AttributeError:
-                tempString = self.__class__.__name__+ "\n"
-                tempString+="\n"
-                tempString+= str(self.delay)+ "s delay\n"
-                tempString+=str(self.post_delay)+ "s post_delay\n"
+        lines = [
+            self.__class__.__name__,
+            details,
+            f"{getattr(self, 'delay', 0)}s delay",
+            f"{getattr(self, 'post_delay', 0)}s post_delay",
+        ]
+        status = "\n".join(lines)
+        return (
+            status.replace("action", "")
+            .replace("FindAnd", "")
+            .replace(".png", "")
+            .replace("Media/", "")
+            .replace("Action", "")
+        )
 
-        
-        if (tempString != ""):
-            global_vars.GlobalVars().UI.OS_ROKBOT.signal_emitter.state_changed.emit(tempString.replace("action","").replace("FindAnd","").replace(".png","").replace("Media/","").replace("Action",""))     
-        time.sleep(self.delay)
-        result = self.execute()
-        time.sleep(self.post_delay)
+    def perform(self, context=None):
+        if context:
+            context.emit_state(self.status_text)
+        time.sleep(getattr(self, "delay", 0))
+        result = self.execute(context) if context else self.execute()
+        time.sleep(getattr(self, "post_delay", 0))
         return result
+
+    @abstractmethod
+    def execute(self, context=None):
+        raise NotImplementedError

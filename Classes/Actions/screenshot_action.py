@@ -4,7 +4,7 @@ import os
 
 class ScreenshotAction(Action):
     def __init__(self, x_begin, x_end, y_begin, y_end, output_path="test.png", delay=0, post_delay =0):
-        
+        super().__init__(delay=delay, post_delay=post_delay)
         self.x_begin = x_begin
         self.x_end = x_end
         self.y_begin = y_begin
@@ -12,12 +12,13 @@ class ScreenshotAction(Action):
         self.output_path = output_path
         self.window_title = "Rise of Kingdoms"
         self.window_handler = WindowHandler()
-        self.delay = delay
-        self.post_delay = post_delay
 
-    def execute(self):
+    def execute(self, context=None):
         #print exact time of execution
-        screenshot, win = self.window_handler.screenshot_window(self.window_title)
+        window_title = context.window_title if context else self.window_title
+        screenshot, win = self.window_handler.screenshot_window(window_title)
+        if screenshot is None:
+            return False
         
         # Crop screenshot
         width, height = screenshot.size

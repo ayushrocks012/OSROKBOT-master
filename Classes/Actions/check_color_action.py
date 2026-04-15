@@ -1,22 +1,23 @@
 import time
 from Actions.action import Action
 from window_handler import WindowHandler
-import time
 from colorsys import rgb_to_hsv
 
 class CheckColorAction(Action):
     def __init__(self,x=50,y=50, delay=0, post_delay=0.0):
+        super().__init__(delay=delay, post_delay=post_delay)
         self.window_handler = WindowHandler()
-        self.delay = delay
         self.window_title = 'Rise of Kingdoms'
         self.x = x
         self.y = y
-        self.post_delay = post_delay
 
 
 
-    def execute(self):
-        screenshot, win = self.window_handler.screenshot_window(self.window_title)
+    def execute(self, context=None):
+        window_title = context.window_title if context else self.window_title
+        screenshot, win = self.window_handler.screenshot_window(window_title)
+        if screenshot is None:
+            return False
 
         x = int(screenshot.width * self.x / 100)
         y = int(screenshot.height * self.y / 100)

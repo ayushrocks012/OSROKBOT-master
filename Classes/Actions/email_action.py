@@ -2,13 +2,13 @@ from Actions.action import Action
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from Actions.action import Action
 import time
 from dotenv import load_dotenv
 import os
 
 class SendEmailAction(Action):
     def __init__(self,delay=0.1, subject="Captcha detected", body=" ", to_email="", from_email="rokemailsendertest@gmail.com", from_password="prtnezkgfevwihok", smtp_server='smtp.gmail.com', smtp_port=587, post_delay =0):
+        super().__init__(delay=delay, post_delay=post_delay)
         load_dotenv()
         self.subject = subject
         self.body = body
@@ -17,10 +17,8 @@ class SendEmailAction(Action):
         self.from_password = from_password
         self.smtp_server = smtp_server
         self.smtp_port = smtp_port
-        self.delay = delay
-        self.post_delay = post_delay
 
-    def execute(self):
+    def execute(self, context=None):
         
         time.sleep(self.delay)
         msg = MIMEMultipart()
