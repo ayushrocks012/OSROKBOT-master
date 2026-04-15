@@ -90,10 +90,12 @@ class AIRecoveryExecutor:
             print(colored(f"Object detection skipped: {exc}", "yellow"))
             return []
 
-    def _memory_hint(self, signature):
-        entry = self.memory.find(signature)
+    def _memory_hint(self, signature_parts):
+        entry = self.memory.find(signature_parts)
         if not entry:
             return None
+        if hasattr(self, "_emit") and self._emit:
+            self._emit("Using Memory...")
         point = entry.get("normalized_point")
         if not isinstance(point, dict):
             return None
@@ -113,6 +115,8 @@ class AIRecoveryExecutor:
             print(colored(f"AI recovery unavailable: {exc}", "yellow"))
             return None
 
+        if context:
+            context.emit_state("AI Recovering...")
         result = AIFallback().analyze_failure(
             context,
             screenshot_path,
@@ -158,15 +162,18 @@ class AIRecoveryExecutor:
             return False
 
         detections = self._detections(screenshot_path)
+        visible_labels = RecoveryMemory.visible_label_values(detections)
         DetectionDataset().export_stub(
             screenshot_path,
             state_name,
             action_image=self._action_image(action),
             detections=detections,
         )
-        signature = RecoveryMemory.build_signature(state_name, action, screenshot_path, detections)
+        signature_parts = RecoveryMemory.signature_parts(state_name, action, screenshot_path, detections)
+        signature = RecoveryMemory.stable_signature(signature_parts)
 
-        hint = self._memory_hint(signature)
+        self._emit = context.emit_state if context else None
+        hint = self._memory_hint(signature_parts)
         source = "memory"
         if not hint:
             hint = self._ai_hint(context, screenshot_path)
@@ -180,8 +187,11 @@ class AIRecoveryExecutor:
 
         context.extracted["pending_ai_recovery"] = {
             "signature": signature,
+            "screenshot_hash": signature_parts["screenshot_hash"],
             "state_name": state_name,
+            "action_class": action.__class__.__name__,
             "action_image": self._action_image(action),
+            "visible_labels": visible_labels,
             "label": hint["label"],
             "normalized_point": {"x": hint["x"], "y": hint["y"]},
             "confidence": hint["confidence"],
@@ -206,6 +216,7 @@ class AIRecoveryExecutor:
 
         memory = RecoveryMemory.load()
         if recovered:
+            context.emit_state("Learning...")
             memory.record_success(
                 pending["signature"],
                 pending["state_name"],
@@ -214,6 +225,9 @@ class AIRecoveryExecutor:
                 pending["normalized_point"],
                 pending["confidence"],
                 source=pending.get("source", "ai"),
+                screenshot_hash=pending.get("screenshot_hash"),
+                action_class=pending.get("action_class", ""),
+                visible_labels=pending.get("visible_labels", []),
             )
         else:
             memory.record_failure(pending["signature"])

@@ -1,10 +1,10 @@
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
 from PIL import Image
 from termcolor import colored
+
+from model_manager import ModelManager
 
 
 @dataclass
@@ -50,11 +50,13 @@ class YOLODetector:
                 class_id = int(box.cls[0])
                 confidence = float(box.conf[0])
                 x1, y1, x2, y2 = xyxy
+                center_x = (x1 + x2) / 2.0
+                center_y = (y1 + y2) / 2.0
                 detections.append(
                     Detection(
                         label=str(names.get(class_id, class_id)),
-                        x=max(0.0, min(1.0, x1 / image_width)),
-                        y=max(0.0, min(1.0, y1 / image_height)),
+                        x=max(0.0, min(1.0, center_x / image_width)),
+                        y=max(0.0, min(1.0, center_y / image_height)),
                         width=max(0.0, min(1.0, (x2 - x1) / image_width)),
                         height=max(0.0, min(1.0, (y2 - y1) / image_height)),
                         confidence=confidence,
@@ -65,12 +67,11 @@ class YOLODetector:
 
 
 def create_detector():
-    load_dotenv()
-    weights_path = os.getenv("ROK_YOLO_WEIGHTS")
+    weights_path = ModelManager().ensure_yolo_weights()
     if not weights_path:
         return NoOpDetector()
 
-    resolved = Path(os.path.expandvars(weights_path))
+    resolved = Path(weights_path)
     if not resolved.is_file():
         print(colored(f"YOLO detector disabled: weights not found: {resolved}", "yellow"))
         return NoOpDetector()

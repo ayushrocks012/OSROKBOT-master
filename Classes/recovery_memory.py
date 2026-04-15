@@ -11,8 +11,9 @@ DEFAULT_MEMORY_PATH = PROJECT_ROOT / "data" / "recovery_memory.json"
 
 
 class RecoveryMemory:
-    def __init__(self, path=DEFAULT_MEMORY_PATH):
+    def __init__(self, path=DEFAULT_MEMORY_PATH, hash_tolerance=4):
         self.path = Path(path)
+        self.hash_tolerance = int(hash_tolerance)
         self.entries = {}
 
     @classmethod
@@ -63,23 +64,79 @@ class RecoveryMemory:
         return sorted(label for label in labels if label)
 
     @classmethod
-    def build_signature(cls, state_name, action, screenshot_path, visible_labels=None):
-        labels = ",".join(cls.visible_label_values(visible_labels))
+    def signature_parts(cls, state_name, action, screenshot_path, visible_labels=None):
+        labels = cls.visible_label_values(visible_labels)
+        return {
+            "state_name": str(state_name),
+            "action_class": action.__class__.__name__,
+            "action_image": cls.action_image(action),
+            "screenshot_hash": cls.screenshot_hash(screenshot_path),
+            "visible_labels": labels,
+        }
+
+    @staticmethod
+    def stable_signature(parts):
+        labels = ",".join(parts.get("visible_labels", []))
         return "|".join(
             [
-                str(state_name),
-                action.__class__.__name__,
-                cls.action_image(action),
-                cls.screenshot_hash(screenshot_path),
+                parts.get("state_name", ""),
+                parts.get("action_class", ""),
+                parts.get("action_image", ""),
                 labels,
             ]
         )
 
-    def find(self, signature):
-        entry = self.entries.get(signature)
+    @classmethod
+    def build_signature(cls, state_name, action, screenshot_path, visible_labels=None):
+        return cls.stable_signature(cls.signature_parts(state_name, action, screenshot_path, visible_labels))
+
+    @staticmethod
+    def hamming_distance(left_hash, right_hash):
+        if not left_hash or not right_hash or left_hash == "no_screenshot" or right_hash == "no_screenshot":
+            return 999
+        try:
+            return (int(left_hash, 16) ^ int(right_hash, 16)).bit_count()
+        except Exception:
+            return 999
+
+    def _compatible_entries(self, stable_signature, screenshot_hash):
+        for entry in self.entries.values():
+            if entry.get("signature") != stable_signature:
+                continue
+            if entry.get("failure_count", 0) > entry.get("success_count", 0) + 2:
+                continue
+            distance = self.hamming_distance(screenshot_hash, entry.get("screenshot_hash"))
+            if distance <= self.hash_tolerance:
+                yield distance, entry
+
+    def find(self, signature, screenshot_hash=None):
+        if screenshot_hash is None and isinstance(signature, dict):
+            parts = signature
+            stable_signature = self.stable_signature(parts)
+            screenshot_hash = parts.get("screenshot_hash")
+        elif screenshot_hash is None:
+            parts = str(signature).split("|")
+            if len(parts) >= 5:
+                stable_signature = "|".join([parts[0], parts[1], parts[2], parts[4]])
+                screenshot_hash = parts[3]
+            else:
+                stable_signature = str(signature)
+        else:
+            stable_signature = str(signature)
+
+        candidates = sorted(
+            self._compatible_entries(stable_signature, screenshot_hash),
+            key=lambda item: (item[0], -int(item[1].get("success_count", 0))),
+        )
+        if candidates:
+            return candidates[0][1]
+
+        entry = self.entries.get(stable_signature)
         if not entry:
             return None
         if entry.get("failure_count", 0) > entry.get("success_count", 0) + 2:
+            return None
+        if screenshot_hash and self.hamming_distance(screenshot_hash, entry.get("screenshot_hash")) > self.hash_tolerance:
             return None
         return entry
 
@@ -100,12 +157,19 @@ class RecoveryMemory:
         normalized_point,
         confidence,
         source="ai",
+        screenshot_hash=None,
+        action_class="",
+        visible_labels=None,
     ):
         now = datetime.now().isoformat(timespec="seconds")
+        stable_signature = signature
         entry = self.entries.get(signature) or {
-            "signature": signature,
+            "signature": stable_signature,
             "state_name": state_name,
+            "action_class": action_class,
             "action_image": action_image,
+            "screenshot_hash": screenshot_hash or "",
+            "visible_labels": visible_labels or [],
             "label": label,
             "normalized_point": normalized_point,
             "confidence": float(confidence),
@@ -119,7 +183,13 @@ class RecoveryMemory:
         entry["normalized_point"] = normalized_point
         entry["confidence"] = float(confidence)
         entry["source"] = source
-        self.entries[signature] = entry
+        if screenshot_hash:
+            entry["screenshot_hash"] = screenshot_hash
+        if action_class:
+            entry["action_class"] = action_class
+        if visible_labels is not None:
+            entry["visible_labels"] = visible_labels
+        self.entries[stable_signature] = entry
         self.save()
         print(colored(f"Recovery memory success recorded: {label}", "cyan"))
         return entry

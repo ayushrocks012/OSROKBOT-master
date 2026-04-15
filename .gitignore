@@ -1,5 +1,6 @@
 # Local secrets and runtime configuration.
 .env
+config.json
 
 # Python caches and bytecode.
 __pycache__/
@@ -13,6 +14,7 @@ testprocessed.png
 diagnostics/
 data/recovery_memory.json
 datasets/recovery/
+models/
 
 # Local editor/backup files.
 *.bak

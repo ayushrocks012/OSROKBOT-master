@@ -64,7 +64,7 @@ class OSROKBOT:
             return False
 
         print(colored("Captcha detected: pausing automation for manual review.", "red"))
-        context.emit_state("Captcha detected\nmanual action required")
+        context.emit_state("Captcha detected - paused")
         screenshot_path = self.blocker_finder.save_screenshot(screenshot, label="captcha_detected")
         if screenshot_path and hasattr(context, "export_state_history"):
             context.export_state_history(screenshot_path.with_suffix(".log"))

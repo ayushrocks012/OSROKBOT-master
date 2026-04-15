@@ -11,6 +11,7 @@ or clicking the game UI.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import sys
 from pathlib import Path
@@ -22,6 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 CLASSES_DIR = PROJECT_ROOT / "Classes"
 ACTION_SETS_PATH = CLASSES_DIR / "action_sets.py"
 ENV_PATH = PROJECT_ROOT / ".env"
+CONFIG_PATH = PROJECT_ROOT / "config.json"
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
 
@@ -179,11 +181,27 @@ def _read_env_values() -> dict[str, str]:
     return values
 
 
-def check_tesseract_path() -> list[str]:
+def _read_config_values() -> dict[str, str]:
     values = _read_env_values()
+    if not CONFIG_PATH.is_file():
+        return values
+    try:
+        config_values = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return values
+    if not isinstance(config_values, dict):
+        return values
+    for key, value in config_values.items():
+        if value not in {None, ""}:
+            values[str(key)] = str(value)
+    return values
+
+
+def check_tesseract_path() -> list[str]:
+    values = _read_config_values()
     tesseract_path = values.get("TESSERACT_PATH")
     if not tesseract_path:
-        return ["TESSERACT_PATH is missing from .env"]
+        return ["TESSERACT_PATH is missing from config.json or .env"]
 
     resolved = Path(os.path.expandvars(tesseract_path))
     if not resolved.is_file():
@@ -193,7 +211,7 @@ def check_tesseract_path() -> list[str]:
 
 def check_runtime_health() -> list[str]:
     failures: list[str] = []
-    values = _read_env_values()
+    values = _read_config_values()
     window_title = values.get("ROK_WINDOW_TITLE") or values.get("WINDOW_TITLE") or "Rise of Kingdoms"
 
     tesseract_failures = check_tesseract_path()
@@ -201,7 +219,7 @@ def check_runtime_health() -> list[str]:
 
     openai_key = values.get("OPENAI_KEY") or values.get("OPENAI_API_KEY")
     if not openai_key:
-        failures.append("OPENAI_KEY or OPENAI_API_KEY is missing from .env")
+        failures.append("OPENAI_KEY or OPENAI_API_KEY is missing from config.json or .env")
     else:
         try:
             from openai import OpenAI
@@ -251,7 +269,7 @@ def check_runtime_health() -> list[str]:
 
 
 def check_optional_yolo_detector() -> list[str]:
-    values = _read_env_values()
+    values = _read_config_values()
     weights_path = values.get("ROK_YOLO_WEIGHTS")
     if not weights_path:
         return []

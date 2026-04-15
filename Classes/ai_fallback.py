@@ -1,11 +1,11 @@
 import base64
 import json
-import os
 from pathlib import Path
 
-from dotenv import load_dotenv
 from openai import OpenAI
 from termcolor import colored
+
+from config_manager import ConfigManager
 
 
 DEFAULT_MODEL = "gpt-5.4-mini"
@@ -59,10 +59,10 @@ class AIFallback:
     }
 
     def __init__(self, model=DEFAULT_MODEL):
-        load_dotenv()
-        api_key = os.getenv("OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
+        config = ConfigManager()
+        api_key = config.get("OPENAI_KEY") or config.get("OPENAI_API_KEY")
         self.enabled = bool(api_key)
-        self.model = os.getenv("OPENAI_VISION_MODEL") or model
+        self.model = config.get("OPENAI_VISION_MODEL", model) or model
         self.client = OpenAI(api_key=api_key) if api_key else None
 
     @staticmethod

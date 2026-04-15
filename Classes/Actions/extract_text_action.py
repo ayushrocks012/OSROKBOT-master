@@ -1,16 +1,17 @@
 from Actions.action import Action
 import pytesseract
 from PIL import Image, ImageOps
-from dotenv import load_dotenv
-import os
+from config_manager import ConfigManager
 
-# Load the .env file
-load_dotenv()
-tesseract_path = os.getenv('TESSERACT_PATH')
-if tesseract_path:
-    pytesseract.pytesseract.tesseract_cmd = tesseract_path
 DEFAULT_ANTIALIAS_METHOD = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
-ANTIALIAS_METHOD = getattr(Image, os.getenv('ANTIALIAS_METHOD') or "LANCZOS", DEFAULT_ANTIALIAS_METHOD)
+
+
+def configure_tesseract():
+    config = ConfigManager()
+    tesseract_path = config.get("TESSERACT_PATH")
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+    return getattr(Image, config.get("ANTIALIAS_METHOD", "LANCZOS") or "LANCZOS", DEFAULT_ANTIALIAS_METHOD)
 
 
 
@@ -24,6 +25,7 @@ class ExtractTextAction(Action):
         self.aggregate = aggregate
 
     def preprocess_image(self, image_path):
+        antialias_method = configure_tesseract()
         # Open the image file
         img = Image.open(image_path)
 
@@ -32,7 +34,7 @@ class ExtractTextAction(Action):
 
 
         width, height = img.size
-        img = img.resize((width*5, height*5), ANTIALIAS_METHOD)
+        img = img.resize((width*5, height*5), antialias_method)
         # Binarization
         if "Q" in self.description:
             img = img.point(lambda x: 0 if x < 140 else 255, '1')

@@ -10,6 +10,8 @@ import pygetwindow as gw
 import time
 from window_handler import WindowHandler
 from context import Context
+from config_manager import ConfigManager
+from model_manager import ModelManager
 import threading
 
 
@@ -18,6 +20,112 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def asset_path(*parts):
     return str(PROJECT_ROOT.joinpath(*parts))
+
+
+class SettingsDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.config = ConfigManager()
+        self.setWindowTitle("OSROKBOT Settings")
+        self.setMinimumWidth(520)
+        self.setStyleSheet("""
+            QDialog, QWidget { background-color: #2a2a2a; color: #f5f5f5; }
+            QLabel { color: #f5f5f5; }
+            QLineEdit {
+                background-color: #3a3a3a;
+                color: #f5f5f5;
+                border: 1px solid #4a90e2;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton {
+                background-color: #3a3a3a;
+                color: #f5f5f5;
+                border: 1px solid #4a90e2;
+                border-radius: 6px;
+                padding: 5px;
+            }
+        """)
+
+        self.openai_key_input = QtWidgets.QLineEdit(self.config.get("OPENAI_KEY", "") or "")
+        self.openai_key_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        self.email_input = QtWidgets.QLineEdit(self.config.get("EMAIL", "") or self.config.get("EMAIL_TO", "") or "")
+        self.tesseract_input = QtWidgets.QLineEdit(self.config.get("TESSERACT_PATH", "") or "")
+        self.yolo_weights_input = QtWidgets.QLineEdit(self.config.get("ROK_YOLO_WEIGHTS", "") or "")
+        self.yolo_url_input = QtWidgets.QLineEdit(self.config.get("ROK_YOLO_WEIGHTS_URL", "") or "")
+        self.model_input = QtWidgets.QLineEdit(self.config.get("OPENAI_VISION_MODEL", "gpt-5.4-mini") or "gpt-5.4-mini")
+        self.status_label = QtWidgets.QLabel("")
+
+        form = QtWidgets.QFormLayout()
+        form.addRow("OpenAI API Key", self.openai_key_input)
+        form.addRow("Notification Email", self.email_input)
+        form.addRow("Tesseract Path", self._path_row(self.tesseract_input, self.browse_tesseract))
+        form.addRow("YOLO Weights", self._path_row(self.yolo_weights_input, self.browse_yolo_weights))
+        form.addRow("YOLO Weights URL", self.yolo_url_input)
+        form.addRow("OpenAI Model", self.model_input)
+
+        save_button = QtWidgets.QPushButton("Save")
+        save_button.clicked.connect(self.save_settings)
+        close_button = QtWidgets.QPushButton("Close")
+        close_button.clicked.connect(self.reject)
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(save_button)
+        buttons.addWidget(close_button)
+
+        layout = QtWidgets.QVBoxLayout()
+        layout.addLayout(form)
+        layout.addWidget(self.status_label)
+        layout.addLayout(buttons)
+        self.setLayout(layout)
+
+    def _path_row(self, line_edit, browse_handler):
+        row = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        browse_button = QtWidgets.QPushButton("Browse...")
+        browse_button.clicked.connect(browse_handler)
+        layout.addWidget(line_edit)
+        layout.addWidget(browse_button)
+        return row
+
+    def browse_tesseract(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select tesseract.exe",
+            "",
+            "Executable Files (*.exe);;All Files (*)",
+        )
+        if path:
+            self.tesseract_input.setText(path)
+
+    def browse_yolo_weights(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select YOLO weights",
+            "",
+            "YOLO Weights (*.pt);;All Files (*)",
+        )
+        if path:
+            self.yolo_weights_input.setText(path)
+
+    def save_settings(self):
+        self.config.set_many(
+            {
+                "OPENAI_KEY": self.openai_key_input.text(),
+                "EMAIL": self.email_input.text(),
+                "TESSERACT_PATH": self.tesseract_input.text(),
+                "ROK_YOLO_WEIGHTS": self.yolo_weights_input.text(),
+                "ROK_YOLO_WEIGHTS_URL": self.yolo_url_input.text(),
+                "OPENAI_VISION_MODEL": self.model_input.text(),
+            }
+        )
+        weights_path = ModelManager(self.config).ensure_yolo_weights()
+        if weights_path:
+            self.yolo_weights_input.setText(str(weights_path))
+            self.status_label.setText(f"Saved. YOLO weights ready: {weights_path.name}")
+        else:
+            self.status_label.setText("Saved. YOLO weights are optional and not configured.")
 
 
 class UI(QtWidgets.QWidget):
@@ -166,6 +274,10 @@ class UI(QtWidgets.QWidget):
         self.pause_button.clicked.connect(self.toggle_pause)
         button_layout.addWidget(self.pause_button)
 
+        self.settings_button = QtWidgets.QPushButton("⚙")
+        self.settings_button.setToolTip("Settings")
+        self.settings_button.clicked.connect(self.open_settings)
+        button_layout.addWidget(self.settings_button)
 
         # Action sets dropdown
         self.action_set_combo_box = QtWidgets.QComboBox()
@@ -248,7 +360,7 @@ class UI(QtWidgets.QWidget):
         content_layout = QtWidgets.QVBoxLayout()
         content_layout.setSpacing(2)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        #content_layout.addWidget(self.status_label)
+        content_layout.addWidget(self.status_label)
         button_layout.setSpacing(2)
         content_layout.addLayout(button_layout)
         content_layout.addWidget(self.action_set_combo_box)
@@ -273,7 +385,7 @@ class UI(QtWidgets.QWidget):
         self.pause_button.hide()
         #self.setFixedSize(100, 150)
         #fix horizontal size
-        self.setFixedWidth(100)
+        self.setFixedWidth(125)
 
         #transparent backgourd
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
@@ -283,9 +395,22 @@ class UI(QtWidgets.QWidget):
         self.setWindowOpacity(0.75)
         self.show()
         WindowHandler().activate_window("OSROKBOT")
+        threading.Thread(target=ModelManager().ensure_yolo_weights, daemon=True).start()
 
     def currentState(self, state_text):
         self.current_state_label.setText(state_text)
+        if "AI Recovering" in state_text:
+            self.status_label.setText("🤖 AI Recovering...")
+            self.status_label.setStyleSheet("color: #9be7ff; font-weight: bold;")
+        elif "Learning" in state_text:
+            self.status_label.setText("🧠 Learning...")
+            self.status_label.setStyleSheet("color: #b8ff9b; font-weight: bold;")
+        elif "Using Memory" in state_text:
+            self.status_label.setText("🧠 Using Memory...")
+            self.status_label.setStyleSheet("color: #b8ff9b; font-weight: bold;")
+        elif "Captcha detected" in state_text:
+            self.status_label.setText("Captcha detected - paused")
+            self.status_label.setStyleSheet("color: orange; font-weight: bold;")
         self.current_state_label.adjustSize() # Optional, to adjust the size of the label to fit the new text
 
 
@@ -366,6 +491,10 @@ class UI(QtWidgets.QWidget):
         self.OS_ROKBOT.toggle_pause()
         if self.OS_ROKBOT.is_paused():
             threading.Thread(target=self.call_current_state, args=("Paused",)).start()
+
+    def open_settings(self):
+        dialog = SettingsDialog(self)
+        dialog.exec_()
         
         
     def call_current_state(self,info):

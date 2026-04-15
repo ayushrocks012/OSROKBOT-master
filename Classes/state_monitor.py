@@ -6,20 +6,14 @@ from enum import Enum
 from pathlib import Path
 
 import pytesseract
-from dotenv import load_dotenv
 from PIL import Image, ImageOps
 from termcolor import colored
 
+from config_manager import ConfigManager
 from helpers import UIMap
 from image_finder import ImageFinder
 from input_controller import InputController
 from window_handler import WindowHandler
-
-
-load_dotenv()
-tesseract_path = os.getenv("TESSERACT_PATH")
-if tesseract_path:
-    pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +39,9 @@ class GameStateMonitor:
 
     def __init__(self, context=None, threshold=0.85):
         self.context = context
+        tesseract_path = ConfigManager().get("TESSERACT_PATH")
+        if tesseract_path:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_path
         self.window_handler = WindowHandler()
         self.image_finder = ImageFinder(threshold=threshold)
         self.input_controller = InputController(context=context)
@@ -256,7 +253,7 @@ class GameStateMonitor:
             print(colored("Restarting client through bot restart hook.", "yellow"))
             return bool(restart_hook())
 
-        client_path = os.getenv("ROK_CLIENT_PATH")
+        client_path = ConfigManager().get("ROK_CLIENT_PATH")
         if not client_path:
             print(colored("Client restart skipped: ROK_CLIENT_PATH is not configured.", "yellow"))
             return False

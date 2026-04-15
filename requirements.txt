@@ -31,5 +31,8 @@ scikit-learn==1.8.0
 openai==2.31.0
 jiter==0.14.0
 
+# Optional YOLO object detection when ROK_YOLO_WEIGHTS is configured.
+ultralytics==8.4.24
+
 # Console diagnostics.
 termcolor==2.4.0

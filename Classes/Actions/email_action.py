@@ -3,20 +3,20 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import time
-from dotenv import load_dotenv
-import os
+from termcolor import colored
+from config_manager import ConfigManager
 
 class SendEmailAction(Action):
     def __init__(self, delay=0.1, subject="Captcha detected", body=" ", smtp_server=None, smtp_port=None, post_delay=0):
         super().__init__(delay=delay, post_delay=post_delay)
-        load_dotenv()
+        config = ConfigManager()
         self.subject = subject
         self.body = body
-        self.to_email = os.getenv("EMAIL_TO")
-        self.from_email = os.getenv("EMAIL_FROM")
-        self.from_password = os.getenv("EMAIL_PASSWORD")
-        self.smtp_server = smtp_server or os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
-        self.smtp_port = int(smtp_port or os.getenv("EMAIL_SMTP_PORT", "587"))
+        self.to_email = config.get("EMAIL") or config.get("EMAIL_TO")
+        self.from_email = config.get("EMAIL_FROM")
+        self.from_password = config.get("EMAIL_PASSWORD")
+        self.smtp_server = smtp_server or config.get("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+        self.smtp_port = int(smtp_port or config.get("EMAIL_SMTP_PORT", "587"))
 
     def execute(self, context=None):
         missing = [
@@ -28,7 +28,7 @@ class SendEmailAction(Action):
             if not value
         ]
         if missing:
-            print(f"Email notification skipped. Missing environment variables: {', '.join(missing)}")
+            print(colored(f"Email notification skipped. Missing config values: {', '.join(missing)}", "yellow"))
             return False
 
         msg = MIMEMultipart()
