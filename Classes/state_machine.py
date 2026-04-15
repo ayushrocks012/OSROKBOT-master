@@ -25,6 +25,7 @@ class StateMachine:
         self.precondition_recovery_threshold = 3
         self.action_failures = {}
         self.ai_fallback_threshold = 3
+        self.recovery_executor = None
 
     def add_state(
         self,
@@ -103,26 +104,31 @@ class StateMachine:
         next_state = next_state_on_success if result else next_state_on_failure
         resolved_next_state = next_state() if callable(next_state) else next_state
         if context and hasattr(context, "record_state"):
+            pending_recovery = getattr(context, "extracted", {}).get("pending_ai_recovery")
             context.record_state(
                 state_name,
                 getattr(state, "status_text", state.__class__.__name__),
                 result,
                 next_state=resolved_next_state,
             )
+            if pending_recovery:
+                self._verify_pending_recovery(context, state_name, resolved_next_state, result)
+
             if result:
                 self.action_failures[state_name] = 0
             else:
                 screenshot_path = context.save_failure_diagnostic(state_name)
                 failure_count = self.action_failures.get(state_name, 0) + 1
                 self.action_failures[state_name] = failure_count
-                if self._should_run_ai_fallback(state, failure_count):
+                if not pending_recovery and self._should_run_guarded_recovery(state, failure_count):
                     self.action_failures[state_name] = 0
-                    self._run_ai_fallback(context, screenshot_path)
+                    if not self.global_recovery(context):
+                        self._run_guarded_recovery(context, state_name, state, screenshot_path)
 
         self.current_state = resolved_next_state
         return result
 
-    def _should_run_ai_fallback(self, state, failure_count):
+    def _should_run_guarded_recovery(self, state, failure_count):
         if failure_count < self.ai_fallback_threshold:
             return False
         image = getattr(state, "image", "")
@@ -130,19 +136,28 @@ class StateMachine:
             return False
         return bool(image)
 
-    @staticmethod
-    def _run_ai_fallback(context, screenshot_path):
+    def _get_recovery_executor(self):
+        if self.recovery_executor:
+            return self.recovery_executor
         try:
-            from ai_fallback import AIFallback
+            from ai_recovery_executor import AIRecoveryExecutor
         except Exception as exc:
-            print(colored(f"AI fallback unavailable: {exc}", "yellow"))
+            print(colored(f"AI recovery unavailable: {exc}", "yellow"))
             return None
+        self.recovery_executor = AIRecoveryExecutor()
+        return self.recovery_executor
 
-        return AIFallback().analyze_failure(
-            context,
-            screenshot_path,
-            getattr(context, "state_history", []),
-        )
+    def _run_guarded_recovery(self, context, state_name, state, screenshot_path):
+        executor = self._get_recovery_executor()
+        if not executor:
+            return False
+        return executor.try_recover(context, state_name, state, screenshot_path)
+
+    def _verify_pending_recovery(self, context, previous_state, next_state, result):
+        executor = self._get_recovery_executor()
+        if not executor:
+            return
+        executor.verify_pending(context, previous_state, next_state, result)
 
     @staticmethod
     def _precondition_passes(precondition, context=None):

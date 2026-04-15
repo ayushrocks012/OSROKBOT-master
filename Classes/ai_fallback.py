@@ -12,10 +12,11 @@ DEFAULT_MODEL = "gpt-5.4-mini"
 
 
 class AIFallback:
-    """OpenAI advisory fallback for screenshots and Lyceum answers.
+    """OpenAI fallback for screenshots and Lyceum answers.
 
     This service never performs input. It only returns structured suggestions
-    that deterministic actions or state-machine recovery may inspect.
+    and normalized target hints that a guarded deterministic executor may
+    validate and consume.
     """
 
     FAILURE_SCHEMA = {
@@ -125,8 +126,9 @@ class AIFallback:
             {
                 "type": "input_text",
                 "text": (
-                    "Analyze this Rise of Kingdoms bot failure. Return advisory recovery only. "
-                    "Do not solve captchas and do not instruct direct clicking. "
+                    "Analyze this Rise of Kingdoms bot failure. Return recovery guidance and "
+                    "normalized target hints only for visible non-captcha UI controls. "
+                    "Do not solve captchas. Coordinates must be normalized from 0.0 to 1.0. "
                     f"Window title: {getattr(context, 'window_title', 'Rise of Kingdoms')}\n"
                     f"Recent state history:\n{history_text}"
                 ),
@@ -137,7 +139,7 @@ class AIFallback:
             },
         ]
         result = self._request_json(
-            "You are an advisory UI recovery assistant for a deterministic game automation state machine.",
+            "You are a UI recovery assistant for a guarded deterministic game automation state machine.",
             user_content,
             "osrokbot_failure_analysis",
             self.FAILURE_SCHEMA,

@@ -10,6 +10,9 @@ __pycache__/
 /*.png
 idk.png
 testprocessed.png
+diagnostics/
+data/recovery_memory.json
+datasets/recovery/
 
 # Local editor/backup files.
 *.bak

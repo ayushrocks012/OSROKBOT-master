@@ -250,6 +250,24 @@ def check_runtime_health() -> list[str]:
     return failures
 
 
+def check_optional_yolo_detector() -> list[str]:
+    values = _read_env_values()
+    weights_path = values.get("ROK_YOLO_WEIGHTS")
+    if not weights_path:
+        return []
+
+    resolved = Path(os.path.expandvars(weights_path))
+    if not resolved.is_file():
+        return [f"ROK_YOLO_WEIGHTS is configured but not accessible: {resolved}"]
+
+    try:
+        import ultralytics  # noqa: F401
+    except Exception as exc:
+        return [f"ROK_YOLO_WEIGHTS is configured but ultralytics is unavailable: {exc}"]
+
+    return []
+
+
 def check_ui_map_coordinates() -> list[str]:
     failures: list[str] = []
     if str(CLASSES_DIR) not in sys.path:
@@ -292,6 +310,7 @@ def main() -> int:
         "state-machine transitions": check_state_machine_transitions,
         "UIMap coordinates": check_ui_map_coordinates,
         "runtime health": check_runtime_health,
+        "optional YOLO detector": check_optional_yolo_detector,
     }
 
     failures: list[str] = []
