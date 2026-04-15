@@ -50,21 +50,9 @@ class ImageFinder:
         return path
 
     def _get_scaling_factor(self, screenshot):
-        win_width = screenshot.shape[1]
         win_height = screenshot.shape[0]
-
-        # If the window is perfectly sized (native 1280x720 client area),
-        # bounds are around 1296x759 on Windows 10/11. Return exact 1.0
-        # to prevent destructive cv2.resize interpolation on text buttons.
-        if 1280 <= win_width <= 1300 and 720 <= win_height <= 770:
-            return (1.0, 1.0)
-
-        screen_resolution = (win_width - 8, win_height - 31)  # (width, height)
-        scaling_factor = (
-            screen_resolution[0] / self.template_resolution[0],
-            screen_resolution[1] / self.template_resolution[1],
-        )  # (scale_x, scale_y)
-        return scaling_factor
+        scale = win_height / self.template_resolution[1]
+        return scale, scale
 
     def _load_template(self, target_image_path):
         if target_image_path in self._template_cache:

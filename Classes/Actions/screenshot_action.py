@@ -1,4 +1,5 @@
 from Actions.action import Action
+from Actions.window_percent_action import WindowPercentAction
 from window_handler import WindowHandler
 import os
 
@@ -13,6 +14,17 @@ class ScreenshotAction(Action):
         self.window_title = "Rise of Kingdoms"
         self.window_handler = WindowHandler()
 
+    @staticmethod
+    def _normalize_coordinate(value):
+        return WindowPercentAction.normalize_coordinate(value)
+
+    def _normalized_box(self):
+        x_begin = self._normalize_coordinate(self.x_begin)
+        x_end = self._normalize_coordinate(self.x_end)
+        y_begin = self._normalize_coordinate(self.y_begin)
+        y_end = self._normalize_coordinate(self.y_end)
+        return x_begin, x_end, y_begin, y_end
+
     def execute(self, context=None):
         #print exact time of execution
         window_title = context.window_title if context else self.window_title
@@ -22,10 +34,11 @@ class ScreenshotAction(Action):
         
         # Crop screenshot
         width, height = screenshot.size
-        left = width * self.x_begin / 100
-        upper = height * self.y_begin / 100
-        right = width * self.x_end / 100
-        lower = height * self.y_end / 100
+        x_begin, x_end, y_begin, y_end = self._normalized_box()
+        left = width * x_begin
+        upper = height * y_begin
+        right = width * x_end
+        lower = height * y_end
         
         cropped_screenshot = screenshot.crop((left, upper, right, lower))
 
