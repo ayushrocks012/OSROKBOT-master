@@ -1,8 +1,8 @@
 # OSROKBOT
 
 OSROKBOT is a Windows desktop automation bot for Rise of Kingdoms. It uses a
-PyQt control panel, OpenCV screenshot analysis, OCR, and explicit state-machine
-workflows to run repeatable in-game tasks.
+PyQt control panel, OpenCV screenshot analysis, OCR, centralized input control,
+and explicit state-machine workflows to run repeatable in-game tasks.
 
 ## Requirements
 
@@ -11,7 +11,7 @@ workflows to run repeatable in-game tasks.
 - Rise of Kingdoms running in a visible window named `Rise of Kingdoms`.
 - Tesseract OCR installed locally for OCR-based workflows.
 - A `1280x720` game window is recommended because the templates in `Media/`
-  were captured around that resolution. The bot can scale templates, but stable
+  were captured around that resolution. The bot scales templates, but stable
   window sizing improves accuracy.
 
 ## Install
@@ -55,42 +55,43 @@ python Classes\UI.py
 The overlay appears near the game window. Choose a workflow from the dropdown,
 optionally keep captcha detection enabled, and press the play button.
 
-## Core Model
+## Core Engine
 
-OSROKBOT is built around a small set of explicit runtime services:
+OSROKBOT is built around a state-first automation engine. Each workflow is a
+`StateMachine` composed of small `Action` objects. The state machine runs one
+action at a time, reads the boolean result, and moves to the configured success,
+failure, or fallback state. Actions implement `execute(context)`, but callers
+must enter them through `perform(context)` so UI status updates, safety delays,
+and pause/stop checks are applied consistently.
 
-- `Context` carries shared per-run state such as the bot instance, UI signal
-  emitter, target window title, OCR fields, and extracted values.
-- `StateMachine` executes one action at a time and moves to the configured
-  success, failure, or precondition-fallback state.
-- `Action` is the base class for workflow steps. Actions should implement
-  `execute(context)` and be run through `perform(context)` so delays, UI status,
-  and stop/pause checks are applied consistently.
-- `ImageFinder` is the hybrid image engine. It supports grayscale template
-  matching, multi-scale search, alpha masking for 4-channel PNG templates, ROI
-  search regions, non-maximum suppression, and SIFT-based world-object matching.
-- `InputController` is the only layer that executes mouse and keyboard events.
-  It owns click bounds validation, movement pacing, coordinate sampling, key
-  presses, scrolls, and pause/abort interlocks.
-- `OS_ROKBOT` owns worker threads and performs a pre-action blocker check for
-  common UI blockers such as `confirm.png` and `escx.png`.
+`Context` is the shared runtime object for one bot run. It carries the bot
+instance, UI signal emitter, target window title, OCR fields, and extracted
+values. New shared state should be added to `Context`, not to process-wide
+globals.
 
-## Safety
+`ImageFinder` is the hybrid image engine. It supports grayscale template
+matching, automatic alpha masks for transparent PNG templates, multi-scale
+search around the current game-window size, ROI-scaled searches, non-maximum
+suppression, and SIFT-based world-object matching for terrain-embedded targets.
+Template coordinates returned from ROI searches remain in full screenshot space,
+so existing click actions and offsets continue to work.
 
-The input system is centralized so workflow actions cannot accidentally bypass
-runtime safety checks.
+`InputController` is the only input execution layer. It owns `pyautogui` usage,
+window-bounds validation, click and move execution, smooth cursor movement,
+small click-target sampling, key presses, scrolls, and `DelayPolicy` waits. No
+action should import `pyautogui` or bypass this layer.
 
-- `DelayPolicy` applies consistent waits and jittered pacing for click settle,
-  key hold, scroll settle, and action delays.
-- `InputController.validate_bounds(x, y, window_rect)` blocks clicks and moves
-  outside the active game client area.
-- `InputController.is_allowed(context)` checks pause/stop state before input
-  and during waits, so the bot can stop between movement steps and action delays.
-- Actions should not call `pyautogui` directly. Use `InputController` or an
-  existing action wrapper such as `ManualClickAction`, `ManualMoveAction`, or
-  `PressKeyAction`.
-- Live automation tests should only run when the game window is open and you are
-  ready for mouse/keyboard control.
+`OS_ROKBOT` owns the worker threads, pause/stop events, and global pre-action
+blocker checks. Before each workflow action, the runner scans for known modal
+blockers such as `Media/confirm.png` and `Media/escx.png`; when found, it clears
+them through `InputController` so the same bounds checks and interlocks are
+preserved.
+
+State checks belong in state-machine preconditions. Use
+`precondition=...` and `fallback_state=...` when an action requires a specific
+screen, and prefer a reusable `GameStateMonitor` abstraction for named states
+such as Map View, City View, modal-open, inventory, troop selection, or march
+screen.
 
 ## Available Workflows
 
@@ -99,6 +100,7 @@ runtime safety checks.
 - `farm_food`, `farm_wood`, `farm_stone`, `farm_gold`: single-resource gathering.
 - `farm_barb`, `farm_barb_all`: barbarian farming flows.
 - `farm_gems`: continuous gem-deposit scanner.
+- `loharjr`, `loharjrt`: marauder and Lohar Jr flows.
 - `lyceum`, `lyceumMid`: Lyceum quiz helpers.
 
 ## Project Layout
@@ -116,14 +118,39 @@ Classes/
   window_handler.py     Game-window lookup and screenshots.
 Media/                  Active image templates and UI icons.
 Media/Legacy/           Archived templates not referenced by current workflows.
+MEDIA_MAP.md            Active media reference map.
+AGENTS.md               Developer rules for AI agents.
+SKILLS.md               Technical capability reference.
 roklyceum.csv           Lyceum question/answer database.
 requirements.txt        Canonical Python dependencies.
 verify_integrity.py     Static project health checks.
 ```
 
+## Project Integrity
+
+Run the integrity checker after any workflow or media change:
+
+```powershell
+python verify_integrity.py
+```
+
+`verify_integrity.py` performs static checks only. It does not launch live
+automation or click the game. It validates:
+
+- every `Media/...` image referenced by `Classes/action_sets.py` exists;
+- every literal state-machine transition points to a defined state;
+- dynamic resource targets from `Helpers.getRandomRss()` resolve to defined
+  states;
+- `.env` contains an accessible `TESSERACT_PATH`.
+
+When adding or removing media, update [MEDIA_MAP.md](MEDIA_MAP.md), move unused
+root-level media into `Media/Legacy/`, and run the integrity checker before
+handing work back.
+
 ## Verification
 
-Run these checks after code or asset changes:
+Run these checks before shipping code or documentation that affects workflows,
+media, imports, or dependencies:
 
 ```powershell
 python verify_integrity.py
@@ -131,6 +158,5 @@ python -m compileall Classes verify_integrity.py
 python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports ok')"
 ```
 
-`verify_integrity.py` checks that workflow image paths exist, state-machine
-transitions target valid states, and `.env` contains an accessible
-`TESSERACT_PATH`.
+If dependencies are only visible outside the sandbox, run the import check in
+the same Python environment used to install `requirements.txt`.

@@ -1,5 +1,6 @@
-# OSROKBOT runtime dependencies.
+# OSROKBOT canonical runtime dependencies.
 # Target runtime: Python 3.13 on Windows.
+# Keep this as the only requirements file; do not add nested requirements files.
 
 # Hybrid image engine: grayscale template matching, alpha masks, ROI search, SIFT.
 opencv-python==4.13.0.92
