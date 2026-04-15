@@ -1,10 +1,11 @@
-"""Static integrity checks for OSROKBOT workflows.
+"""Static and runtime integrity checks for OSROKBOT workflows.
 
 Run from the project root:
     python verify_integrity.py
 
-The script validates the workflow image references, state-machine transitions,
-and local OCR executable path without starting the bot or clicking the game UI.
+The script validates workflow image references, state-machine transitions,
+normalized UI regions, and pre-flight runtime health without starting the bot
+or clicking the game UI.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import ast
 import os
 import sys
 from pathlib import Path
+
+from termcolor import colored
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -188,6 +191,65 @@ def check_tesseract_path() -> list[str]:
     return []
 
 
+def check_runtime_health() -> list[str]:
+    failures: list[str] = []
+    values = _read_env_values()
+    window_title = values.get("ROK_WINDOW_TITLE") or values.get("WINDOW_TITLE") or "Rise of Kingdoms"
+
+    tesseract_failures = check_tesseract_path()
+    failures.extend(tesseract_failures)
+
+    openai_key = values.get("OPENAI_KEY") or values.get("OPENAI_API_KEY")
+    if not openai_key:
+        failures.append("OPENAI_KEY or OPENAI_API_KEY is missing from .env")
+    else:
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(api_key=openai_key)
+            getattr(client, "responses")
+        except Exception as exc:
+            failures.append(f"OpenAI Responses API is unavailable: {exc}")
+
+    if str(CLASSES_DIR) not in sys.path:
+        sys.path.insert(0, str(CLASSES_DIR))
+
+    try:
+        from window_handler import WindowHandler, win32gui
+    except Exception as exc:
+        return failures + [f"Unable to import WindowHandler for runtime health check: {exc}"]
+
+    handler = WindowHandler()
+    if not handler._win32_available():
+        failures.append("pywin32 is unavailable; background capture and virtual input cannot run")
+        return failures
+
+    window = handler.get_window(window_title)
+    if not window:
+        failures.append(f"Target game window is not reachable: {window_title!r}")
+        return failures
+
+    hwnd = int(window._hWnd)
+    if not win32gui.IsWindow(hwnd):
+        failures.append(f"Target hwnd is not a valid window handle: {hwnd}")
+        return failures
+
+    if win32gui.IsIconic(hwnd):
+        handler.activate_window(window_title)
+    if win32gui.IsIconic(hwnd):
+        failures.append(f"Target window is minimized and could not be restored without activation: {window_title!r}")
+
+    client_rect = handler.get_client_window_rect(window_title)
+    if client_rect is None:
+        failures.append(f"Unable to read client rectangle for target hwnd: {hwnd}")
+    elif client_rect.width <= 0 or client_rect.height <= 0:
+        failures.append(
+            f"Target window client area is invalid: {client_rect.width}x{client_rect.height}"
+        )
+
+    return failures
+
+
 def check_ui_map_coordinates() -> list[str]:
     failures: list[str] = []
     if str(CLASSES_DIR) not in sys.path:
@@ -228,8 +290,8 @@ def main() -> int:
     checks = {
         "action set image paths": check_action_set_images,
         "state-machine transitions": check_state_machine_transitions,
-        "TESSERACT_PATH": check_tesseract_path,
         "UIMap coordinates": check_ui_map_coordinates,
+        "runtime health": check_runtime_health,
     }
 
     failures: list[str] = []
@@ -240,18 +302,18 @@ def main() -> int:
             check_failures = [f"{label} check crashed: {exc}"]
 
         if check_failures:
-            print(f"[FAIL] {label}")
+            print(colored(f"[FAIL] {label}", "red"))
             for failure in check_failures:
-                print(f"  - {failure}")
+                print(colored(f"  - {failure}", "red"))
             failures.extend(check_failures)
         else:
-            print(f"[OK] {label}")
+            print(colored(f"[OK] {label}", "green"))
 
     if failures:
-        print(f"\nIntegrity check failed with {len(failures)} issue(s).")
+        print(colored(f"\nIntegrity check failed with {len(failures)} issue(s).", "red"))
         return 1
 
-    print("\nIntegrity check passed.")
+    print(colored("\nIntegrity check passed.", "green"))
     return 0
 
 

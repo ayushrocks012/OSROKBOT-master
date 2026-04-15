@@ -12,12 +12,11 @@ PyQt5==5.15.11
 PyQt5-Qt5==5.15.2
 PyQt5_sip==12.18.0
 
-# Window screenshots and window activation.
-mss==9.0.1
+# Background window capture and virtual input.
+pywin32==311
 PyGetWindow==0.0.9
 
-# Centralized mouse/keyboard input.
-PyAutoGUI==0.9.54
+# Manual hotkey wait support.
 keyboard==0.13.5
 
 # OCR and local configuration.
@@ -28,8 +27,9 @@ python-dotenv==1.0.0
 # Lyceum answer matching.
 scikit-learn==1.8.0
 
-# Optional ChatGPT fallback for Lyceum answers.
-openai==1.6.1
+# OpenAI Responses API fallback for Lyceum and advisory vision recovery.
+openai==2.31.0
+jiter==0.14.0
 
 # Console diagnostics.
 termcolor==2.4.0

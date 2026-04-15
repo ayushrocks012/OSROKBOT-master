@@ -15,6 +15,7 @@ GLOBAL_BLOCKER_IMAGES = (
     PROJECT_ROOT / "Media" / "confirm.png",
     PROJECT_ROOT / "Media" / "escx.png",
 )
+CAPTCHA_IMAGE = PROJECT_ROOT / "Media" / "captchachest.png"
 
 
 class OSROKBOT:
@@ -37,8 +38,39 @@ class OSROKBOT:
         self._runner_thread = None
         self.window_handler = WindowHandler()
         self.input_controller = InputController(context=None)
-        self.blocker_finder = ImageFinder(threshold=0.85)
+        self.blocker_finder = ImageFinder(threshold=0.85, save_heatmaps=False)
         self.global_blocker_images = tuple(str(path) for path in GLOBAL_BLOCKER_IMAGES)
+        self.captcha_image = str(CAPTCHA_IMAGE)
+
+    def _detect_captcha(self, context):
+        if self.stop_event.is_set() or self.pause_event.is_set():
+            return False
+        if not CAPTCHA_IMAGE.is_file():
+            return False
+
+        screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
+        if screenshot is None or window_rect is None:
+            return False
+
+        found, _, _, _ = self.blocker_finder.find_image_coordinates(
+            self.captcha_image,
+            screenshot,
+            window_rect,
+            0,
+            0,
+            1,
+        )
+        if not found:
+            return False
+
+        print(colored("Captcha detected: pausing automation for manual review.", "red"))
+        context.emit_state("Captcha detected\nmanual action required")
+        screenshot_path = self.blocker_finder.save_screenshot(screenshot, label="captcha_detected")
+        if screenshot_path and hasattr(context, "export_state_history"):
+            context.export_state_history(screenshot_path.with_suffix(".log"))
+        self.pause_event.set()
+        self.signal_emitter.pause_toggled.emit(True)
+        return True
 
     def _clear_global_blockers(self, context):
         """Dismiss known modal blockers before the next workflow action runs."""
@@ -81,6 +113,31 @@ class OSROKBOT:
 
         return True
 
+    def _locate_primary_anchor(self, context):
+        anchor_image = getattr(context, "primary_anchor_image", None)
+        if not anchor_image:
+            return False
+
+        anchor_path = Path(anchor_image)
+        if not anchor_path.is_absolute():
+            anchor_path = PROJECT_ROOT / anchor_path
+        if not anchor_path.is_file():
+            print(colored(f"Primary UI anchor template is missing: {anchor_path}", "yellow"))
+            return False
+
+        screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
+        if screenshot is None or window_rect is None:
+            return False
+
+        return self.blocker_finder.locate_primary_anchor(
+            str(anchor_path),
+            screenshot,
+            window_rect,
+            context,
+            anchor_name=getattr(context, "primary_ui_anchor", "primary"),
+            reference_normalized=getattr(context, "primary_anchor_reference_normalized", None),
+        )
+
     def run(self, state_machines, context=None):
         context = context or Context(bot=self, window_title=self.window_title)
         context.bot = context.bot or self
@@ -89,11 +146,14 @@ class OSROKBOT:
 
         self.stop_event.clear()
         self.all_threads_joined = False
+        self._locate_primary_anchor(context)
 
         def run_single_machine(machine):
             while not self.stop_event.is_set():
                 if self.pause_event.is_set():
                     time.sleep(self.delay)
+                    continue
+                if self._detect_captcha(context):
                     continue
                 if not self._clear_global_blockers(context):
                     continue

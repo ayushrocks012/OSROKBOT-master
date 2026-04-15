@@ -1,12 +1,21 @@
 from Actions.action import Action
 from image_finder import ImageFinder
 from window_handler import WindowHandler
+from termcolor import colored
 
 
 class FindImageAction(Action):
-    def __init__(self, image: str, count: int = 1, delay=0.1, post_delay=0, search_region=None):
+    def __init__(
+        self,
+        image: str,
+        count: int = 1,
+        delay=0.1,
+        post_delay=0,
+        search_region=None,
+        use_edges=False,
+    ):
         super().__init__(delay=delay, post_delay=post_delay)
-        self.image_finder = ImageFinder()
+        self.image_finder = ImageFinder(use_edges=use_edges)
         self.image = image
         self.window_handler = WindowHandler()
         self.window_title = 'Rise of Kingdoms'
@@ -26,8 +35,8 @@ class FindImageAction(Action):
 
         # Check if the number of matches is greater or equal to the specified count
         if num_matches >= self.count:
-            print(f"Found {self.image} {num_matches} times, satisfying the count condition of {self.count}.", "green")
+            print(colored(f"Found {self.image} {num_matches} times, satisfying the count condition of {self.count}.", "green"))
             return True
         else:
-            print(f"Found {self.image} {num_matches} times, not satisfying the count condition of {self.count}.", "red")
+            print(colored(f"Found {self.image} {num_matches} times, not satisfying the count condition of {self.count}.", "red"))
             return False

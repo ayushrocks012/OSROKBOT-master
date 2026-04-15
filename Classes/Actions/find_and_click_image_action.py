@@ -1,11 +1,22 @@
 from Actions.action import Action
 from image_finder import ImageFinder
 from window_handler import WindowHandler
+from termcolor import colored
 
 class FindAndClickImageAction(Action):
-    def __init__(self, image: str,offset_x= 0, offset_y= 0, delay=0.2, post_delay=0, max_matches=0, search_region=None ):
+    def __init__(
+        self,
+        image: str,
+        offset_x=0,
+        offset_y=0,
+        delay=0.2,
+        post_delay=0,
+        max_matches=0,
+        search_region=None,
+        use_edges=False,
+    ):
         super().__init__(delay=delay, post_delay=post_delay)
-        self.image_finder = ImageFinder()
+        self.image_finder = ImageFinder(use_edges=use_edges)
         self.image = image
         self.max_matches = max_matches
         self.offset_x = offset_x
@@ -44,7 +55,7 @@ class FindAndClickImageAction(Action):
                 
         else:
             if self.image != "Media/captchachest.png":
-                print(f"No matches for {self.image} found in screenshot.")
+                print(colored(f"No matches for {self.image} found in screenshot.", "red"))
             if self.max_matches != 0:
                 return True
             return False

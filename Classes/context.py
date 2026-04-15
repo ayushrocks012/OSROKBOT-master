@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Optional
+
+from termcolor import colored
 
 
 DEFAULT_WINDOW_TITLE = "Rise of Kingdoms"
@@ -34,6 +37,12 @@ class Context:
     idle_march_slots_checked_at: Optional[float] = None
     action_points: Optional[int] = None
     action_points_checked_at: Optional[float] = None
+    state_history: list[dict[str, Any]] = field(default_factory=list)
+    max_state_history: int = 10
+    ui_anchors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    primary_ui_anchor: str = "primary"
+    primary_anchor_image: Optional[str] = "Media/ficon.png"
+    primary_anchor_reference_normalized: Optional[tuple[float, float]] = None
 
     @property
     def UI(self):
@@ -53,6 +62,106 @@ class Context:
         emitter = self.get_signal_emitter()
         if emitter:
             emitter.state_changed.emit(state_text)
+
+    @staticmethod
+    def normalize_coordinate(value):
+        value = float(value)
+        if value > 1.0:
+            return value / 100.0
+        return value
+
+    def record_state(self, state_name, action_text, result, next_state=None, event="action"):
+        self.state_history.append(
+            {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "event": event,
+                "state": state_name,
+                "action": action_text,
+                "result": bool(result),
+                "next_state": next_state,
+            }
+        )
+        if len(self.state_history) > self.max_state_history:
+            del self.state_history[: len(self.state_history) - self.max_state_history]
+
+    def save_failure_diagnostic(self, state_name="unknown"):
+        from image_finder import ImageFinder
+        from window_handler import WindowHandler
+
+        screenshot, _ = WindowHandler().screenshot_window(self.window_title)
+        if screenshot is None:
+            print(colored("Diagnostic capture skipped: screenshot unavailable.", "yellow"))
+            return None
+        screenshot_path = ImageFinder().save_screenshot(screenshot, label=f"diagnostic_{state_name}")
+        if screenshot_path:
+            self.export_state_history(screenshot_path.with_suffix(".log"))
+        return screenshot_path
+
+    def export_state_history(self, path):
+        try:
+            lines = ["OSROKBOT state history", ""]
+            for entry in self.state_history:
+                lines.append(
+                    "{timestamp} [{event}] state={state} result={result} next={next_state} action={action}".format(
+                        timestamp=entry.get("timestamp", ""),
+                        event=entry.get("event", ""),
+                        state=entry.get("state", ""),
+                        result=entry.get("result", ""),
+                        next_state=entry.get("next_state", ""),
+                        action=str(entry.get("action", "")).replace("\n", " | "),
+                    )
+                )
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception as exc:
+            print(colored(f"Unable to export state history: {exc}", "red"))
+            return None
+
+        print(colored(f"State history saved: {path}", "yellow"))
+        return path
+
+    def set_ui_anchor(self, name, screen_x, screen_y, window_rect, reference_normalized=None):
+        normalized_x = (int(screen_x) - int(window_rect.left)) / max(1, int(window_rect.width))
+        normalized_y = (int(screen_y) - int(window_rect.top)) / max(1, int(window_rect.height))
+        reference = reference_normalized or (normalized_x, normalized_y)
+        self.ui_anchors[name] = {
+            "screen": (int(screen_x), int(screen_y)),
+            "client": (int(screen_x) - int(window_rect.left), int(screen_y) - int(window_rect.top)),
+            "normalized": (normalized_x, normalized_y),
+            "reference_normalized": reference,
+            "window_size": (int(window_rect.width), int(window_rect.height)),
+            "captured_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        print(
+            colored(
+                f"UI anchor '{name}' stored at normalized=({normalized_x:.3f},{normalized_y:.3f})",
+                "cyan",
+            )
+        )
+
+    def resolve_anchor_relative_point(
+        self,
+        normalized_x,
+        normalized_y,
+        window_rect,
+        anchor_name=None,
+        reference_normalized=None,
+    ):
+        anchor_key = anchor_name or self.primary_ui_anchor
+        anchor = self.ui_anchors.get(anchor_key)
+        normalized_x = self.normalize_coordinate(normalized_x)
+        normalized_y = self.normalize_coordinate(normalized_y)
+
+        if not anchor:
+            return (
+                int(window_rect.left + window_rect.width * normalized_x),
+                int(window_rect.top + window_rect.height * normalized_y),
+            )
+
+        reference_x, reference_y = reference_normalized or anchor["reference_normalized"]
+        anchor_screen_x, anchor_screen_y = anchor["screen"]
+        offset_x = (normalized_x - reference_x) * int(window_rect.width)
+        offset_y = (normalized_y - reference_y) * int(window_rect.height)
+        return int(round(anchor_screen_x + offset_x)), int(round(anchor_screen_y + offset_y))
 
     def set_extracted_text(self, description, value):
         cleaned_value = value.replace(",", "").replace("\"", "")

@@ -3,14 +3,24 @@ from ctypes import wintypes
 from dataclasses import dataclass
 
 from PIL import Image
-from mss import mss
 import pygetwindow as gw
+from termcolor import colored
+
+try:
+    import win32con
+    import win32gui
+    import win32ui
+except ImportError:
+    win32con = None
+    win32gui = None
+    win32ui = None
 
 
 @dataclass
 class ClientRect:
     """Screen-space rectangle for the rendered client area."""
 
+    hwnd: int
     left: int
     top: int
     width: int
@@ -25,7 +35,7 @@ class WindowHandler:
         windows = gw.getWindowsWithTitle(title)
 
         if not windows:
-            print(f"No window found with title: {title}")
+            print(colored(f"No window found with title: {title}", "red"))
             return None
         return windows[0]
 
@@ -40,35 +50,141 @@ class WindowHandler:
             raise ctypes.WinError()
 
         return ClientRect(
+            hwnd=int(hwnd),
             left=int(point.x),
             top=int(point.y),
             width=int(rect.right - rect.left),
             height=int(rect.bottom - rect.top),
         )
 
+    @staticmethod
+    def _win32_available():
+        return win32con is not None and win32gui is not None and win32ui is not None
+
+    @staticmethod
+    def _restore_no_activate(hwnd):
+        if not WindowHandler._win32_available():
+            return
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
+            win32gui.SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                win32con.SWP_NOMOVE
+                | win32con.SWP_NOSIZE
+                | win32con.SWP_NOZORDER
+                | win32con.SWP_NOACTIVATE,
+            )
+
+    def _print_window_client_image(self, hwnd, client_rect):
+        """Capture the client area from the window render buffer.
+
+        PrintWindow reads the target window instead of the desktop surface when
+        the game exposes that buffer. Some Unity windows reject PrintWindow; in
+        that case BitBlt is used as a compatibility fallback.
+        """
+        if not self._win32_available():
+            print(colored("pywin32 is required for background window capture.", "red"))
+            return None
+
+        window_left, window_top, window_right, window_bottom = win32gui.GetWindowRect(hwnd)
+        window_width = max(1, int(window_right - window_left))
+        window_height = max(1, int(window_bottom - window_top))
+        client_offset_x = max(0, int(client_rect.left - window_left))
+        client_offset_y = max(0, int(client_rect.top - window_top))
+
+        window_dc = win32gui.GetWindowDC(hwnd)
+        source_dc = win32ui.CreateDCFromHandle(window_dc)
+        memory_dc = source_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(source_dc, window_width, window_height)
+        memory_dc.SelectObject(bitmap)
+
+        try:
+            print_window = ctypes.windll.user32.PrintWindow
+            # PW_RENDERFULLCONTENT improves captures for modern DWM-backed apps.
+            rendered = print_window(hwnd, memory_dc.GetSafeHdc(), 0x00000002)
+            if not rendered:
+                rendered = print_window(hwnd, memory_dc.GetSafeHdc(), 0)
+            if not rendered:
+                print(colored("PrintWindow failed; falling back to BitBlt window capture.", "yellow"))
+                capture_blt = getattr(win32con, "CAPTUREBLT", 0x40000000)
+                try:
+                    memory_dc.BitBlt(
+                        (0, 0),
+                        (window_width, window_height),
+                        source_dc,
+                        (0, 0),
+                        win32con.SRCCOPY | capture_blt,
+                    )
+                    rendered = True
+                except Exception as exc:
+                    print(colored(f"BitBlt fallback failed: {exc}", "red"))
+                    rendered = False
+            if not rendered:
+                print(colored("Window capture failed for the target game window.", "red"))
+                return None
+
+            bitmap_info = bitmap.GetInfo()
+            bitmap_bits = bitmap.GetBitmapBits(True)
+            image = Image.frombuffer(
+                "RGB",
+                (bitmap_info["bmWidth"], bitmap_info["bmHeight"]),
+                bitmap_bits,
+                "raw",
+                "BGRX",
+                0,
+                1,
+            )
+            return image.crop(
+                (
+                    client_offset_x,
+                    client_offset_y,
+                    client_offset_x + client_rect.width,
+                    client_offset_y + client_rect.height,
+                )
+            )
+        finally:
+            win32gui.DeleteObject(bitmap.GetHandle())
+            memory_dc.DeleteDC()
+            source_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, window_dc)
+
     def screenshot_window(self, title):
         win = self.get_window(title)
         if not win:
             return None, None
 
+        self._restore_no_activate(win._hWnd)
         client_rect = self._get_client_rect(win)
         if client_rect.width <= 0 or client_rect.height <= 0:
-            print(f"Invalid client area for window: {title}")
+            print(colored(f"Invalid client area for window: {title}", "red"))
             return None, None
 
-        monitor = {
-            "top": client_rect.top,
-            "left": client_rect.left,
-            "width": client_rect.width,
-            "height": client_rect.height,
-        }
-        sct = mss()
         try:
-            img = sct.grab(monitor)
-        finally:
-            sct.close()
-        screenshot = Image.frombytes("RGB", img.size, img.rgb, "raw")
-        return screenshot, client_rect
+            screenshot = self._print_window_client_image(win._hWnd, client_rect)
+        except Exception as exc:
+            print(colored(f"Window capture failed for '{title}': {exc}", "red"))
+            return None, None
+
+        if screenshot is None:
+            return None, None
+        return screenshot.convert("RGB"), client_rect
+
+    def get_client_window_rect(self, title):
+        win = self.get_window(title)
+        if not win:
+            return None
+        self._restore_no_activate(win._hWnd)
+        try:
+            return self._get_client_rect(win)
+        except Exception as exc:
+            print(colored(f"Unable to read client area for '{title}': {exc}", "red"))
+            return None
 
     def enforce_aspect_ratio(self, title="Rise of Kingdoms"):
         win = self.get_window(title)
@@ -88,21 +204,18 @@ class WindowHandler:
         new_height = max(1, int(round(new_width / self.ASPECT_RATIO_16_9)))
         try:
             win.resizeTo(new_width, new_height)
-            print(f"Adjusted '{title}' to 16:9 window size: {new_width}x{new_height}")
+            print(colored(f"Adjusted '{title}' to 16:9 window size: {new_width}x{new_height}", "cyan"))
             return True
         except Exception as exc:
-            print(f"Failed to enforce 16:9 aspect ratio for '{title}': {exc}")
+            print(colored(f"Failed to enforce 16:9 aspect ratio for '{title}': {exc}", "red"))
             return False
 
     def activate_window(self, title="Rise of Kingdoms"):
         try:
             win = self.get_window(title)
             if win:
-                if win.isMinimized:
-                    win.restore()
-                win.activate()
-                self.enforce_aspect_ratio(title)
+                self._restore_no_activate(win._hWnd)
         except Exception as e:
             if "Error code from Windows: 0" not in str(e):
-                print(f"Failed to activate window '{title}': {e}")
+                print(colored(f"Failed to prepare window '{title}': {e}", "red"))
         return

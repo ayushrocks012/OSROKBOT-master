@@ -20,9 +20,12 @@ class ImageFinder:
     unreliable.
     """
 
-    def __init__(self, threshold=0.8, debug_output=False):
+    def __init__(self, threshold=0.8, debug_output=False, use_edges=False, save_heatmaps=True):
         self.threshold = threshold
         self.debug_output = debug_output
+        self.use_edges = use_edges
+        self.save_heatmaps = save_heatmaps
+        self.canny_thresholds = (80, 160)
         self.template_resolution = (1280, 720)  # original resolution at which the template was taken
         self.scale_multipliers = np.arange(0.8, 1.2001, 0.05)
         self.max_raw_matches_per_scale = 250
@@ -54,14 +57,16 @@ class ImageFinder:
         scale = win_height / self.template_resolution[1]
         return scale, scale
 
-    def _load_template(self, target_image_path):
-        if target_image_path in self._template_cache:
-            return self._template_cache[target_image_path]
+    def _load_template(self, target_image_path, use_edges=None):
+        edge_mode = self.use_edges if use_edges is None else use_edges
+        cache_key = (target_image_path, edge_mode)
+        if cache_key in self._template_cache:
+            return self._template_cache[cache_key]
 
         template = cv2.imread(target_image_path, cv2.IMREAD_UNCHANGED)
         if template is None:
             print(colored(f"Template image not found: {target_image_path}", "red"))
-            self._template_cache[target_image_path] = (None, None)
+            self._template_cache[cache_key] = (None, None)
             return None, None
 
         mask = None
@@ -74,7 +79,9 @@ class ImageFinder:
             template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 
         template = self._normalize_gray(template)
-        self._template_cache[target_image_path] = (template, mask)
+        if edge_mode:
+            template = self._apply_edges(template)
+        self._template_cache[cache_key] = (template, mask)
         return template, mask
 
     @staticmethod
@@ -83,11 +90,17 @@ class ImageFinder:
             image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         return cv2.equalizeHist(image)
 
-    @staticmethod
-    def _to_gray_screenshot(screenshot):
+    def _apply_edges(self, image):
+        return cv2.Canny(image, self.canny_thresholds[0], self.canny_thresholds[1])
+
+    def _to_gray_screenshot(self, screenshot, use_edges=None):
         screenshot_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
         screenshot_gray = cv2.cvtColor(screenshot_cv, cv2.COLOR_BGR2GRAY)
-        return ImageFinder._normalize_gray(screenshot_gray), screenshot_cv
+        screenshot_gray = ImageFinder._normalize_gray(screenshot_gray)
+        edge_mode = self.use_edges if use_edges is None else use_edges
+        if edge_mode:
+            screenshot_gray = self._apply_edges(screenshot_gray)
+        return screenshot_gray, screenshot_cv
 
     def _scale_search_region(self, search_region, base_scale, screenshot_shape):
         """Scale and clamp an optional ROI to screenshot pixel coordinates."""
@@ -97,14 +110,18 @@ class ImageFinder:
         x, y, width, height = search_region
         screenshot_h, screenshot_w = screenshot_shape[:2]
 
-        # Support normalized regions for future callers, but default to
-        # template-resolution pixels scaled by the current window size.
         if all(0 <= value <= 1 for value in search_region):
             scaled_x = int(round(x * screenshot_w))
             scaled_y = int(round(y * screenshot_h))
             scaled_w = int(round(width * screenshot_w))
             scaled_h = int(round(height * screenshot_h))
         else:
+            print(
+                colored(
+                    f"Legacy pixel ROI used: {search_region}. Prefer normalized 0.0-1.0 regions.",
+                    "yellow",
+                )
+            )
             scaled_x = int(round(x * base_scale[0]))
             scaled_y = int(round(y * base_scale[1]))
             scaled_w = int(round(width * base_scale[0]))
@@ -193,6 +210,7 @@ class ImageFinder:
         best_scale = base_scale
         best_max_val = 0
         best_template = template
+        best_result = None
         matches = []
 
         for scale_multiplier in self.scale_multipliers:
@@ -220,6 +238,7 @@ class ImageFinder:
                 best_max_val = max_val
                 best_scale = scale
                 best_template = resized_template
+                best_result = result.copy()
 
             matches.extend(
                 self._result_to_match_records(
@@ -232,7 +251,33 @@ class ImageFinder:
                 )
             )
 
-        return best_scale, best_max_val, best_template, matches
+        return best_scale, best_max_val, best_template, best_result, matches
+
+    def _save_match_heatmap(self, target_image_path, result, best_max_val, output_dir="diagnostics"):
+        if result is None or not self.save_heatmaps:
+            return None
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        normalized = cv2.normalize(result, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        heatmap = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+        safe_stem = "".join(
+            char if char.isalnum() or char in {"-", "_"} else "_"
+            for char in Path(target_image_path).stem
+        )
+        filename = (
+            f"heatmap_{safe_stem}_{best_max_val:.4f}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
+        )
+        path = output_path / filename
+        try:
+            cv2.imwrite(str(path), heatmap)
+        except Exception as exc:
+            print(colored(f"Unable to save match heatmap: {exc}", "red"))
+            return None
+
+        print(colored(f"Match heatmap saved: {path}", "yellow"))
+        return path
 
     @staticmethod
     def _draw_match_boxes(screenshot_cv, boxes):
@@ -267,7 +312,7 @@ class ImageFinder:
             return base_scale, [], 0, 0, None, screenshot_cv
 
         method_name = "masked multi-scale template" if mask is not None else "multi-scale template"
-        best_scale, best_max_val, best_template, matches = self._find_scaled_matches(
+        best_scale, best_max_val, best_template, best_result, matches = self._find_scaled_matches(
             target_image_path,
             search_gray,
             template,
@@ -294,6 +339,9 @@ class ImageFinder:
                 color,
             )
         )
+
+        if best_max_val < self.threshold:
+            self._save_match_heatmap(target_image_path, best_result, best_max_val)
 
         return best_scale, picked_matches, len(picked_matches), best_max_val, best_template, screenshot_cv
 
@@ -498,3 +546,38 @@ class ImageFinder:
             return True
         print(colored(f"No matches for {target_image_path} found in screenshot.", "red"))
         return False
+
+    def locate_primary_anchor(
+        self,
+        target_image_path,
+        screenshot,
+        win,
+        context,
+        anchor_name="primary",
+        search_region=None,
+        reference_normalized=None,
+    ):
+        if context is None:
+            return False
+
+        found, x, y, _ = self.find_image_coordinates(
+            target_image_path,
+            screenshot,
+            win,
+            0,
+            0,
+            1,
+            search_region=search_region,
+        )
+        if not found or x is None or y is None:
+            print(colored(f"Primary UI anchor not found: {target_image_path}", "yellow"))
+            return False
+
+        context.set_ui_anchor(
+            anchor_name,
+            x,
+            y,
+            win,
+            reference_normalized=reference_normalized,
+        )
+        return True

@@ -25,15 +25,17 @@ class WindowPercentAction(Action):
 
     def get_window(self, context=None):
         window_title = context.window_title if context else self.window_title
-        return self.window_handler.get_window(window_title)
+        return self.window_handler.get_client_window_rect(window_title)
 
     def screenshot_window(self, context=None):
         window_title = context.window_title if context else self.window_title
         return self.window_handler.screenshot_window(window_title)
 
-    def resolve_window_point(self, window):
+    def resolve_window_point(self, window, context=None):
         normalized_x = self.normalize_coordinate(self.x)
         normalized_y = self.normalize_coordinate(self.y)
+        if context and hasattr(context, "resolve_anchor_relative_point"):
+            return context.resolve_anchor_relative_point(normalized_x, normalized_y, window)
         return (
             int(window.left + window.width * normalized_x),
             int(window.top + window.height * normalized_y),
@@ -59,7 +61,7 @@ class WindowPointInputAction(WindowPercentAction):
         window = self.get_window(context)
         if not window:
             return False
-        target_x, target_y = self.resolve_window_point(window)
+        target_x, target_y = self.resolve_window_point(window, context)
         return self.execute_input(context, window, target_x, target_y)
 
     def execute_input(self, context, window, target_x, target_y):

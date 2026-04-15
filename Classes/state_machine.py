@@ -1,3 +1,6 @@
+from termcolor import colored
+
+
 class StateMachine:
     """Small deterministic state machine for automation workflows.
 
@@ -20,6 +23,8 @@ class StateMachine:
         self.current_state = None
         self.precondition_failures = {}
         self.precondition_recovery_threshold = 3
+        self.action_failures = {}
+        self.ai_fallback_threshold = 3
 
     def add_state(
         self,
@@ -60,24 +65,84 @@ class StateMachine:
         ) = self.states[self.current_state]
 
         if precondition and not self._precondition_passes(precondition, context):
-            failure_count = self.precondition_failures.get(self.current_state, 0) + 1
-            self.precondition_failures[self.current_state] = failure_count
+            precondition_state = self.current_state
+            failure_count = self.precondition_failures.get(precondition_state, 0) + 1
+            self.precondition_failures[precondition_state] = failure_count
 
             if failure_count >= self.precondition_recovery_threshold:
-                self.precondition_failures[self.current_state] = 0
+                if context and hasattr(context, "record_state"):
+                    context.record_state(
+                        precondition_state,
+                        "precondition",
+                        False,
+                        next_state=precondition_state,
+                        event="precondition",
+                    )
+                    context.save_failure_diagnostic(f"precondition_{precondition_state}")
+                self.precondition_failures[precondition_state] = 0
                 self.global_recovery(context)
                 return False
 
             next_state = fallback_state or next_state_on_failure
-            self.current_state = next_state() if callable(next_state) else next_state
+            resolved_next_state = next_state() if callable(next_state) else next_state
+            if context and hasattr(context, "record_state"):
+                context.record_state(
+                    precondition_state,
+                    "precondition",
+                    False,
+                    next_state=resolved_next_state,
+                    event="precondition",
+                )
+            self.current_state = resolved_next_state
             return False
 
         self.precondition_failures[self.current_state] = 0
+        state_name = self.current_state
         result = state.perform(context)
 
         next_state = next_state_on_success if result else next_state_on_failure
-        self.current_state = next_state() if callable(next_state) else next_state
+        resolved_next_state = next_state() if callable(next_state) else next_state
+        if context and hasattr(context, "record_state"):
+            context.record_state(
+                state_name,
+                getattr(state, "status_text", state.__class__.__name__),
+                result,
+                next_state=resolved_next_state,
+            )
+            if result:
+                self.action_failures[state_name] = 0
+            else:
+                screenshot_path = context.save_failure_diagnostic(state_name)
+                failure_count = self.action_failures.get(state_name, 0) + 1
+                self.action_failures[state_name] = failure_count
+                if self._should_run_ai_fallback(state, failure_count):
+                    self.action_failures[state_name] = 0
+                    self._run_ai_fallback(context, screenshot_path)
+
+        self.current_state = resolved_next_state
         return result
+
+    def _should_run_ai_fallback(self, state, failure_count):
+        if failure_count < self.ai_fallback_threshold:
+            return False
+        image = getattr(state, "image", "")
+        if image == "Media/captchachest.png":
+            return False
+        return bool(image)
+
+    @staticmethod
+    def _run_ai_fallback(context, screenshot_path):
+        try:
+            from ai_fallback import AIFallback
+        except Exception as exc:
+            print(colored(f"AI fallback unavailable: {exc}", "yellow"))
+            return None
+
+        return AIFallback().analyze_failure(
+            context,
+            screenshot_path,
+            getattr(context, "state_history", []),
+        )
 
     @staticmethod
     def _precondition_passes(precondition, context=None):
