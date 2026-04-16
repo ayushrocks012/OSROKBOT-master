@@ -5,7 +5,7 @@ import secrets
 SYS_RANDOM = secrets.SystemRandom()
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Any
 
 from logging_config import get_logger
 
@@ -312,7 +312,7 @@ class InputController:
     def _key_up(self, key):
         self._call_interception(("key_up", "keyup"), key)
 
-    def hotkey(self, *keys, context=None):
+    def hotkey(self, *keys: str | int, context: Any | None = None) -> bool:
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -335,7 +335,7 @@ class InputController:
                     InputController._pause_for_foreground_failure(active_context)
         return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
 
-    def smooth_move_to(self, x, y, context=None, duration=None, window_rect=None):
+    def smooth_move_to(self, x: float, y: float, context: Any | None = None, duration: float | None = None, window_rect: WindowRect | None = None) -> bool:
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -379,7 +379,7 @@ class InputController:
                 return False
         return True
 
-    def click(self, x, y, window_rect=None, remember_position=True, context=None):
+    def click(self, x: float, y: float, window_rect: WindowRect | None = None, remember_position: bool = True, context: Any | None = None) -> bool:
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -411,7 +411,7 @@ class InputController:
                     LOGGER.critical(f"Emergency: Hardware key/mouse stuck! Failed to release: {exc}")
                     InputController._pause_for_foreground_failure(active_context)
 
-    def move_to(self, x, y, window_rect=None, remember_position=False, context=None):
+    def move_to(self, x: float, y: float, window_rect: WindowRect | None = None, remember_position: bool = False, context: Any | None = None) -> bool:
         active_context = self._context(context)
         if not self.check_interlock(active_context):
             return False
@@ -425,7 +425,7 @@ class InputController:
             LOGGER.error(f"Error during move execution: {exc}")
             return False
 
-    def key_press(self, key, hold_seconds=None, presses=1, context=None):
+    def key_press(self, key: str | int, hold_seconds: float | None = None, presses: int = 1, context: Any | None = None) -> bool:
         active_context = self._context(context)
         if not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -455,7 +455,7 @@ class InputController:
                         InputController._pause_for_foreground_failure(active_context)
         return True
 
-    def scroll(self, y_scroll=0, context=None):
+    def scroll(self, y_scroll: int = 0, context: Any | None = None) -> bool:
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False

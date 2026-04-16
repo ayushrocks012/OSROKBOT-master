@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 import json
 import math
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from dynamic_planner import PlannerDecision
 from logging_config import get_logger
 from PIL import Image
 
@@ -383,7 +389,7 @@ class VisionMemory:
         self.save()
         return entry
 
-    def record_success(self, screenshot_path, decision, visible_labels=None, source="ai"):
+    def record_success(self, screenshot_path: str | Path, decision: PlannerDecision | dict[str, Any], visible_labels: list[Any] | None = None, source: str = "ai") -> dict[str, Any] | None:
         """Store a successful AI or memory decision.
 
         Args:
@@ -400,7 +406,7 @@ class VisionMemory:
             LOGGER.info(f"Vision memory success recorded: {entry.get('label')}")
         return entry
 
-    def record_correction(self, screenshot_path, decision, corrected_point, visible_labels=None):
+    def record_correction(self, screenshot_path: str | Path, decision: PlannerDecision | dict[str, Any], corrected_point: dict[str, Any], visible_labels: list[Any] | None = None) -> dict[str, Any] | None:
         """Store a human-corrected target point.
 
         Args:
@@ -423,7 +429,7 @@ class VisionMemory:
             LOGGER.info(f"Vision memory correction recorded: {entry.get('label')}")
         return entry
 
-    def record_failure(self, entry_or_decision):
+    def record_failure(self, entry_or_decision: PlannerDecision | dict[str, Any]) -> dict[str, Any] | None:
         """Increment a failure counter for the matching memory entry.
 
         Fixed: Now finds the actual matching entry by embedding similarity
@@ -445,7 +451,7 @@ class VisionMemory:
         LOGGER.warning(f"Vision memory failure recorded for label: {entry.get('label', 'unknown')}")
         return entry
 
-    def is_trusted_label(self, label, min_success=3):
+    def is_trusted_label(self, label: str, min_success: int = 3) -> bool:
         """Check whether a label has enough clean successes for auto mode.
 
         Args:
