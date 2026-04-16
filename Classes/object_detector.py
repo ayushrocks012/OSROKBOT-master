@@ -68,7 +68,7 @@ class YOLODetector:
 
 
 def create_detector():
-    weights_path = ModelManager().ensure_yolo_weights()
+    weights_path = ModelManager().find_yolo_weights()
     if not weights_path:
         return NoOpDetector()
 

@@ -1,5 +1,4 @@
 import os
-import re
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,15 +11,13 @@ LOGGER = get_logger(__name__)
 
 
 MODELS_DIR = PROJECT_ROOT / "models"
-ENV_VAR_PATTERN = re.compile(r"%([^%]+)%|\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
-def _expand_env_vars(value):
-    def replace(match):
-        key = next(group for group in match.groups() if group)
-        return os.environ.get(key, match.group(0))
-
-    return ENV_VAR_PATTERN.sub(replace, str(value))
+def _resolve_configured_path(value):
+    resolved = Path(os.path.expandvars(str(value))).expanduser()
+    if not resolved.is_absolute():
+        resolved = PROJECT_ROOT / resolved
+    return resolved
 
 
 class ModelManager:
@@ -28,12 +25,21 @@ class ModelManager:
         self.config = config or ConfigManager()
         self.models_dir = Path(models_dir)
 
-    def ensure_yolo_weights(self):
+    def _target_path_from_url(self, url):
+        parsed = urlparse(str(url))
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            LOGGER.error("YOLO weights URL must be an HTTPS URL.")
+            return None
+
+        filename = Path(parsed.path).name or "rok_yolo_weights.pt"
+        if not filename.lower().endswith(".pt"):
+            filename = f"{filename}.pt"
+        return self.models_dir / filename
+
+    def find_yolo_weights(self):
         configured_path = self.config.get("ROK_YOLO_WEIGHTS")
         if configured_path:
-            resolved = Path(_expand_env_vars(configured_path)).expanduser()
-            if not resolved.is_absolute():
-                resolved = PROJECT_ROOT / resolved
+            resolved = _resolve_configured_path(configured_path)
             if resolved.is_file():
                 return resolved
             LOGGER.warning(f"Configured YOLO weights are not accessible: {resolved}")
@@ -42,17 +48,29 @@ class ModelManager:
         if not url:
             return None
 
-        parsed = urlparse(url)
-        if parsed.scheme.lower() != "https" or not parsed.netloc:
-            LOGGER.error("YOLO weights URL must be an HTTPS URL.")
+        final_path = self._target_path_from_url(url)
+        if final_path and final_path.is_file():
+            self.config.set_many({"ROK_YOLO_WEIGHTS": str(final_path)})
+            return final_path
+        return None
+
+    def has_configured_download(self):
+        return bool(self.config.get("ROK_YOLO_WEIGHTS_URL"))
+
+    def ensure_yolo_weights(self):
+        weights_path = self.find_yolo_weights()
+        if weights_path:
+            return weights_path
+
+        url = self.config.get("ROK_YOLO_WEIGHTS_URL")
+        if not url:
             return None
 
-        filename = Path(parsed.path).name or "rok_yolo_weights.pt"
-        if not filename.lower().endswith(".pt"):
-            filename = f"{filename}.pt"
+        final_path = self._target_path_from_url(url)
+        if not final_path:
+            return None
 
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        final_path = self.models_dir / filename
         temp_path = final_path.with_suffix(final_path.suffix + ".tmp")
 
         if final_path.is_file():
@@ -75,3 +93,8 @@ class ModelManager:
         self.config.set_many({"ROK_YOLO_WEIGHTS": str(final_path)})
         LOGGER.info(f"YOLO weights saved: {final_path}")
         return final_path
+
+
+def yolo_download_required(config=None):
+    manager = ModelManager(config)
+    return manager.find_yolo_weights() is None and manager.has_configured_download()

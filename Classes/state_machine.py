@@ -23,6 +23,7 @@ class StateMachine:
     def __init__(self):
         self.states = {}
         self.current_state = None
+        self.halted = False
         self.precondition_failures = {}
         self.precondition_recovery_threshold = 3
         self.action_failures = {}
@@ -52,8 +53,40 @@ class StateMachine:
         if name not in self.states:
             raise ValueError(f"Unknown initial state: {name}")
         self.current_state = name
+        self.halted = False
+
+    def _record_transition(self, context, state_name, status_text, result, next_state=None, event="action"):
+        if context and hasattr(context, "record_state"):
+            context.record_state(state_name, status_text, result, next_state=next_state, event=event)
+
+    def _halt_invalid_transition(self, context, state_name, source, status_text, result, next_state=None, event="action"):
+        LOGGER.error("State resolution failed for %s during %s. Halting workflow.", state_name, source)
+        self._record_transition(context, state_name, status_text, result, next_state=next_state, event=event)
+        self.halted = True
+        return
+
+    def _resolve_next_state(self, next_state, context, state_name, source, status_text, result, event="action"):
+        try:
+            resolved_next_state = next_state() if callable(next_state) else next_state
+        except Exception as exc:
+            LOGGER.error("State resolution callable failed for %s during %s: %s", state_name, source, exc)
+            return self._halt_invalid_transition(context, state_name, source, status_text, result, event=event)
+        if not resolved_next_state:
+            return self._halt_invalid_transition(
+                context,
+                state_name,
+                source,
+                status_text,
+                result,
+                next_state=resolved_next_state,
+                event=event,
+            )
+        return resolved_next_state
 
     def execute(self, context=None):
+        if self.halted:
+            LOGGER.error("State machine is halted; refusing to execute.")
+            return False
         if self.current_state is None:
             raise RuntimeError("Initial state is not set")
         if self.current_state not in self.states:
@@ -87,7 +120,17 @@ class StateMachine:
                 return False
 
             next_state = fallback_state or next_state_on_failure
-            resolved_next_state = next_state() if callable(next_state) else next_state
+            resolved_next_state = self._resolve_next_state(
+                next_state,
+                context,
+                precondition_state,
+                "precondition",
+                "precondition",
+                False,
+                event="precondition",
+            )
+            if resolved_next_state is None:
+                return False
             if context and hasattr(context, "record_state"):
                 context.record_state(
                     precondition_state,
@@ -104,12 +147,22 @@ class StateMachine:
         result = state.perform(context)
 
         next_state = next_state_on_success if result else next_state_on_failure
-        resolved_next_state = next_state() if callable(next_state) else next_state
+        status_text = getattr(state, "status_text", state.__class__.__name__)
+        resolved_next_state = self._resolve_next_state(
+            next_state,
+            context,
+            state_name,
+            "action",
+            status_text,
+            result,
+        )
+        if resolved_next_state is None:
+            return False
         if context and hasattr(context, "record_state"):
             pending_recovery = getattr(context, "extracted", {}).get("pending_ai_recovery")
             context.record_state(
                 state_name,
-                getattr(state, "status_text", state.__class__.__name__),
+                status_text,
                 result,
                 next_state=resolved_next_state,
             )

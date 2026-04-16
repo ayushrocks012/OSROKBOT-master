@@ -1,5 +1,8 @@
 import time
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 import watchdog
 
@@ -83,3 +86,35 @@ def test_restart_ui_uses_heartbeat_python_and_entrypoint(tmp_path, monkeypatch):
 
     assert watchdog.restart_ui_from_heartbeat(payload) is True
     assert popen_calls == [(["C:/Python/python.exe", str(ui_path)], str(tmp_path))]
+
+
+def test_is_pid_running_requires_exact_csv_pid(monkeypatch):
+    outputs = [
+        '"Image Name","PID","Session Name","Session#","Mem Usage"\n"other.exe","1234","Console","1","12,000 K"\n',
+        '"Image Name","PID","Session Name","Session#","Mem Usage"\n"target.exe","12","Console","1","1,000 K"\n',
+    ]
+
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(stdout=outputs.pop(0))
+
+    monkeypatch.setattr(watchdog.subprocess, "run", fake_run)
+
+    assert watchdog.is_pid_running(12) is False
+    assert watchdog.is_pid_running(12) is True
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_name"),
+    [
+        (r"%WATCHDOG_TEST_ROOT%\heartbeat.json", "heartbeat.json"),
+        (r"$WATCHDOG_TEST_ROOT\heartbeat.json", "heartbeat.json"),
+        (r"~\heartbeat.json", "heartbeat.json"),
+    ],
+)
+def test_configured_path_uses_native_env_and_user_expansion(monkeypatch, configured, expected_name):
+    root = Path.cwd()
+    monkeypatch.setenv("WATCHDOG_TEST_ROOT", str(root))
+    monkeypatch.setenv("USERPROFILE", str(root))
+    monkeypatch.setattr(watchdog, "_configured_value", lambda _key, default=None: configured)
+
+    assert watchdog._configured_path("ANY_KEY") == root / expected_name

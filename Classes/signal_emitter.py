@@ -5,3 +5,4 @@ class SignalEmitter(QObject):
     pause_toggled = pyqtSignal(bool)
     state_changed = pyqtSignal(str)
     planner_decision = pyqtSignal(dict)
+    yolo_weights_ready = pyqtSignal(bool, str)

@@ -13,13 +13,16 @@ from context import Context
 from emergency_stop import EmergencyStop
 from health_check import HealthCheckDialog
 from input_controller import InputController
-from model_manager import ModelManager
+from logging_config import get_logger
+from model_manager import ModelManager, yolo_download_required
+from object_detector import create_detector
 from OS_ROKBOT import OSROKBOT
 from PyQt5 import QtCore, QtGui, QtWidgets
 from session_logger import SessionLogger
 from window_handler import WindowHandler
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOGGER = get_logger(__name__)
 EmergencyStop.start_once()
 
 
@@ -276,15 +279,18 @@ class UI(QtWidgets.QWidget):
         self.OS_ROKBOT.signal_emitter.pause_toggled.connect(self.on_pause_toggled)
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.currentState)
         self.OS_ROKBOT.signal_emitter.planner_decision.connect(self.on_planner_decision)
+        self.OS_ROKBOT.signal_emitter.yolo_weights_ready.connect(self.on_yolo_weights_ready)
         self.action_sets = ActionSets(OS_ROKBOT=self.OS_ROKBOT)
         self._background_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-UI")
         self.current_context = None
         self._planner_correction_armed = False
         self._session_logger = None
         self.target_title = window_title
+        self.yolo_ready = True
+        self._yolo_warmup_future = None
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.update_position)
-        self.timer.start(10)
+        self.timer.start(50)
 
         # Click target overlay.
         self._click_overlay = ClickOverlay()
@@ -555,7 +561,63 @@ class UI(QtWidgets.QWidget):
 
         self.show()
         WindowHandler().activate_window("OSROKBOT")
-        self._background_executor.submit(ModelManager().ensure_yolo_weights)
+        self._begin_yolo_warmup()
+
+    @staticmethod
+    def yolo_warmup_required(config=None):
+        return yolo_download_required(config)
+
+    def _set_yolo_start_available(self, available, tooltip):
+        self.play_button.setEnabled(available)
+        self.play_button.setToolTip(tooltip)
+
+    def _begin_yolo_warmup(self):
+        if self._yolo_warmup_future and not self._yolo_warmup_future.done():
+            return
+        if not self.yolo_warmup_required():
+            self.yolo_ready = True
+            self._set_yolo_start_available(True, "Start (F5)")
+            return
+
+        self.yolo_ready = False
+        self.status_label.setText(" YOLO weights downloading")
+        self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+        self.status_label.setToolTip("A configured YOLO weights URL is being downloaded before automation starts.")
+        self.current_state_label.setText("YOLO weights\ndownloading")
+        self._set_yolo_start_available(False, "Waiting for YOLO weights download")
+        self._yolo_warmup_future = self._background_executor.submit(ModelManager().ensure_yolo_weights)
+        self._yolo_warmup_future.add_done_callback(self._emit_yolo_ready_from_future)
+
+    def _emit_yolo_ready_from_future(self, future):
+        try:
+            weights_path = future.result()
+        except Exception as exc:
+            LOGGER.warning("YOLO weights warmup failed: %s", exc)
+            self.OS_ROKBOT.signal_emitter.yolo_weights_ready.emit(False, str(exc))
+            return
+        if weights_path:
+            self.OS_ROKBOT.signal_emitter.yolo_weights_ready.emit(True, str(weights_path))
+        else:
+            self.OS_ROKBOT.signal_emitter.yolo_weights_ready.emit(False, "YOLO weights download failed")
+
+    def on_yolo_weights_ready(self, success, message):
+        self._yolo_warmup_future = None
+        self.yolo_ready = bool(success)
+        if success:
+            self.OS_ROKBOT.detector = create_detector()
+            self._set_yolo_start_available(True, "Start (F5)")
+            if not self.OS_ROKBOT.is_running:
+                self.status_label.setText(" Ready")
+                self.status_label.setStyleSheet("color: #4a90e2; font-weight: bold; text-align: left;")
+                self.status_label.setToolTip("")
+                self.current_state_label.setText("Ready!")
+            return
+
+        self._set_yolo_start_available(False, "YOLO weights unavailable; check Settings")
+        self.status_label.setText(" YOLO weights unavailable")
+        self.status_label.setStyleSheet("color: red; font-weight: bold;")
+        self.status_label.setToolTip(str(message))
+        self.current_state_label.setText("YOLO weights\nfailed")
 
     # ── Keyboard shortcuts ───────────────────────────────────────────────────
     def _setup_shortcuts(self):
@@ -742,6 +804,11 @@ class UI(QtWidgets.QWidget):
 
     # ── Automation control ───────────────────────────────────────────────────
     def start_automation(self):
+        if not self.yolo_ready:
+            self.status_label.setText(" YOLO weights unavailable")
+            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            self.current_state_label.setText("YOLO weights\nnot ready")
+            return
         if self.OS_ROKBOT.is_running or not self.OS_ROKBOT.all_threads_joined:
             self.current_state_label.setText('Finishing last job\nwait 2s')
             return
@@ -785,6 +852,7 @@ class UI(QtWidgets.QWidget):
         self.status_label.setStyleSheet("color: #4a90e2; font-weight: bold; text-align: left;")
         self.status_label.setToolTip("")
         self.play_button.show()
+        self._set_yolo_start_available(self.yolo_ready, "Start (F5)" if self.yolo_ready else "YOLO weights unavailable; check Settings")
         self.stop_button.hide()
         self.pause_button.hide()
         QtCore.QTimer.singleShot(2000, lambda: self.currentState("Ready"))
@@ -804,6 +872,7 @@ class UI(QtWidgets.QWidget):
     def open_settings(self):
         dialog = SettingsDialog(self)
         dialog.exec_()
+        self._begin_yolo_warmup()
 
     def open_dashboard(self):
         dialog = SessionDashboard(session_logger=self._session_logger, parent=self)

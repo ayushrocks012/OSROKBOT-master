@@ -9,19 +9,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+if os.name != "nt":
+    raise NotImplementedError("watchdog.py is Windows only")
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 CLASSES_DIR = PROJECT_ROOT / "Classes"
 DEFAULT_HEARTBEAT_PATH = PROJECT_ROOT / "data" / "heartbeat.json"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_GAME_RESTART_WAIT_SECONDS = 20.0
-ENV_VAR_PATTERN = re.compile(r"%([^%]+)%|\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 if str(CLASSES_DIR) not in sys.path:
     sys.path.insert(0, str(CLASSES_DIR))
@@ -51,18 +52,10 @@ def _configured_value(key: str, default: Any = None) -> Any:
     return ConfigManager().get(key, default)
 
 
-def _expand_env_vars(value: str) -> str:
-    def replace(match: re.Match[str]) -> str:
-        key = next(group for group in match.groups() if group)
-        return os.environ.get(key, match.group(0))
-
-    return ENV_VAR_PATTERN.sub(replace, value)
-
-
 def _configured_path(key: str, default: Path | None = None) -> Path | None:
     value = _configured_value(key)
     if value:
-        return Path(_expand_env_vars(str(value))).expanduser()
+        return Path(os.path.expandvars(str(value))).expanduser()
     return default
 
 
@@ -134,7 +127,7 @@ def is_pid_running(pid: int) -> bool:
         )
     except Exception:
         return False
-    return str(pid) in result.stdout
+    return f'"{pid}"' in result.stdout
 
 
 def terminate_tracked_pid(pid_value: Any, label: str) -> bool:

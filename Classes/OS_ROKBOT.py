@@ -44,7 +44,7 @@ class OSROKBOT:
         self.signal_emitter = SignalEmitter()
         self.is_running = False
         self.all_threads_joined = True
-        self._runner_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Runner")
+        self._runner_executor: ThreadPoolExecutor | None = None
         self._runner_future: Future | None = None
         self.window_handler = WindowHandler()
         self.input_controller = InputController(context=None)
@@ -132,6 +132,12 @@ class OSROKBOT:
         temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temp_path.replace(heartbeat_path)
 
+    def _shutdown_runner_executor(self):
+        executor = self._runner_executor
+        self._runner_executor = None
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
+
     @staticmethod
     def _log_future_exception(future):
         try:
@@ -197,6 +203,9 @@ class OSROKBOT:
 
         def run_single_machine(machine):
             while not self.stop_event.is_set():
+                if getattr(machine, "halted", False):
+                    LOGGER.error("Workflow state machine halted; stopping workflow thread.")
+                    break
                 if self.pause_event.is_set():
                     self.write_heartbeat(context)
                     self.stop_event.wait(self.delay)
@@ -208,7 +217,11 @@ class OSROKBOT:
                     continue
                 if not self._ensure_foreground(context):
                     continue
-                if machine.execute(context):
+                step_result = machine.execute(context)
+                if getattr(machine, "halted", False):
+                    LOGGER.error("Workflow state machine halted after execute; stopping workflow thread.")
+                    break
+                if step_result:
                     self.stop_event.wait(self.delay)
 
         try:
@@ -228,13 +241,20 @@ class OSROKBOT:
             self.is_running = False
 
     def _runner_done(self, future):
+        failed = False
         try:
             future.result()
         except Exception as exc:
+            failed = True
             LOGGER.error("OSROKBOT runner stopped after an unhandled error: %s", exc)
+        if future is not self._runner_future:
+            return
+        if failed:
             self.stop_event.set()
-            self.is_running = False
-            self.all_threads_joined = True
+        self._runner_future = None
+        self.is_running = False
+        self._shutdown_runner_executor()
+        self.all_threads_joined = True
 
     def start(self, steps, context=None):
         if self.is_running or not self.all_threads_joined:
@@ -245,6 +265,7 @@ class OSROKBOT:
         EmergencyStop.start_once()
 
         self.is_running = True
+        self._runner_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Runner")
         self._runner_future = self._runner_executor.submit(self.run, steps, context)
         self._runner_future.add_done_callback(self._runner_done)
         return True
@@ -252,6 +273,7 @@ class OSROKBOT:
     def stop(self):
         self.stop_event.set()
         self.is_running = False
+        self._shutdown_runner_executor()
 
     def toggle_pause(self):
         if self.pause_event.is_set():
