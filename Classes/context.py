@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+import threading
 from typing import Any, Optional
 
 from termcolor import colored
@@ -43,6 +44,8 @@ class Context:
     primary_ui_anchor: str = "primary"
     primary_anchor_image: Optional[str] = "Media/ficon.png"
     primary_anchor_reference_normalized: Optional[tuple[float, float]] = None
+    planner_goal: str = "Safely continue the selected Rise of Kingdoms task."
+    planner_autonomy_level: int = 1
 
     @property
     def UI(self):
@@ -162,6 +165,38 @@ class Context:
         offset_x = (normalized_x - reference_x) * int(window_rect.width)
         offset_y = (normalized_y - reference_y) * int(window_rect.height)
         return int(round(anchor_screen_x + offset_x)), int(round(anchor_screen_y + offset_y))
+
+    def set_pending_planner_decision(self, decision, screenshot_path=None, window_rect=None):
+        self.extracted["planner_pending"] = {
+            "decision": decision.to_dict() if hasattr(decision, "to_dict") else decision,
+            "screenshot_path": str(screenshot_path) if screenshot_path else "",
+            "window_rect": {
+                "left": getattr(window_rect, "left", 0),
+                "top": getattr(window_rect, "top", 0),
+                "width": getattr(window_rect, "width", 0),
+                "height": getattr(window_rect, "height", 0),
+            } if window_rect else {},
+            "event": threading.Event(),
+            "result": None,
+            "corrected_point": None,
+        }
+        self.emit_state("Planner approval needed")
+        return self.extracted["planner_pending"]
+
+    def resolve_planner_decision(self, approved, corrected_point=None):
+        pending = self.extracted.get("planner_pending")
+        if not pending:
+            return False
+        pending["result"] = "approved" if approved else "rejected"
+        if corrected_point:
+            pending["corrected_point"] = corrected_point
+        event = pending.get("event")
+        if event:
+            event.set()
+        return True
+
+    def clear_pending_planner_decision(self):
+        return self.extracted.pop("planner_pending", None)
 
     def set_extracted_text(self, description, value):
         cleaned_value = value.replace(",", "").replace("\"", "")

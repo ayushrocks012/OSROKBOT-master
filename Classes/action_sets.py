@@ -12,6 +12,7 @@ from Actions.find_marauder_action import FindMarauderAction
 from Actions.screenshot_action import ScreenshotAction
 from Actions.chatgpt_action import ChatGPTAction
 from Actions.wait_for_keypress_action import WaitForKeyPressAction
+from Actions.dynamic_planner_action import DynamicPlannerAction
 from state_machine import StateMachine
 from Actions.find_gems_action import FindGemAction
 from helpers import Helpers
@@ -43,6 +44,14 @@ class ActionSets:
         def precondition(context=None):
             return GameStateMonitor(context).has_idle_march_slots(required)
         return precondition
+
+    def dynamic_planner(self):
+        # Flow: guarded AI planner observes the current screen, proposes one
+        # bounded action, then loops. Human approval is required by default.
+        machine = self.create_machine()
+        machine.add_state("plan_next", DynamicPlannerAction(), "plan_next", "plan_next")
+        machine.set_initial_state("plan_next")
+        return machine
 
     @staticmethod
     def ap_precondition(required=GameStateMonitor.DEFAULT_BARBARIAN_AP_COST):

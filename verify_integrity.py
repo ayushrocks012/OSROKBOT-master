@@ -309,6 +309,18 @@ def check_interception_input() -> list[str]:
     return []
 
 
+def check_planner_modules() -> list[str]:
+    if str(CLASSES_DIR) not in sys.path:
+        sys.path.insert(0, str(CLASSES_DIR))
+    failures: list[str] = []
+    for module_name in ["dynamic_planner", "ocr_service", "vision_memory", "Actions.dynamic_planner_action"]:
+        try:
+            __import__(module_name)
+        except Exception as exc:
+            failures.append(f"Unable to import {module_name}: {exc}")
+    return failures
+
+
 def check_ui_map_coordinates() -> list[str]:
     failures: list[str] = []
     if str(CLASSES_DIR) not in sys.path:
@@ -352,6 +364,7 @@ def main() -> int:
         "UIMap coordinates": check_ui_map_coordinates,
         "runtime health": check_runtime_health,
         "Interception hardware input": check_interception_input,
+        "guarded planner modules": check_planner_modules,
         "optional YOLO detector": check_optional_yolo_detector,
     }
 

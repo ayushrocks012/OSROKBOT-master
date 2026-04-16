@@ -13,6 +13,8 @@ idk.png
 testprocessed.png
 diagnostics/
 data/recovery_memory.json
+data/vision_memory.json
+data/planner_latest.png
 datasets/recovery/
 models/
 

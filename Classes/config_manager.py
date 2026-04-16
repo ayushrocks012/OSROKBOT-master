@@ -28,6 +28,9 @@ class ConfigManager:
         "ROK_CLIENT_PATH",
         "ROK_WINDOW_TITLE",
         "WINDOW_TITLE",
+        "PLANNER_GOAL",
+        "PLANNER_AUTONOMY_LEVEL",
+        "PLANNER_TRUSTED_SUCCESS_COUNT",
     }
 
     def __init__(self, config_path=CONFIG_PATH, env_path=ENV_PATH):

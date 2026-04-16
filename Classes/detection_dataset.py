@@ -53,3 +53,30 @@ class DetectionDataset:
 
         print(colored(f"Detection dataset stub exported: {image_path}", "yellow"))
         return image_path
+
+    def export_correction(self, screenshot_path, decision, corrected_point, detections=None):
+        image_path = self.export_stub(
+            screenshot_path,
+            "planner_correction",
+            action_image=getattr(decision, "label", None) or "dynamic_planner",
+            detections=detections,
+        )
+        if not image_path:
+            return None
+        point_path = image_path.with_suffix(".point")
+        if hasattr(decision, "to_dict"):
+            decision = decision.to_dict()
+        point_path.write_text(
+            "\n".join(
+                [
+                    f"label={decision.get('label', '')}",
+                    f"original_x={decision.get('x', '')}",
+                    f"original_y={decision.get('y', '')}",
+                    f"corrected_x={corrected_point.get('x', '')}",
+                    f"corrected_y={corrected_point.get('y', '')}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return image_path

@@ -35,5 +35,10 @@ jiter==0.14.0
 # Optional YOLO object detection when ROK_YOLO_WEIGHTS is configured.
 ultralytics==8.4.24
 
+# Optional guarded AI planner perception and local vector memory.
+easyocr==1.7.2
+sentence-transformers==3.4.1
+faiss-cpu==1.9.0
+
 # Console diagnostics.
 termcolor==2.4.0

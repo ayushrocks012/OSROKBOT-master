@@ -11,11 +11,14 @@ import time
 from window_handler import WindowHandler
 from context import Context
 from config_manager import ConfigManager
+from emergency_stop import EmergencyStop
 from model_manager import ModelManager
+from input_controller import InputController
 import threading
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+EmergencyStop.start_once()
 
 
 def asset_path(*parts):
@@ -54,6 +57,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.yolo_weights_input = QtWidgets.QLineEdit(self.config.get("ROK_YOLO_WEIGHTS", "") or "")
         self.yolo_url_input = QtWidgets.QLineEdit(self.config.get("ROK_YOLO_WEIGHTS_URL", "") or "")
         self.model_input = QtWidgets.QLineEdit(self.config.get("OPENAI_VISION_MODEL", "gpt-5.4-mini") or "gpt-5.4-mini")
+        self.planner_goal_input = QtWidgets.QLineEdit(
+            self.config.get("PLANNER_GOAL", "Safely continue the selected Rise of Kingdoms task.") or ""
+        )
         self.status_label = QtWidgets.QLabel("")
 
         form = QtWidgets.QFormLayout()
@@ -63,6 +69,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("YOLO Weights", self._path_row(self.yolo_weights_input, self.browse_yolo_weights))
         form.addRow("YOLO Weights URL", self.yolo_url_input)
         form.addRow("OpenAI Model", self.model_input)
+        form.addRow("Planner Goal", self.planner_goal_input)
 
         save_button = QtWidgets.QPushButton("Save")
         save_button.clicked.connect(self.save_settings)
@@ -118,6 +125,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 "ROK_YOLO_WEIGHTS": self.yolo_weights_input.text(),
                 "ROK_YOLO_WEIGHTS_URL": self.yolo_url_input.text(),
                 "OPENAI_VISION_MODEL": self.model_input.text(),
+                "PLANNER_GOAL": self.planner_goal_input.text(),
             }
         )
         weights_path = ModelManager(self.config).ensure_yolo_weights()
@@ -137,6 +145,8 @@ class UI(QtWidgets.QWidget):
         self.OS_ROKBOT.signal_emitter.pause_toggled.connect(self.on_pause_toggled) # Connect the signal to the slot
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.currentState)
         self.action_sets = ActionSets(OS_ROKBOT=self.OS_ROKBOT)
+        self.current_context = None
+        self._planner_correction_armed = False
         self.target_title = window_title
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.update_position)
@@ -284,7 +294,7 @@ class UI(QtWidgets.QWidget):
         self.action_set_combo_box.setStyleSheet("""
             color: #fff;
         """)
-        self.action_set_names = ["farm_rss_new","farm_rss","farm_food","farm_wood","farm_stone","farm_gold", "farm_barb","farm_barb_all", "farm_gems", "lyceum", "lyceumMid"]
+        self.action_set_names = ["dynamic_planner", "farm_rss_new","farm_rss","farm_food","farm_wood","farm_stone","farm_gold", "farm_barb","farm_barb_all", "farm_gems", "lyceum", "lyceumMid"]
         self.action_set_combo_box.addItems(self.action_set_names)
 
         # Checkbutton for captcha
@@ -299,7 +309,25 @@ class UI(QtWidgets.QWidget):
         """)
         self.check_captcha_checkbutton.setChecked(True)
 
-        
+        self.autonomy_combo_box = QtWidgets.QComboBox()
+        self.autonomy_combo_box.addItems(["L1 approve", "L2 trusted", "L3 auto"])
+        try:
+            configured_level = int(ConfigManager().get("PLANNER_AUTONOMY_LEVEL", "1"))
+            self.autonomy_combo_box.setCurrentIndex(max(0, min(2, configured_level - 1)))
+        except Exception:
+            self.autonomy_combo_box.setCurrentIndex(0)
+
+        approval_layout = QtWidgets.QHBoxLayout()
+        approval_layout.setSpacing(2)
+        self.approve_button = QtWidgets.QPushButton("OK")
+        self.reject_button = QtWidgets.QPushButton("No")
+        self.correct_button = QtWidgets.QPushButton("Fix")
+        self.approve_button.clicked.connect(self.approve_planner_action)
+        self.reject_button.clicked.connect(self.reject_planner_action)
+        self.correct_button.clicked.connect(self.correct_planner_action)
+        approval_layout.addWidget(self.approve_button)
+        approval_layout.addWidget(self.reject_button)
+        approval_layout.addWidget(self.correct_button)
 
         # Content Layout
         debug_layout = QtWidgets.QVBoxLayout()
@@ -365,6 +393,8 @@ class UI(QtWidgets.QWidget):
         content_layout.addLayout(button_layout)
         content_layout.addWidget(self.action_set_combo_box)
         content_layout.addWidget(self.check_captcha_checkbutton)
+        content_layout.addWidget(self.autonomy_combo_box)
+        content_layout.addLayout(approval_layout)
         content_layout.addLayout(debug_layout) # Add it to the layout
 
         # Main Layout
@@ -385,7 +415,7 @@ class UI(QtWidgets.QWidget):
         self.pause_button.hide()
         #self.setFixedSize(100, 150)
         #fix horizontal size
-        self.setFixedWidth(125)
+        self.setFixedWidth(145)
 
         #transparent backgourd
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
@@ -417,6 +447,12 @@ class UI(QtWidgets.QWidget):
         elif "Interception unavailable" in state_text:
             self.status_label.setText("Interception unavailable")
             self.status_label.setStyleSheet("color: red; font-weight: bold;")
+        elif "Planner approval needed" in state_text:
+            self.status_label.setText("Approve AI action")
+            self.status_label.setStyleSheet("color: #9be7ff; font-weight: bold;")
+        elif "Planner trusted" in state_text:
+            self.status_label.setText("Planner trusted auto-click")
+            self.status_label.setStyleSheet("color: #b8ff9b; font-weight: bold;")
         self.current_state_label.adjustSize() # Optional, to adjust the size of the label to fit the new text
 
 
@@ -476,6 +512,12 @@ class UI(QtWidgets.QWidget):
                     signal_emitter=self.OS_ROKBOT.signal_emitter,
                     window_title=self.target_title,
                 )
+                context.planner_goal = ConfigManager().get(
+                    "PLANNER_GOAL",
+                    "Safely continue the selected Rise of Kingdoms task.",
+                )
+                context.planner_autonomy_level = self.autonomy_combo_box.currentIndex() + 1
+                self.current_context = context
                 if self.OS_ROKBOT.start(actions_groups, context):
                     self.status_label.setText(' Running')
                     self.status_label.setStyleSheet("color: green;font-weight: bold;")
@@ -501,6 +543,55 @@ class UI(QtWidgets.QWidget):
     def open_settings(self):
         dialog = SettingsDialog(self)
         dialog.exec_()
+
+    def _pending_planner_context(self):
+        if not self.current_context:
+            return None
+        if not self.current_context.extracted.get("planner_pending"):
+            self.status_label.setText("No planner action pending")
+            return None
+        return self.current_context
+
+    def approve_planner_action(self):
+        context = self._pending_planner_context()
+        if context:
+            context.resolve_planner_decision(True)
+            self.status_label.setText("Planner action approved")
+
+    def reject_planner_action(self):
+        context = self._pending_planner_context()
+        if context:
+            context.resolve_planner_decision(False)
+            self.status_label.setText("Planner action rejected")
+
+    def correct_planner_action(self):
+        context = self._pending_planner_context()
+        if not context:
+            return
+        if not self._planner_correction_armed:
+            self._planner_correction_armed = True
+            self.status_label.setText("Move cursor to target")
+            QtCore.QTimer.singleShot(2500, self.finish_planner_correction)
+            return
+
+    def finish_planner_correction(self):
+        self._planner_correction_armed = False
+        context = self._pending_planner_context()
+        if not context:
+            return
+        pending = context.extracted.get("planner_pending", {})
+        rect = pending.get("window_rect", {})
+        width = max(1, int(rect.get("width", 1)))
+        height = max(1, int(rect.get("height", 1)))
+        left = int(rect.get("left", 0))
+        top = int(rect.get("top", 0))
+        cursor_x, cursor_y = InputController._mouse_position()
+        corrected = {
+            "x": max(0.0, min(1.0, (cursor_x - left) / width)),
+            "y": max(0.0, min(1.0, (cursor_y - top) / height)),
+        }
+        context.resolve_planner_decision(True, corrected_point=corrected)
+        self.status_label.setText("Planner correction saved")
         
         
     def call_current_state(self,info):
@@ -514,6 +605,7 @@ class UI(QtWidgets.QWidget):
 if __name__ == "__main__":
     # Change working directory to project root so Media/ paths resolve correctly
     os.chdir(PROJECT_ROOT)
+    EmergencyStop.start_once()
     # Activate Rise of Kingdoms window first
     WindowHandler().activate_window('Rise of Kingdoms')
     app = QtWidgets.QApplication(sys.argv)
