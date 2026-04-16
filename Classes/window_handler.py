@@ -1,5 +1,6 @@
 import ctypes
 import time
+from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -28,6 +29,51 @@ class ClientRect:
     top: int
     width: int
     height: int
+
+
+@contextmanager
+def _window_dc(hwnd):
+    window_dc = None
+    try:
+        window_dc = win32gui.GetWindowDC(hwnd)
+        yield window_dc
+    finally:
+        if window_dc:
+            win32gui.ReleaseDC(hwnd, window_dc)
+
+
+@contextmanager
+def _source_dc(window_dc):
+    source_dc = None
+    try:
+        source_dc = win32ui.CreateDCFromHandle(window_dc)
+        yield source_dc
+    finally:
+        if source_dc:
+            source_dc.DeleteDC()
+
+
+@contextmanager
+def _compatible_dc(source_dc):
+    memory_dc = None
+    try:
+        memory_dc = source_dc.CreateCompatibleDC()
+        yield memory_dc
+    finally:
+        if memory_dc:
+            memory_dc.DeleteDC()
+
+
+@contextmanager
+def _compatible_bitmap(source_dc, width, height):
+    bitmap = None
+    try:
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(source_dc, width, height)
+        yield bitmap
+    finally:
+        if bitmap:
+            win32gui.DeleteObject(bitmap.GetHandle())
 
 
 class WindowHandler:
@@ -100,14 +146,13 @@ class WindowHandler:
         client_offset_x = max(0, int(client_rect.left - window_left))
         client_offset_y = max(0, int(client_rect.top - window_top))
 
-        window_dc = win32gui.GetWindowDC(hwnd)
-        source_dc = win32ui.CreateDCFromHandle(window_dc)
-        memory_dc = source_dc.CreateCompatibleDC()
-        bitmap = win32ui.CreateBitmap()
-        bitmap.CreateCompatibleBitmap(source_dc, window_width, window_height)
-        memory_dc.SelectObject(bitmap)
-
-        try:
+        with (
+            _window_dc(hwnd) as window_dc,
+            _source_dc(window_dc) as source_dc,
+            _compatible_dc(source_dc) as memory_dc,
+            _compatible_bitmap(source_dc, window_width, window_height) as bitmap,
+        ):
+            memory_dc.SelectObject(bitmap)
             print_window = ctypes.windll.user32.PrintWindow
             # PW_RENDERFULLCONTENT improves captures for modern DWM-backed apps.
             rendered = print_window(hwnd, memory_dc.GetSafeHdc(), 0x00000002)
@@ -151,11 +196,6 @@ class WindowHandler:
                     client_offset_y + client_rect.height,
                 )
             )
-        finally:
-            win32gui.DeleteObject(bitmap.GetHandle())
-            memory_dc.DeleteDC()
-            source_dc.DeleteDC()
-            win32gui.ReleaseDC(hwnd, window_dc)
 
     def screenshot_window(self, title):
         win = self.get_window(title)

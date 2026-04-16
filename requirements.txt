@@ -24,6 +24,7 @@ keyboard==0.13.5
 pytesseract==0.3.10
 packaging==24.2
 python-dotenv==1.0.0
+pydantic==2.13.1
 
 # Lyceum answer matching.
 scikit-learn==1.8.0

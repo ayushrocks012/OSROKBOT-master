@@ -232,6 +232,11 @@ class InputController:
         )
 
     @staticmethod
+    def _ease_in_out(t):
+        t = InputController._clamp(float(t), 0.0, 1.0)
+        return t * t * (3 - 2 * t)
+
+    @staticmethod
     def _desktop_mouse_position():
         point = _Point()
         if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
@@ -359,7 +364,7 @@ class InputController:
         for step in range(1, steps + 1):
             if not self.check_interlock(active_context):
                 return False
-            t = step / steps
+            t = self._ease_in_out(step / steps)
             next_x = int(round(self._calculate_bezier_point(start_x, ctrl1_x, ctrl2_x, target_x, t)))
             next_y = int(round(self._calculate_bezier_point(start_y, ctrl1_y, ctrl2_y, target_y, t)))
             try:

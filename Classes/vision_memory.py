@@ -60,7 +60,9 @@ class VisionMemory:
         """Persist memory entries to disk as JSON."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": 1, "entries": self.entries}
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temp_path.replace(self.path)
 
     def _load_model(self):
         """Load the CLIP embedding model lazily.

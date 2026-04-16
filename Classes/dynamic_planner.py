@@ -1,12 +1,27 @@
 import base64
 import json
 import math
-from dataclasses import asdict, dataclass
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar, Literal
 
 from config_manager import ConfigManager
 from logging_config import get_logger
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    InternalServerError,
+    OpenAI,
+    PermissionDeniedError,
+    RateLimitError,
+)
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from vision_memory import VisionMemory
 
 LOGGER = get_logger(__name__)
@@ -16,6 +31,9 @@ ALLOWED_ACTION_TYPES = {"click", "wait", "stop"}
 DEFAULT_MODEL = "gpt-5.4-mini"
 MIN_PLANNER_CONFIDENCE = 0.70
 MAX_PLANNER_DELAY_SECONDS = 10.0
+REQUEST_POLL_SECONDS = 0.1
+MAX_REQUEST_ATTEMPTS = 3
+RETRY_BASE_DELAY_SECONDS = 1.0
 
 
 def _safe_float(value, default=math.nan):
@@ -56,8 +74,46 @@ class PlannerTarget:
         }
 
 
-@dataclass
-class PlannerDecision:
+class PlannerLLMDecision(BaseModel):
+    """Strict model-facing planner response.
+
+    The model may select a local target by ID, but it must not return raw
+    coordinates. Coordinates are resolved from current detector/OCR targets.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    thought_process: str
+    action_type: Literal["click", "wait", "stop"]
+    target_id: str
+    label: str
+    confidence: float
+    delay_seconds: float
+    reason: str
+
+    @field_validator("action_type", mode="before")
+    @classmethod
+    def _normalize_action_type(cls, value):
+        return str(value or "wait").lower()
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_confidence(cls, value):
+        return _safe_float(value, 0.0)
+
+    @field_validator("delay_seconds", mode="before")
+    @classmethod
+    def _coerce_delay(cls, value):
+        return _clamp_delay(value)
+
+    @model_validator(mode="after")
+    def _require_target_for_click(self):
+        if self.action_type == "click" and not self.target_id:
+            raise ValueError("click decisions must reference a target_id")
+        return self
+
+
+class PlannerDecision(BaseModel):
     """One structured action proposed by the AI planner.
 
     Attributes:
@@ -73,16 +129,62 @@ class PlannerDecision:
         delay_seconds: Bounded planner-recommended wait/settle delay.
     """
 
-    thought_process: str
-    action_type: str
-    label: str
-    x: float
-    y: float
-    confidence: float
-    reason: str
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=True)
+
+    _POSITIONAL_FIELDS: ClassVar[tuple[str, ...]] = (
+        "thought_process",
+        "action_type",
+        "label",
+        "x",
+        "y",
+        "confidence",
+        "reason",
+        "source",
+        "target_id",
+        "delay_seconds",
+    )
+
+    thought_process: str = ""
+    action_type: str = "wait"
+    label: str = ""
+    x: float = Field(default=math.nan)
+    y: float = Field(default=math.nan)
+    confidence: float = 0.0
+    reason: str = ""
     source: str = "ai"
     target_id: str = ""
     delay_seconds: float = 1.0
+
+    def __init__(self, *args, **data):
+        if args:
+            positional_fields = type(self)._POSITIONAL_FIELDS
+            if len(args) > len(positional_fields):
+                raise TypeError(f"PlannerDecision expected at most {len(positional_fields)} positional arguments")
+            for name, value in zip(positional_fields, args, strict=False):
+                if name in data:
+                    raise TypeError(f"PlannerDecision got multiple values for argument '{name}'")
+                data[name] = value
+        super().__init__(**data)
+
+    @field_validator("action_type", mode="before")
+    @classmethod
+    def _normalize_action_type(cls, value):
+        return str(value or "wait").lower()
+
+    @field_validator("x", "y", mode="before")
+    @classmethod
+    def _coerce_coordinate(cls, value):
+        return _safe_float(value, math.nan)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_confidence(cls, value):
+        return _safe_float(value, 0.0)
+
+    @field_validator("delay_seconds", mode="before")
+    @classmethod
+    def _coerce_delay(cls, value):
+        return _clamp_delay(value)
 
     @classmethod
     def from_mapping(cls, raw, source="ai"):
@@ -97,21 +199,35 @@ class PlannerDecision:
             fields are converted by Python and will raise `ValueError`.
         """
         return cls(
-            thought_process=str(raw.get("thought_process", "")),
-            action_type=str(raw.get("action_type", "wait")).lower(),
-            label=str(raw.get("label", "")),
-            x=_safe_float(raw.get("x"), math.nan),
-            y=_safe_float(raw.get("y"), math.nan),
-            confidence=_safe_float(raw.get("confidence"), 0.0),
-            reason=str(raw.get("reason", "")),
+            thought_process=raw.get("thought_process", ""),
+            action_type=raw.get("action_type", "wait"),
+            label=raw.get("label", ""),
+            x=raw.get("x", math.nan),
+            y=raw.get("y", math.nan),
+            confidence=raw.get("confidence", 0.0),
+            reason=raw.get("reason", ""),
             source=source,
-            target_id=str(raw.get("target_id", "")),
-            delay_seconds=_clamp_delay(raw.get("delay_seconds", 1.0)),
+            target_id=raw.get("target_id", ""),
+            delay_seconds=raw.get("delay_seconds", 1.0),
+        )
+
+    @classmethod
+    def from_llm_decision(cls, decision, source="ai"):
+        """Create an unresolved internal decision from a validated LLM payload."""
+        return cls(
+            thought_process=decision.thought_process,
+            action_type=decision.action_type,
+            label=decision.label,
+            confidence=decision.confidence,
+            reason=decision.reason,
+            source=source,
+            target_id=decision.target_id,
+            delay_seconds=decision.delay_seconds,
         )
 
     def to_dict(self):
         """Return a JSON-serializable dictionary for Context and UI payloads."""
-        return asdict(self)
+        return self.model_dump()
 
 
 class DynamicPlanner:
@@ -124,28 +240,7 @@ class DynamicPlanner:
     HITL approval, bounds checks, memory writes, and Interception input.
     """
 
-    SCHEMA = {
-        "type": "object",
-        "properties": {
-            "thought_process": {"type": "string"},
-            "action_type": {"type": "string", "enum": ["click", "wait", "stop"]},
-            "target_id": {"type": "string"},
-            "label": {"type": "string"},
-            "confidence": {"type": "number"},
-            "delay_seconds": {"type": "number"},
-            "reason": {"type": "string"},
-        },
-        "required": [
-            "thought_process",
-            "action_type",
-            "target_id",
-            "label",
-            "confidence",
-            "delay_seconds",
-            "reason",
-        ],
-        "additionalProperties": False,
-    }
+    SCHEMA = PlannerLLMDecision.model_json_schema()
 
     def __init__(self, config=None, memory=None):
         """Initialize the planner using ConfigManager and optional memory.
@@ -159,6 +254,7 @@ class DynamicPlanner:
         self.client = OpenAI(api_key=api_key) if api_key else None
         self.model = self.config.get("OPENAI_VISION_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
         self.memory = memory or VisionMemory()
+        self._request_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Planner")
 
     @staticmethod
     def _image_data_url(path):
@@ -353,6 +449,66 @@ class DynamicPlanner:
             )
         return True
 
+    @staticmethod
+    def _request_interrupted(context):
+        bot = getattr(context, "bot", None) if context else None
+        if not bot:
+            return False
+        stop_event = getattr(bot, "stop_event", None)
+        pause_event = getattr(bot, "pause_event", None)
+        return bool(
+            (stop_event is not None and stop_event.is_set())
+            or (pause_event is not None and pause_event.is_set())
+        )
+
+    @staticmethod
+    def _is_transient_openai_error(exc):
+        if isinstance(exc, APIConnectionError | APITimeoutError | InternalServerError | RateLimitError):
+            return True
+        if isinstance(exc, AuthenticationError | BadRequestError | PermissionDeniedError):
+            return False
+        if isinstance(exc, APIStatusError):
+            status_code = int(getattr(exc, "status_code", 0) or 0)
+            return status_code in {408, 409, 429} or status_code >= 500
+        return False
+
+    def _interruptible_sleep(self, context, seconds):
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while time.monotonic() < deadline:
+            if self._request_interrupted(context):
+                return False
+            time.sleep(min(REQUEST_POLL_SECONDS, deadline - time.monotonic()))
+        return not self._request_interrupted(context)
+
+    def _wait_for_response_future(self, context, future):
+        while True:
+            if self._request_interrupted(context):
+                future.cancel()
+                return None
+            try:
+                return future.result(timeout=REQUEST_POLL_SECONDS)
+            except FutureTimeoutError:
+                continue
+
+    def _create_response(self, request_payload):
+        return self.client.responses.create(**request_payload)
+
+    def _request_response_with_retries(self, context, request_payload):
+        for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
+            if self._request_interrupted(context):
+                return None
+            future = self._request_executor.submit(self._create_response, request_payload)
+            try:
+                return self._wait_for_response_future(context, future)
+            except Exception as exc:
+                if not self._is_transient_openai_error(exc) or attempt >= MAX_REQUEST_ATTEMPTS:
+                    raise
+                backoff = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                LOGGER.warning("Dynamic planner transient OpenAI failure; retrying: %s", exc)
+                if not self._interruptible_sleep(context, backoff):
+                    return None
+        return None
+
     def _request_decision(self, context, screenshot_path, detections, ocr_text, goal, targets):
         """Ask OpenAI for a single next action in strict JSON format.
 
@@ -390,10 +546,10 @@ class DynamicPlanner:
             f"Recent history: {json.dumps(history, ensure_ascii=True)}"
         )
         try:
-            response = self.client.responses.create(
-                model=self.model,
-                instructions="Return only the strict JSON object requested by the schema.",
-                input=[
+            request_payload = {
+                "model": self.model,
+                "instructions": "Return only the strict JSON object requested by the schema.",
+                "input": [
                     {
                         "role": "user",
                         "content": [
@@ -402,7 +558,7 @@ class DynamicPlanner:
                         ],
                     }
                 ],
-                text={
+                "text": {
                     "format": {
                         "type": "json_schema",
                         "name": "osrokbot_planner_decision",
@@ -410,9 +566,13 @@ class DynamicPlanner:
                         "schema": self.SCHEMA,
                     }
                 },
-            )
+            }
+            response = self._request_response_with_retries(context, request_payload)
+            if response is None:
+                return None
             raw = self._safe_json_loads(response.output_text)
-            return self.resolve_target_decision(PlannerDecision.from_mapping(raw, source="ai"), targets)
+            llm_decision = PlannerLLMDecision.model_validate(raw)
+            return self.resolve_target_decision(PlannerDecision.from_llm_decision(llm_decision, source="ai"), targets)
         except Exception as exc:
             LOGGER.error(f"Dynamic planner request failed: {exc}")
             return None

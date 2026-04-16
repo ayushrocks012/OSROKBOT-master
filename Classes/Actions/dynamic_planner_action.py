@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 from Actions.action import Action
 from config_manager import ConfigManager
 from detection_dataset import DetectionDataset
@@ -76,12 +74,13 @@ class DynamicPlannerAction(Action):
 
         corrected_point = pending.get("corrected_point")
         if corrected_point:
-            corrected = replace(
-                decision,
-                x=float(corrected_point["x"]),
-                y=float(corrected_point["y"]),
-                confidence=1.0,
-                source="manual",
+            corrected = decision.model_copy(
+                update={
+                    "x": float(corrected_point["x"]),
+                    "y": float(corrected_point["y"]),
+                    "confidence": 1.0,
+                    "source": "manual",
+                }
             )
             return corrected, True
         return decision, False
