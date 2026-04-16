@@ -1,0 +1,29 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+extend-exclude = [
+    "Media",
+    "Media/Legacy",
+    "data",
+    "datasets",
+    "diagnostics",
+    "models",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = [
+    "E501",  # Existing UI/status strings are often easier to read as one line.
+    "E402",  # This project uses script-style entrypoints with local path setup.
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["Classes"]
+addopts = "-q"

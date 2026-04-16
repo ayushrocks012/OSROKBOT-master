@@ -144,6 +144,7 @@ class UI(QtWidgets.QWidget):
         self.OS_ROKBOT = OSROKBOT(window_title, delay)
         self.OS_ROKBOT.signal_emitter.pause_toggled.connect(self.on_pause_toggled) # Connect the signal to the slot
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.currentState)
+        self.OS_ROKBOT.signal_emitter.planner_decision.connect(self.on_planner_decision)
         self.action_sets = ActionSets(OS_ROKBOT=self.OS_ROKBOT)
         self.current_context = None
         self._planner_correction_armed = False
@@ -289,13 +290,17 @@ class UI(QtWidgets.QWidget):
         self.settings_button.clicked.connect(self.open_settings)
         button_layout.addWidget(self.settings_button)
 
-        # Action sets dropdown
-        self.action_set_combo_box = QtWidgets.QComboBox()
-        self.action_set_combo_box.setStyleSheet("""
+        self.mission_input = QtWidgets.QLineEdit(
+            ConfigManager().get("PLANNER_GOAL", "Farm the nearest useful resource safely.") or ""
+        )
+        self.mission_input.setPlaceholderText("Type the mission...")
+        self.mission_input.setStyleSheet("""
             color: #fff;
+            background-color: #3a3a3a;
+            border: 2px solid #4a90e2;
+            border-radius: 6px;
+            padding: 4px;
         """)
-        self.action_set_names = ["dynamic_planner", "farm_rss_new","farm_rss","farm_food","farm_wood","farm_stone","farm_gold", "farm_barb","farm_barb_all", "farm_gems", "lyceum", "lyceumMid"]
-        self.action_set_combo_box.addItems(self.action_set_names)
 
         # Checkbutton for captcha
         self.check_captcha_checkbutton = QtWidgets.QCheckBox("captcha")
@@ -391,7 +396,7 @@ class UI(QtWidgets.QWidget):
         content_layout.addWidget(self.status_label)
         button_layout.setSpacing(2)
         content_layout.addLayout(button_layout)
-        content_layout.addWidget(self.action_set_combo_box)
+        content_layout.addWidget(self.mission_input)
         content_layout.addWidget(self.check_captcha_checkbutton)
         content_layout.addWidget(self.autonomy_combo_box)
         content_layout.addLayout(approval_layout)
@@ -455,6 +460,19 @@ class UI(QtWidgets.QWidget):
             self.status_label.setStyleSheet("color: #b8ff9b; font-weight: bold;")
         self.current_state_label.adjustSize() # Optional, to adjust the size of the label to fit the new text
 
+    def on_planner_decision(self, payload):
+        decision = payload.get("decision", {}) if isinstance(payload, dict) else {}
+        label = decision.get("label", "target")
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+        x = payload.get("absolute_x")
+        y = payload.get("absolute_y")
+        reason = str(decision.get("reason", ""))[:80]
+        self.status_label.setText(f"AI wants {label} @ {x},{y}")
+        self.status_label.setStyleSheet("color: #9be7ff; font-weight: bold;")
+        self.current_state_label.setText(
+            f"Approve?\n{label}\nX:{x} Y:{y}\n{confidence:.2f}\n{reason}"
+        )
+
 
 
     def update_position(self):
@@ -499,9 +517,10 @@ class UI(QtWidgets.QWidget):
             if self.OS_ROKBOT.is_paused():
                 self.toggle_pause()
             WindowHandler().activate_window('Rise of Kingdoms')
-            selected_index = self.action_set_combo_box.currentIndex()
-            if selected_index != -1:
-                action_group = getattr(self.action_sets, self.action_set_names[selected_index])()
+            mission = self.mission_input.text().strip() or "Safely continue the selected Rise of Kingdoms task."
+            ConfigManager().set_many({"PLANNER_GOAL": mission})
+            action_group = self.action_sets.dynamic_planner()
+            if action_group:
                 actions_groups = [action_group]
                 if self.check_captcha_checkbutton.isChecked():
                     actions_groups.append(self.action_sets.email_captcha())
@@ -512,10 +531,7 @@ class UI(QtWidgets.QWidget):
                     signal_emitter=self.OS_ROKBOT.signal_emitter,
                     window_title=self.target_title,
                 )
-                context.planner_goal = ConfigManager().get(
-                    "PLANNER_GOAL",
-                    "Safely continue the selected Rise of Kingdoms task.",
-                )
+                context.planner_goal = mission
                 context.planner_autonomy_level = self.autonomy_combo_box.currentIndex() + 1
                 self.current_context = context
                 if self.OS_ROKBOT.start(actions_groups, context):

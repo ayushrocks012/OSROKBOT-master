@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -17,6 +18,19 @@ MIN_PLANNER_CONFIDENCE = 0.70
 
 @dataclass
 class PlannerDecision:
+    """One structured action proposed by the AI planner.
+
+    Attributes:
+        thought_process: Short model explanation shown only for debugging.
+        action_type: One of `click`, `wait`, or `stop`.
+        label: Human-readable target name, such as `gather button`.
+        x: Normalized horizontal coordinate from 0.0 to 1.0.
+        y: Normalized vertical coordinate from 0.0 to 1.0.
+        confidence: Model confidence from 0.0 to 1.0.
+        reason: Short user-facing reason for the action.
+        source: Where the decision came from, usually `ai` or `memory`.
+    """
+
     thought_process: str
     action_type: str
     label: str
@@ -26,11 +40,44 @@ class PlannerDecision:
     reason: str
     source: str = "ai"
 
+    @classmethod
+    def from_mapping(cls, raw, source="ai"):
+        """Create a planner decision from model or memory JSON.
+
+        Args:
+            raw: Mapping-like object containing the planner JSON fields.
+            source: Source tag stored on the decision.
+
+        Returns:
+            PlannerDecision: A normalized decision object. Invalid numeric
+            fields are converted by Python and will raise `ValueError`.
+        """
+        return cls(
+            thought_process=str(raw.get("thought_process", "")),
+            action_type=str(raw.get("action_type", "wait")).lower(),
+            label=str(raw.get("label", "")),
+            x=float(raw.get("x", 0.0)),
+            y=float(raw.get("y", 0.0)),
+            confidence=float(raw.get("confidence", 0.0)),
+            reason=str(raw.get("reason", "")),
+            source=source,
+        )
+
     def to_dict(self):
+        """Return a JSON-serializable dictionary for Context and UI payloads."""
         return asdict(self)
 
 
 class DynamicPlanner:
+    """Vision-language planner for one guarded OSROKBOT step.
+
+    `DynamicPlanner` is intentionally side-effect free. It never moves the
+    mouse and never changes game state. It reads the current screenshot,
+    optional detector labels, OCR text, and mission goal, then returns a
+    validated `PlannerDecision`. `DynamicPlannerAction` is responsible for
+    HITL approval, bounds checks, memory writes, and Interception input.
+    """
+
     SCHEMA = {
         "type": "object",
         "properties": {
@@ -47,6 +94,12 @@ class DynamicPlanner:
     }
 
     def __init__(self, config=None, memory=None):
+        """Initialize the planner using ConfigManager and optional memory.
+
+        Args:
+            config: Optional ConfigManager-like object for API keys/model name.
+            memory: Optional VisionMemory instance used before OpenAI calls.
+        """
         self.config = config or ConfigManager()
         api_key = self.config.get("OPENAI_KEY") or self.config.get("OPENAI_API_KEY")
         self.client = OpenAI(api_key=api_key) if api_key else None
@@ -55,6 +108,14 @@ class DynamicPlanner:
 
     @staticmethod
     def _image_data_url(path):
+        """Encode an image file as a data URL for OpenAI vision input.
+
+        Args:
+            path: Path to a PNG/JPEG screenshot.
+
+        Returns:
+            str: A `data:image/...;base64,...` URL.
+        """
         path = Path(path)
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         suffix = path.suffix.lower().lstrip(".") or "png"
@@ -64,6 +125,14 @@ class DynamicPlanner:
 
     @staticmethod
     def _safe_json_loads(text):
+        """Parse strict JSON, with a small fallback for wrapped model output.
+
+        Args:
+            text: Raw model output text.
+
+        Returns:
+            dict: Parsed JSON object.
+        """
         try:
             return json.loads(text)
         except Exception:
@@ -75,6 +144,14 @@ class DynamicPlanner:
 
     @staticmethod
     def _visible_labels(detections):
+        """Normalize detector outputs into a sorted list of visible labels.
+
+        Args:
+            detections: Detection objects or dictionaries.
+
+        Returns:
+            list[str]: Non-empty labels from the detector output.
+        """
         labels = []
         for detection in detections or []:
             if hasattr(detection, "to_dict"):
@@ -85,6 +162,14 @@ class DynamicPlanner:
 
     @staticmethod
     def decision_from_memory(entry):
+        """Convert a VisionMemory entry into a planner decision.
+
+        Args:
+            entry: Memory entry returned by `VisionMemory.find`.
+
+        Returns:
+            PlannerDecision: A memory-sourced click/wait/stop decision.
+        """
         point = entry.get("normalized_point", {}) if entry else {}
         return PlannerDecision(
             thought_process="Recovered from local visual memory.",
@@ -99,19 +184,45 @@ class DynamicPlanner:
 
     @staticmethod
     def validate_decision(decision):
+        """Validate that a decision is safe enough to enter HITL/input flow.
+
+        Args:
+            decision: Candidate PlannerDecision.
+
+        Returns:
+            bool: True when the action type is supported and click coordinates
+            are finite, normalized, and above the minimum confidence threshold.
+        """
         if not isinstance(decision, PlannerDecision):
             return False
         if decision.action_type not in ALLOWED_ACTION_TYPES:
             return False
+        if not math.isfinite(decision.confidence):
+            return False
         if decision.action_type == "click":
             return (
-                decision.confidence >= MIN_PLANNER_CONFIDENCE
+                math.isfinite(decision.x)
+                and math.isfinite(decision.y)
+                and decision.confidence >= MIN_PLANNER_CONFIDENCE
                 and 0.0 <= decision.x <= 1.0
                 and 0.0 <= decision.y <= 1.0
             )
         return True
 
     def _request_decision(self, context, screenshot_path, detections, ocr_text, goal):
+        """Ask OpenAI for a single next action in strict JSON format.
+
+        Args:
+            context: Current OSROKBOT runtime context.
+            screenshot_path: Screenshot file to send as vision input.
+            detections: YOLO detections visible on screen.
+            ocr_text: OCR text extracted from the screenshot.
+            goal: Natural-language mission from the Commander UI.
+
+        Returns:
+            PlannerDecision | None: Parsed model decision, or None if the
+            request fails.
+        """
         if not self.client:
             print(colored("Dynamic planner unavailable: OPENAI_KEY/OPENAI_API_KEY is not configured.", "yellow"))
             return None
@@ -153,21 +264,25 @@ class DynamicPlanner:
                 },
             )
             raw = self._safe_json_loads(response.output_text)
-            return PlannerDecision(
-                thought_process=str(raw.get("thought_process", "")),
-                action_type=str(raw.get("action_type", "wait")).lower(),
-                label=str(raw.get("label", "")),
-                x=float(raw.get("x", 0.0)),
-                y=float(raw.get("y", 0.0)),
-                confidence=float(raw.get("confidence", 0.0)),
-                reason=str(raw.get("reason", "")),
-                source="ai",
-            )
+            return PlannerDecision.from_mapping(raw, source="ai")
         except Exception as exc:
             print(colored(f"Dynamic planner request failed: {exc}", "red"))
             return None
 
     def plan_next(self, context, screenshot_path, detections, ocr_text, goal):
+        """Return the next safe planner decision for the current screen.
+
+        Args:
+            context: Current OSROKBOT runtime context.
+            screenshot_path: Current screenshot path.
+            detections: Object detector outputs for the screenshot.
+            ocr_text: OCR text from the screenshot.
+            goal: Natural-language mission prompt.
+
+        Returns:
+            PlannerDecision | None: A validated memory or AI decision. None is
+            returned when no safe decision is available.
+        """
         labels = self._visible_labels(detections)
         memory_entry = self.memory.find(screenshot_path, labels)
         if memory_entry:

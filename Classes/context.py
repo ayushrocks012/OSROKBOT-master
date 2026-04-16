@@ -167,20 +167,44 @@ class Context:
         return int(round(anchor_screen_x + offset_x)), int(round(anchor_screen_y + offset_y))
 
     def set_pending_planner_decision(self, decision, screenshot_path=None, window_rect=None):
+        decision_data = decision.to_dict() if hasattr(decision, "to_dict") else decision
+        rect_data = {
+            "left": getattr(window_rect, "left", 0),
+            "top": getattr(window_rect, "top", 0),
+            "width": getattr(window_rect, "width", 0),
+            "height": getattr(window_rect, "height", 0),
+        } if window_rect else {}
+        absolute_x = None
+        absolute_y = None
+        if rect_data and decision_data:
+            try:
+                absolute_x = int(round(rect_data["left"] + rect_data["width"] * float(decision_data.get("x", 0.0))))
+                absolute_y = int(round(rect_data["top"] + rect_data["height"] * float(decision_data.get("y", 0.0))))
+            except Exception:
+                absolute_x = None
+                absolute_y = None
+
         self.extracted["planner_pending"] = {
-            "decision": decision.to_dict() if hasattr(decision, "to_dict") else decision,
+            "decision": decision_data,
             "screenshot_path": str(screenshot_path) if screenshot_path else "",
-            "window_rect": {
-                "left": getattr(window_rect, "left", 0),
-                "top": getattr(window_rect, "top", 0),
-                "width": getattr(window_rect, "width", 0),
-                "height": getattr(window_rect, "height", 0),
-            } if window_rect else {},
+            "window_rect": rect_data,
+            "absolute_x": absolute_x,
+            "absolute_y": absolute_y,
             "event": threading.Event(),
             "result": None,
             "corrected_point": None,
         }
         self.emit_state("Planner approval needed")
+        emitter = self.get_signal_emitter()
+        if emitter and hasattr(emitter, "planner_decision"):
+            payload = {
+                "decision": decision_data,
+                "screenshot_path": str(screenshot_path) if screenshot_path else "",
+                "window_rect": rect_data,
+                "absolute_x": absolute_x,
+                "absolute_y": absolute_y,
+            }
+            emitter.planner_decision.emit(payload)
         return self.extracted["planner_pending"]
 
     def resolve_planner_decision(self, approved, corrected_point=None):

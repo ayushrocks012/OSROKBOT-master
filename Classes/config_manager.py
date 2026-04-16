@@ -31,6 +31,10 @@ class ConfigManager:
         "PLANNER_GOAL",
         "PLANNER_AUTONOMY_LEVEL",
         "PLANNER_TRUSTED_SUCCESS_COUNT",
+        "WATCHDOG_HEARTBEAT_PATH",
+        "WATCHDOG_TIMEOUT_SECONDS",
+        "WATCHDOG_GAME_RESTART_WAIT_SECONDS",
+        "WATCHDOG_RESTART_ENABLED",
     }
 
     def __init__(self, config_path=CONFIG_PATH, env_path=ENV_PATH):

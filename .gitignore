@@ -15,6 +15,7 @@ diagnostics/
 data/recovery_memory.json
 data/vision_memory.json
 data/planner_latest.png
+data/heartbeat.json
 datasets/recovery/
 models/
 

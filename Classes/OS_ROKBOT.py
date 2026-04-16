@@ -1,7 +1,12 @@
+import json
+import os
+import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
+from config_manager import ConfigManager
 from context import Context
 from emergency_stop import EmergencyStop
 from image_finder import ImageFinder
@@ -9,6 +14,11 @@ from input_controller import InputController
 from signal_emitter import SignalEmitter
 from termcolor import colored
 from window_handler import WindowHandler
+
+try:
+    import win32process
+except ImportError:
+    win32process = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +52,8 @@ class OSROKBOT:
         self.blocker_finder = ImageFinder(threshold=0.85, save_heatmaps=False)
         self.global_blocker_images = tuple(str(path) for path in GLOBAL_BLOCKER_IMAGES)
         self.captcha_image = str(CAPTCHA_IMAGE)
+        self._heartbeat_lock = threading.Lock()
+        self._last_heartbeat_at = 0.0
 
     def _emit_state(self, context, state_text):
         if context:
@@ -72,6 +84,64 @@ class OSROKBOT:
         self.pause_event.set()
         self.signal_emitter.pause_toggled.emit(True)
         return False
+
+    @staticmethod
+    def _config_path(value, default):
+        path = Path(value or default)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return path
+
+    def _heartbeat_path(self):
+        return self._config_path(
+            ConfigManager().get("WATCHDOG_HEARTBEAT_PATH"),
+            PROJECT_ROOT / "data" / "heartbeat.json",
+        )
+
+    def _game_pid(self, window_title):
+        if win32process is None:
+            return None
+        try:
+            window = self.window_handler.get_window(window_title)
+            if not window:
+                return None
+            _, process_id = win32process.GetWindowThreadProcessId(int(window._hWnd))
+            return int(process_id) if process_id else None
+        except Exception:
+            return None
+
+    def write_heartbeat(self, context=None, force=False):
+        now = time.time()
+        if not force and now - self._last_heartbeat_at < 5:
+            return True
+
+        active_context = context or Context(bot=self, window_title=self.window_title)
+        window_title = getattr(active_context, "window_title", None) or self.window_title
+        payload = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "timestamp_epoch": now,
+            "bot_pid": os.getpid(),
+            "game_pid": self._game_pid(window_title),
+            "window_title": window_title,
+            "mission": getattr(active_context, "planner_goal", ""),
+            "autonomy_level": getattr(active_context, "planner_autonomy_level", 1),
+            "repo_root": str(PROJECT_ROOT),
+            "ui_entrypoint": str(PROJECT_ROOT / "Classes" / "UI.py"),
+            "python_executable": sys.executable,
+        }
+        heartbeat_path = self._heartbeat_path()
+
+        try:
+            with self._heartbeat_lock:
+                heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path = heartbeat_path.with_suffix(heartbeat_path.suffix + ".tmp")
+                temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                temp_path.replace(heartbeat_path)
+                self._last_heartbeat_at = now
+            return True
+        except Exception as exc:
+            print(colored(f"Unable to write watchdog heartbeat: {exc}", "yellow"))
+            return False
 
     def _detect_captcha(self, context):
         if self.stop_event.is_set() or self.pause_event.is_set():
@@ -177,13 +247,16 @@ class OSROKBOT:
 
         self.stop_event.clear()
         self.all_threads_joined = False
+        self.write_heartbeat(context, force=True)
         self._locate_primary_anchor(context)
 
         def run_single_machine(machine):
             while not self.stop_event.is_set():
                 if self.pause_event.is_set():
+                    self.write_heartbeat(context)
                     time.sleep(self.delay)
                     continue
+                self.write_heartbeat(context)
                 if not self._ensure_foreground(context):
                     continue
                 if self._detect_captcha(context):
