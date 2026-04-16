@@ -243,7 +243,7 @@ class StateMachine:
         print("StateMachine global recovery started.")
         self._emit_recovery_state(context, "Global recovery\nclearing UI")
 
-        WindowHandler().activate_window(window_title)
+        WindowHandler().ensure_foreground(window_title, wait_seconds=0.5)
         monitor.save_diagnostic_screenshot(f"recovery_{self.current_state or 'unknown'}")
 
         return (

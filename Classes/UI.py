@@ -411,6 +411,12 @@ class UI(QtWidgets.QWidget):
         elif "Captcha detected" in state_text:
             self.status_label.setText("Captcha detected - paused")
             self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+        elif "Game not foreground" in state_text:
+            self.status_label.setText("Game not foreground - paused")
+            self.status_label.setStyleSheet("color: orange; font-weight: bold;")
+        elif "Interception unavailable" in state_text:
+            self.status_label.setText("Interception unavailable")
+            self.status_label.setStyleSheet("color: red; font-weight: bold;")
         self.current_state_label.adjustSize() # Optional, to adjust the size of the label to fit the new text
 
 

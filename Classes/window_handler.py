@@ -1,4 +1,5 @@
 import ctypes
+import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
@@ -219,3 +220,40 @@ class WindowHandler:
             if "Error code from Windows: 0" not in str(e):
                 print(colored(f"Failed to prepare window '{title}': {e}", "red"))
         return
+
+    def ensure_foreground(self, title="Rise of Kingdoms", wait_seconds=0.5):
+        if not self._win32_available():
+            print(colored("pywin32 is required to enforce the foreground game window.", "red"))
+            return False
+
+        try:
+            win = self.get_window(title)
+            if not win:
+                return False
+
+            hwnd = int(win._hWnd)
+            if win32gui.GetForegroundWindow() == hwnd:
+                return True
+
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            else:
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+
+            try:
+                win32gui.BringWindowToTop(hwnd)
+                win32gui.SetForegroundWindow(hwnd)
+            except Exception as exc:
+                print(colored(f"Unable to foreground '{title}': {exc}", "yellow"))
+
+            if wait_seconds and wait_seconds > 0:
+                time.sleep(wait_seconds)
+
+            if win32gui.GetForegroundWindow() == hwnd:
+                return True
+
+            print(colored(f"Target game window is not foreground: {title}", "red"))
+            return False
+        except Exception as exc:
+            print(colored(f"Foreground check failed for '{title}': {exc}", "red"))
+            return False

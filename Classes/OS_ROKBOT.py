@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 from context import Context
+from emergency_stop import EmergencyStop
 from image_finder import ImageFinder
 from input_controller import InputController
 from signal_emitter import SignalEmitter
@@ -41,6 +42,36 @@ class OSROKBOT:
         self.blocker_finder = ImageFinder(threshold=0.85, save_heatmaps=False)
         self.global_blocker_images = tuple(str(path) for path in GLOBAL_BLOCKER_IMAGES)
         self.captcha_image = str(CAPTCHA_IMAGE)
+
+    def _emit_state(self, context, state_text):
+        if context:
+            context.emit_state(state_text)
+        elif self.signal_emitter:
+            self.signal_emitter.state_changed.emit(state_text)
+
+    def _hardware_input_ready(self, context=None):
+        if InputController.is_backend_available():
+            return True
+        message = InputController.backend_error()
+        print(colored("Interception hardware input is unavailable.", "red"))
+        if message:
+            print(colored(message, "red"))
+        print(colored("Install the Oblita Interception driver as Administrator, reboot, then run OSROKBOT again.", "yellow"))
+        self._emit_state(context, "Interception unavailable")
+        return False
+
+    def _ensure_foreground(self, context):
+        if self.stop_event.is_set() or self.pause_event.is_set():
+            return False
+        window_title = context.window_title if context and getattr(context, "window_title", None) else self.window_title
+        if self.window_handler.ensure_foreground(window_title, wait_seconds=0.5):
+            return True
+
+        print(colored("Game is not foreground; pausing automation before hardware input.", "red"))
+        self._emit_state(context, "Game not foreground - paused")
+        self.pause_event.set()
+        self.signal_emitter.pause_toggled.emit(True)
+        return False
 
     def _detect_captcha(self, context):
         if self.stop_event.is_set() or self.pause_event.is_set():
@@ -153,9 +184,15 @@ class OSROKBOT:
                 if self.pause_event.is_set():
                     time.sleep(self.delay)
                     continue
+                if not self._ensure_foreground(context):
+                    continue
                 if self._detect_captcha(context):
                     continue
+                if not self._ensure_foreground(context):
+                    continue
                 if not self._clear_global_blockers(context):
+                    continue
+                if not self._ensure_foreground(context):
                     continue
                 if machine.execute(context):
                     time.sleep(self.delay)
@@ -178,6 +215,10 @@ class OSROKBOT:
     def start(self, steps, context=None):
         if self.is_running or not self.all_threads_joined:
             return False
+        if not self._hardware_input_ready(context):
+            self.is_running = False
+            return False
+        EmergencyStop.start_once()
 
         self.is_running = True
         self._runner_thread = threading.Thread(

@@ -1,3 +1,4 @@
+import ctypes
 import math
 import random
 import time
@@ -7,13 +8,12 @@ from typing import Optional, Protocol
 from termcolor import colored
 
 try:
-    import win32api
-    import win32con
-    import win32gui
-except ImportError:
-    win32api = None
-    win32con = None
-    win32gui = None
+    import interception
+except ImportError as exc:
+    interception = None
+    INTERCEPTION_IMPORT_ERROR = exc
+else:
+    INTERCEPTION_IMPORT_ERROR = None
 
 
 class WindowRect(Protocol):
@@ -55,24 +55,32 @@ class DelayPolicy:
         return True
 
 
+class _Point(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
 class InputController:
     KEY_ALIASES = {
-        "escape": 0x1B,
-        "esc": 0x1B,
-        "space": 0x20,
-        "enter": 0x0D,
-        "return": 0x0D,
-        "tab": 0x09,
-        "backspace": 0x08,
-        "left": 0x25,
-        "up": 0x26,
-        "right": 0x27,
-        "down": 0x28,
-        "shift": 0x10,
-        "ctrl": 0x11,
-        "control": 0x11,
-        "alt": 0x12,
+        "escape": "esc",
+        "esc": "esc",
+        "space": "space",
+        "enter": "enter",
+        "return": "enter",
+        "tab": "tab",
+        "backspace": "backspace",
+        "left": "left",
+        "up": "up",
+        "right": "right",
+        "down": "down",
+        "shift": "shift",
+        "ctrl": "ctrl",
+        "control": "ctrl",
+        "alt": "alt",
     }
+
+    _capture_attempted = False
+    _capture_ready = False
+    _capture_error = None
 
     def __init__(
         self,
@@ -87,6 +95,44 @@ class InputController:
         self.coordinate_noise_px = max(0, int(coordinate_noise_px))
         self.move_duration = max(0.0, float(move_duration))
         self.move_steps_per_second = max(10, int(move_steps_per_second))
+        self.ensure_interception_ready()
+
+    @classmethod
+    def ensure_interception_ready(cls):
+        if cls._capture_attempted:
+            return cls._capture_ready
+
+        cls._capture_attempted = True
+        if interception is None:
+            cls._capture_error = f"interception-python is not installed: {INTERCEPTION_IMPORT_ERROR}"
+            cls._capture_ready = False
+            return False
+
+        try:
+            try:
+                interception.auto_capture_devices(keyboard=True, mouse=True)
+            except TypeError:
+                interception.auto_capture_devices()
+        except Exception as exc:
+            cls._capture_error = (
+                "Interception driver failed to hook devices. Install the Oblita "
+                f"Interception driver as Administrator and reboot. Details: {exc}"
+            )
+            cls._capture_ready = False
+            return False
+
+        cls._capture_error = None
+        cls._capture_ready = True
+        return True
+
+    @classmethod
+    def is_backend_available(cls):
+        return cls.ensure_interception_ready()
+
+    @classmethod
+    def backend_error(cls):
+        cls.ensure_interception_ready()
+        return cls._capture_error or ""
 
     @staticmethod
     def is_allowed(context=None):
@@ -109,6 +155,40 @@ class InputController:
         print(colored("Input blocked: bot is paused or stopping.", "yellow"))
         return False
 
+    def check_backend(self):
+        if self.ensure_interception_ready():
+            return True
+        print(colored(f"Hardware input blocked: {self.backend_error()}", "red"))
+        return False
+
+    @staticmethod
+    def _pause_for_foreground_failure(context):
+        if not context:
+            return
+        context.emit_state("Game not foreground - paused")
+        bot = getattr(context, "bot", None)
+        if bot and getattr(bot, "pause_event", None):
+            bot.pause_event.set()
+            if getattr(bot, "signal_emitter", None):
+                bot.signal_emitter.pause_toggled.emit(True)
+
+    def check_foreground(self, context=None):
+        active_context = self._context(context)
+        window_title = getattr(active_context, "window_title", None) if active_context else None
+        if not window_title:
+            return True
+        try:
+            from window_handler import WindowHandler
+
+            if WindowHandler().ensure_foreground(window_title, wait_seconds=0.5):
+                return True
+        except Exception as exc:
+            print(colored(f"Foreground input guard failed: {exc}", "red"))
+
+        print(colored("Hardware input blocked: target game window is not foreground.", "red"))
+        self._pause_for_foreground_failure(active_context)
+        return False
+
     @staticmethod
     def validate_bounds(x, y, window_rect):
         if not window_rect:
@@ -126,14 +206,6 @@ class InputController:
         return max(minimum, min(maximum, value))
 
     @staticmethod
-    def _win32_available():
-        return win32api is not None and win32con is not None and win32gui is not None
-
-    @staticmethod
-    def _pack_coordinates(x, y):
-        return (int(y) & 0xFFFF) << 16 | (int(x) & 0xFFFF)
-
-    @staticmethod
     def _virtual_key(key):
         if isinstance(key, int):
             return key
@@ -143,73 +215,60 @@ class InputController:
         if normalized.startswith("f") and normalized[1:].isdigit():
             number = int(normalized[1:])
             if 1 <= number <= 24:
-                return 0x70 + number - 1
+                return f"f{number}"
         if len(normalized) == 1:
-            if win32api is not None:
-                vk = win32api.VkKeyScan(normalized)
-                if vk != -1:
-                    return vk & 0xFF
-            return ord(normalized.upper())
-        raise ValueError(f"Unsupported key for virtual input: {key}")
+            return normalized
+        raise ValueError(f"Unsupported key for hardware input: {key}")
 
     @staticmethod
-    def _key_lparam(vk, is_key_up=False):
-        scan_code = win32api.MapVirtualKey(vk, 0) if win32api is not None else 0
-        lparam = 1 | (scan_code << 16)
-        if is_key_up:
-            lparam |= 0xC0000000
-        return lparam
+    def _calculate_bezier_point(start, ctrl1, ctrl2, end, t):
+        return (
+            (1 - t) ** 3 * start
+            + 3 * (1 - t) ** 2 * t * ctrl1
+            + 3 * (1 - t) * t**2 * ctrl2
+            + t**3 * end
+        )
 
-    def _target_hwnd(self, context=None, window_rect=None):
-        if window_rect and getattr(window_rect, "hwnd", None):
-            return int(window_rect.hwnd)
-        if window_rect and getattr(window_rect, "_hWnd", None):
-            return int(window_rect._hWnd)
+    @staticmethod
+    def _desktop_mouse_position():
+        point = _Point()
+        if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+            return int(point.x), int(point.y)
+        return 0, 0
 
-        active_context = self._context(context)
-        window_title = getattr(active_context, "window_title", None) if active_context else None
-        if not window_title:
-            return None
+    @staticmethod
+    def _mouse_position():
+        if interception is not None:
+            for name in ("mouse_position", "get_mouse_position"):
+                getter = getattr(interception, name, None)
+                if getter:
+                    position = getter()
+                    if isinstance(position, tuple) and len(position) >= 2:
+                        return int(position[0]), int(position[1])
+                    if hasattr(position, "x") and hasattr(position, "y"):
+                        return int(position.x), int(position.y)
+        return InputController._desktop_mouse_position()
 
-        from window_handler import WindowHandler
+    @staticmethod
+    def _left_button():
+        mouse = getattr(interception, "mouse", None) if interception is not None else None
+        return getattr(mouse, "left", "left")
 
-        window = WindowHandler().get_window(window_title)
-        if not window:
-            return None
-        return int(window._hWnd)
-
-    def _screen_to_client(self, x, y, window_rect):
-        hwnd = self._target_hwnd(window_rect=window_rect)
-        if hwnd and win32gui is not None:
-            client_x, client_y = win32gui.ScreenToClient(hwnd, (int(x), int(y)))
-        elif window_rect:
-            client_x = int(x) - int(window_rect.left)
-            client_y = int(y) - int(window_rect.top)
-        else:
-            client_x, client_y = int(x), int(y)
-
-        if window_rect:
-            client_x = self._clamp(client_x, 0, max(0, int(window_rect.width) - 1))
-            client_y = self._clamp(client_y, 0, max(0, int(window_rect.height) - 1))
-        return int(client_x), int(client_y)
-
-    def _post_mouse_message(self, hwnd, message, client_x, client_y, wparam=0):
-        if not self._win32_available():
-            print(colored("pywin32 is required for virtual mouse input.", "red"))
-            return False
-        win32gui.PostMessage(hwnd, message, wparam, self._pack_coordinates(client_x, client_y))
-        return True
-
-    def _post_key_message(self, hwnd, vk, is_key_up=False, system_key=False):
-        if not self._win32_available():
-            print(colored("pywin32 is required for virtual keyboard input.", "red"))
-            return False
-        if system_key:
-            message = win32con.WM_SYSKEYUP if is_key_up else win32con.WM_SYSKEYDOWN
-        else:
-            message = win32con.WM_KEYUP if is_key_up else win32con.WM_KEYDOWN
-        win32gui.PostMessage(hwnd, message, vk, self._key_lparam(vk, is_key_up=is_key_up))
-        return True
+    @staticmethod
+    def _call_interception(names, *args):
+        if interception is None:
+            raise RuntimeError("interception-python is not installed")
+        for name in names:
+            func = getattr(interception, name, None)
+            if not func:
+                continue
+            try:
+                return func(*args)
+            except TypeError:
+                if args:
+                    return func()
+                raise
+        raise AttributeError(f"interception-python is missing required function: {names[0]}")
 
     def sample_click_target(self, x, y, window_rect=None):
         noise = self.coordinate_noise_px
@@ -229,119 +288,117 @@ class InputController:
 
         return sampled_x, sampled_y
 
+    def _move_hardware_to(self, x, y):
+        self._call_interception(("move_to",), int(x), int(y))
+
+    def _mouse_down(self):
+        self._call_interception(("mouse_down",), self._left_button())
+
+    def _mouse_up(self):
+        self._call_interception(("mouse_up",), self._left_button())
+
+    def _key_down(self, key):
+        self._call_interception(("key_down", "keydown"), key)
+
+    def _key_up(self, key):
+        self._call_interception(("key_up", "keyup"), key)
+
     def hotkey(self, *keys, context=None):
         active_context = self._context(context)
-        if not self.check_interlock(active_context):
+        if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
-        if not self._win32_available():
-            print(colored("Hotkey blocked: pywin32 is unavailable.", "red"))
-            return False
-        hwnd = self._target_hwnd(active_context)
-        if not hwnd:
-            print(colored("Hotkey blocked: target window handle is unavailable.", "red"))
-            return False
+        normalized_keys = []
         try:
-            virtual_keys = [self._virtual_key(key) for key in keys]
-            system_key = 0x12 in virtual_keys
-            for vk in virtual_keys:
-                if not self._post_key_message(hwnd, vk, system_key=system_key):
-                    return False
+            normalized_keys = [self._virtual_key(key) for key in keys]
+            for key in normalized_keys:
+                self._key_down(key)
             if not self.delay_policy.wait(self.delay_policy.key_hold_delay, active_context):
                 return False
-            for vk in reversed(virtual_keys):
-                if not self._post_key_message(hwnd, vk, is_key_up=True, system_key=system_key):
-                    return False
         except Exception as exc:
-            print(colored(f"Error during hotkey '{'+'.join(keys)}': {exc}", "red"))
+            print(colored(f"Error during hotkey '{'+'.join(map(str, keys))}': {exc}", "red"))
             return False
+        finally:
+            for key in reversed(normalized_keys):
+                try:
+                    self._key_up(key)
+                except Exception:
+                    pass
         return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
 
     def smooth_move_to(self, x, y, context=None, duration=None, window_rect=None):
         active_context = self._context(context)
-        if not self.check_interlock(active_context):
-            return False
-        if not self._win32_available():
-            print(colored("Move blocked: pywin32 is unavailable.", "red"))
+        if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
         if window_rect and not self.validate_bounds(x, y, window_rect):
             print(colored(f"Move blocked: ({x}, {y}) is outside the target window.", "red"))
             return False
 
-        hwnd = self._target_hwnd(active_context, window_rect)
-        if not hwnd:
-            print(colored("Move blocked: target window handle is unavailable.", "red"))
-            return False
-
         duration = self.move_duration if duration is None else max(0.0, float(duration))
-        last_position = None
-        if active_context:
-            last_position = active_context.extracted.get("_last_virtual_mouse_position")
-        start_x, start_y = last_position or (x, y)
+        start_x, start_y = self._mouse_position()
+        target_x = int(round(x))
+        target_y = int(round(y))
 
         if duration <= 0:
-            client_x, client_y = self._screen_to_client(x, y, window_rect)
-            if not self._post_mouse_message(hwnd, win32con.WM_MOUSEMOVE, client_x, client_y):
+            try:
+                self._move_hardware_to(target_x, target_y)
+            except Exception as exc:
+                print(colored(f"Error during hardware move: {exc}", "red"))
                 return False
-            if active_context:
-                active_context.extracted["_last_virtual_mouse_position"] = (x, y)
             return True
 
-        steps = max(2, int(duration * self.move_steps_per_second))
+        distance = math.hypot(target_x - start_x, target_y - start_y)
+        wobble = min(distance * 0.3, 100)
+        ctrl1_x = start_x + random.uniform(-wobble, wobble)
+        ctrl1_y = start_y + random.uniform(-wobble, wobble)
+        ctrl2_x = target_x + random.uniform(-wobble, wobble)
+        ctrl2_y = target_y + random.uniform(-wobble, wobble)
+        steps = max(5, int(duration * self.move_steps_per_second))
+
         for step in range(1, steps + 1):
             if not self.check_interlock(active_context):
                 return False
             t = step / steps
-            eased_t = 0.5 - 0.5 * math.cos(math.pi * t)
-            next_x = int(round(start_x + (x - start_x) * eased_t))
-            next_y = int(round(start_y + (y - start_y) * eased_t))
-            client_x, client_y = self._screen_to_client(next_x, next_y, window_rect)
-            if not self._post_mouse_message(hwnd, win32con.WM_MOUSEMOVE, client_x, client_y):
+            next_x = int(round(self._calculate_bezier_point(start_x, ctrl1_x, ctrl2_x, target_x, t)))
+            next_y = int(round(self._calculate_bezier_point(start_y, ctrl1_y, ctrl2_y, target_y, t)))
+            try:
+                self._move_hardware_to(next_x, next_y)
+            except Exception as exc:
+                print(colored(f"Error during hardware move: {exc}", "red"))
                 return False
             if not self.delay_policy.wait(duration / steps, active_context):
                 return False
-        if active_context:
-            active_context.extracted["_last_virtual_mouse_position"] = (x, y)
         return True
 
     def click(self, x, y, window_rect=None, remember_position=True, context=None):
         active_context = self._context(context)
-        if not self.check_interlock(active_context):
-            return False
-        if not self._win32_available():
-            print(colored("Click blocked: pywin32 is unavailable.", "red"))
+        if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
         if window_rect and not self.validate_bounds(x, y, window_rect):
             print(colored(f"Click blocked: ({x}, {y}) is outside the target window.", "red"))
             return False
 
-        hwnd = self._target_hwnd(active_context, window_rect)
-        if not hwnd:
-            print(colored("Click blocked: target window handle is unavailable.", "red"))
+        target_x, target_y = self.sample_click_target(x, y, window_rect)
+        if not self.smooth_move_to(target_x, target_y, active_context, window_rect=window_rect):
             return False
 
-        target_x, target_y = self.sample_click_target(x, y, window_rect)
-
+        mouse_is_down = False
         try:
-            if not self.smooth_move_to(target_x, target_y, active_context, window_rect=window_rect):
+            self._mouse_down()
+            mouse_is_down = True
+            if not self.delay_policy.wait(random.uniform(0.04, 0.12), active_context):
                 return False
-            client_x, client_y = self._screen_to_client(target_x, target_y, window_rect)
-            if not self._post_mouse_message(
-                hwnd,
-                win32con.WM_LBUTTONDOWN,
-                client_x,
-                client_y,
-                win32con.MK_LBUTTON,
-            ):
-                return False
-            if not self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context):
-                return False
-            if not self._post_mouse_message(hwnd, win32con.WM_LBUTTONUP, client_x, client_y):
-                return False
-            self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
+            self._mouse_up()
+            mouse_is_down = False
+            return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
         except Exception as exc:
             print(colored(f"Error during click execution: {exc}", "red"))
             return False
-        return True
+        finally:
+            if mouse_is_down:
+                try:
+                    self._mouse_up()
+                except Exception:
+                    pass
 
     def move_to(self, x, y, window_rect=None, remember_position=False, context=None):
         active_context = self._context(context)
@@ -352,60 +409,54 @@ class InputController:
             return False
 
         try:
-            if not self.smooth_move_to(x, y, active_context, window_rect=window_rect):
-                return False
+            return self.smooth_move_to(x, y, active_context, window_rect=window_rect)
         except Exception as exc:
             print(colored(f"Error during move execution: {exc}", "red"))
             return False
-        return True
 
     def key_press(self, key, hold_seconds=None, presses=1, context=None):
         active_context = self._context(context)
-        if not self._win32_available():
-            print(colored("Key press blocked: pywin32 is unavailable.", "red"))
+        if not self.check_backend() or not self.check_foreground(active_context):
             return False
         hold_seconds = self.delay_policy.key_hold_delay if hold_seconds is None else hold_seconds
-        hwnd = self._target_hwnd(active_context)
-        if not hwnd:
-            print(colored("Key press blocked: target window handle is unavailable.", "red"))
-            return False
+        normalized_key = self._virtual_key(key)
 
         for _ in range(presses):
             if not self.check_interlock(active_context):
                 return False
+            key_is_down = False
             try:
-                vk = self._virtual_key(key)
-                system_key = vk == 0x12
-                if not self._post_key_message(hwnd, vk, system_key=system_key):
-                    return False
+                self._key_down(normalized_key)
+                key_is_down = True
                 if not self.delay_policy.wait(hold_seconds, active_context):
-                    self._post_key_message(hwnd, vk, is_key_up=True, system_key=system_key)
                     return False
-                if not self._post_key_message(hwnd, vk, is_key_up=True, system_key=system_key):
-                    return False
+                self._key_up(normalized_key)
+                key_is_down = False
             except Exception as exc:
                 print(colored(f"Error during key press '{key}': {exc}", "red"))
                 return False
+            finally:
+                if key_is_down:
+                    try:
+                        self._key_up(normalized_key)
+                    except Exception:
+                        pass
         return True
 
     def scroll(self, y_scroll=0, context=None):
         active_context = self._context(context)
-        if not self._win32_available():
-            print(colored("Scroll blocked: pywin32 is unavailable.", "red"))
+        if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
         direction = -1 if y_scroll >= 0 else 1
-        hwnd = self._target_hwnd(active_context)
-        if not hwnd:
-            print(colored("Scroll blocked: target window handle is unavailable.", "red"))
-            return False
 
         for _ in range(abs(y_scroll)):
             if not self.check_interlock(active_context):
                 return False
             try:
-                delta = 120 * direction
-                wparam = (delta & 0xFFFF) << 16
-                win32gui.PostMessage(hwnd, win32con.WM_MOUSEWHEEL, wparam, 0)
+                try:
+                    self._call_interception(("scroll",), direction)
+                except TypeError:
+                    self._call_interception(("scroll",), 0, direction)
             except Exception as exc:
                 print(colored(f"Error during scroll execution: {exc}", "red"))
                 return False

@@ -286,6 +286,29 @@ def check_optional_yolo_detector() -> list[str]:
     return []
 
 
+def check_interception_input() -> list[str]:
+    try:
+        import interception
+    except Exception as exc:
+        return [
+            "interception-python is unavailable. Install it with requirements.txt, then install the "
+            f"Oblita Interception driver as Administrator and reboot. Details: {exc}"
+        ]
+
+    try:
+        try:
+            interception.auto_capture_devices(keyboard=True, mouse=True)
+        except TypeError:
+            interception.auto_capture_devices()
+    except Exception as exc:
+        return [
+            "Interception could not hook keyboard/mouse devices. Install the Oblita Interception "
+            f"driver as Administrator and reboot before running foreground hardware input. Details: {exc}"
+        ]
+
+    return []
+
+
 def check_ui_map_coordinates() -> list[str]:
     failures: list[str] = []
     if str(CLASSES_DIR) not in sys.path:
@@ -328,6 +351,7 @@ def main() -> int:
         "state-machine transitions": check_state_machine_transitions,
         "UIMap coordinates": check_ui_map_coordinates,
         "runtime health": check_runtime_health,
+        "Interception hardware input": check_interception_input,
         "optional YOLO detector": check_optional_yolo_detector,
     }
 
