@@ -81,11 +81,7 @@ class SubGoal:
                 return True
 
         # Check OCR keyword post-conditions.
-        for keyword in self.expected_ocr_keywords:
-            if keyword.lower() in lower_ocr:
-                return True
-
-        return False
+        return any(keyword.lower() in lower_ocr for keyword in self.expected_ocr_keywords)
 
 
 class TaskGraph:

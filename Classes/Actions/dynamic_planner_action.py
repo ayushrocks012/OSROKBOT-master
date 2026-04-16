@@ -1,4 +1,5 @@
 import random
+from contextlib import suppress
 
 from Actions.action import Action
 from config_manager import ConfigManager
@@ -138,10 +139,8 @@ class DynamicPlannerAction(Action):
             return DelayPolicy().wait(0.1, context=context)
         except Exception as exc:
             LOGGER.error(f"Error during long press: {exc}")
-            try:
+            with suppress(Exception):
                 controller._mouse_up()
-            except Exception:
-                pass
             return False
 
     def _execute_drag(self, context, decision, window_rect):
@@ -187,10 +186,8 @@ class DynamicPlannerAction(Action):
             return DelayPolicy().wait(0.2, context=context)
         except Exception as exc:
             LOGGER.error(f"Error during drag: {exc}")
-            try:
+            with suppress(Exception):
                 controller._mouse_up()
-            except Exception:
-                pass
             return False
 
     def _execute_key(self, context, decision, window_rect):

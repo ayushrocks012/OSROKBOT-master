@@ -8,7 +8,14 @@ from input_controller import DelayPolicy, InputController
 
 def _controller(monkeypatch):
     monkeypatch.setattr(InputController, "ensure_interception_ready", staticmethod(lambda: True))
-    monkeypatch.setattr(input_controller_module.random, "uniform", lambda _low, _high: 0)
+    monkeypatch.setattr(
+        input_controller_module,
+        "SYS_RANDOM",
+        SimpleNamespace(
+            uniform=lambda _low, _high: 0,
+            gauss=lambda _mu, _sigma: 0,
+        ),
+    )
     controller = InputController(delay_policy=DelayPolicy(), move_duration=0.5, move_steps_per_second=10)
     controller.delay_policy.wait = lambda _seconds=None, context=None: True
     controller._mouse_position = lambda: (0, 0)

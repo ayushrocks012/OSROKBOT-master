@@ -61,8 +61,8 @@ class ModelManager:
 
         try:
             LOGGER.info(f"Downloading YOLO weights: {url}")
-            req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urlopen(req) as response, open(temp_path, 'wb') as out_file:  # nosec B310
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req) as response, temp_path.open("wb") as out_file:  # nosec B310
                 out_file.write(response.read())
             temp_path.replace(final_path)
         except Exception as exc:

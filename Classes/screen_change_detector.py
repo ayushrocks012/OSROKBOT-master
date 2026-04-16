@@ -133,10 +133,7 @@ class ScreenChangeDetector:
 
         recent = list(self._hash_history)[-self.stuck_threshold:]
         reference = recent[-1]
-        for past_hash in recent[:-1]:
-            if self.hamming_distance(reference, past_hash) > 3:
-                return False
-        return True
+        return all(self.hamming_distance(reference, past_hash) <= 3 for past_hash in recent[:-1])
 
     def screen_changed_since_last(self):
         """Check if the current screenshot differs from the previous one.
