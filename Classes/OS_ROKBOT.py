@@ -127,10 +127,17 @@ class OSROKBOT:
 
     @staticmethod
     def _write_heartbeat_file(heartbeat_path, payload):
+        import time
         heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = heartbeat_path.with_suffix(heartbeat_path.suffix + ".tmp")
         temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        temp_path.replace(heartbeat_path)
+        
+        for _ in range(3):
+            try:
+                temp_path.replace(heartbeat_path)
+                break
+            except PermissionError:
+                time.sleep(0.1)
 
     def _shutdown_runner_executor(self):
         executor = self._runner_executor
@@ -274,6 +281,10 @@ class OSROKBOT:
         self.stop_event.set()
         self.is_running = False
         self._shutdown_runner_executor()
+        
+        # Prevent zombie threads by killing the heartbeat executor
+        if getattr(self, "_heartbeat_executor", None):
+            self._heartbeat_executor.shutdown(wait=False, cancel_futures=True)
 
     def toggle_pause(self):
         if self.pause_event.is_set():

@@ -134,7 +134,7 @@ class HealthCheckDialog(QtWidgets.QDialog):
         # --- Check 5: Tesseract (optional) ---
         self._tesseract_row, self._tesseract_status = self._add_check_row(
             "Tesseract OCR", required=False,
-            tooltip="Optional. EasyOCR is the primary OCR engine. Tesseract is a fallback."
+            tooltip="Optional. EasyOCR is primary. You must install the Tesseract Windows executable (.exe) for this fallback to work."
         )
 
         layout.addStretch()
