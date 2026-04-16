@@ -4,11 +4,12 @@ import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from openai import OpenAI
-from termcolor import colored
-
 from config_manager import ConfigManager
+from logging_config import get_logger
+from openai import OpenAI
 from vision_memory import VisionMemory
+
+LOGGER = get_logger(__name__)
 
 
 ALLOWED_ACTION_TYPES = {"click", "wait", "stop"}
@@ -224,10 +225,10 @@ class DynamicPlanner:
             request fails.
         """
         if not self.client:
-            print(colored("Dynamic planner unavailable: OPENAI_KEY/OPENAI_API_KEY is not configured.", "yellow"))
+            LOGGER.warning("Dynamic planner unavailable: OPENAI_KEY/OPENAI_API_KEY is not configured.")
             return None
         if not hasattr(self.client, "responses"):
-            print(colored("Dynamic planner unavailable: installed openai package lacks Responses API support.", "yellow"))
+            LOGGER.warning("Dynamic planner unavailable: installed openai package lacks Responses API support.")
             return None
 
         labels = self._visible_labels(detections)
@@ -266,7 +267,7 @@ class DynamicPlanner:
             raw = self._safe_json_loads(response.output_text)
             return PlannerDecision.from_mapping(raw, source="ai")
         except Exception as exc:
-            print(colored(f"Dynamic planner request failed: {exc}", "red"))
+            LOGGER.error(f"Dynamic planner request failed: {exc}")
             return None
 
     def plan_next(self, context, screenshot_path, detections, ocr_text, goal):
@@ -292,6 +293,6 @@ class DynamicPlanner:
 
         decision = self._request_decision(context, screenshot_path, detections, ocr_text, goal)
         if not self.validate_decision(decision):
-            print(colored("Dynamic planner rejected an invalid or low-confidence decision.", "yellow"))
+            LOGGER.warning("Dynamic planner rejected an invalid or low-confidence decision.")
             return None
         return decision

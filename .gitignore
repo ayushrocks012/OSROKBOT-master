@@ -4,6 +4,10 @@ config.json
 
 # Python caches and bytecode.
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+.pytest_tmp/
+pytest-cache-files-*/
 *.py[cod]
 *$py.class
 
@@ -16,6 +20,7 @@ data/recovery_memory.json
 data/vision_memory.json
 data/planner_latest.png
 data/heartbeat.json
+data/logs/
 datasets/recovery/
 models/
 

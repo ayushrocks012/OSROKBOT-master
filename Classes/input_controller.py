@@ -3,9 +3,11 @@ import math
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Protocol
 
-from termcolor import colored
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 try:
     import interception
@@ -35,14 +37,14 @@ class DelayPolicy:
     poll_delay: float = 0.1
     jitter_ratio: float = 0.15
 
-    def adjusted_delay(self, seconds: Optional[float] = None):
+    def adjusted_delay(self, seconds: float | None = None):
         delay = self.default_delay if seconds is None else seconds
         if delay <= 0:
             return 0.0
         jitter = abs(delay) * max(0.0, self.jitter_ratio)
         return max(0.0, random.uniform(delay - jitter, delay + jitter))
 
-    def wait(self, seconds: Optional[float] = None, context=None):
+    def wait(self, seconds: float | None = None, context=None):
         delay = self.adjusted_delay(seconds)
         if delay <= 0:
             return True
@@ -84,7 +86,7 @@ class InputController:
 
     def __init__(
         self,
-        delay_policy: Optional[DelayPolicy] = None,
+        delay_policy: DelayPolicy | None = None,
         context=None,
         coordinate_noise_px=3,
         move_duration=0.18,
@@ -152,13 +154,13 @@ class InputController:
         active_context = self._context(context)
         if self.is_allowed(active_context):
             return True
-        print(colored("Input blocked: bot is paused or stopping.", "yellow"))
+        LOGGER.warning("Input blocked: bot is paused or stopping.")
         return False
 
     def check_backend(self):
         if self.ensure_interception_ready():
             return True
-        print(colored(f"Hardware input blocked: {self.backend_error()}", "red"))
+        LOGGER.error(f"Hardware input blocked: {self.backend_error()}")
         return False
 
     @staticmethod
@@ -183,9 +185,9 @@ class InputController:
             if WindowHandler().ensure_foreground(window_title, wait_seconds=0.5):
                 return True
         except Exception as exc:
-            print(colored(f"Foreground input guard failed: {exc}", "red"))
+            LOGGER.error(f"Foreground input guard failed: {exc}")
 
-        print(colored("Hardware input blocked: target game window is not foreground.", "red"))
+        LOGGER.error("Hardware input blocked: target game window is not foreground.")
         self._pause_for_foreground_failure(active_context)
         return False
 
@@ -315,7 +317,7 @@ class InputController:
             if not self.delay_policy.wait(self.delay_policy.key_hold_delay, active_context):
                 return False
         except Exception as exc:
-            print(colored(f"Error during hotkey '{'+'.join(map(str, keys))}': {exc}", "red"))
+            LOGGER.error(f"Error during hotkey '{'+'.join(map(str, keys))}': {exc}")
             return False
         finally:
             for key in reversed(normalized_keys):
@@ -330,7 +332,7 @@ class InputController:
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
         if window_rect and not self.validate_bounds(x, y, window_rect):
-            print(colored(f"Move blocked: ({x}, {y}) is outside the target window.", "red"))
+            LOGGER.error(f"Move blocked: ({x}, {y}) is outside the target window.")
             return False
 
         duration = self.move_duration if duration is None else max(0.0, float(duration))
@@ -342,7 +344,7 @@ class InputController:
             try:
                 self._move_hardware_to(target_x, target_y)
             except Exception as exc:
-                print(colored(f"Error during hardware move: {exc}", "red"))
+                LOGGER.error(f"Error during hardware move: {exc}")
                 return False
             return True
 
@@ -363,7 +365,7 @@ class InputController:
             try:
                 self._move_hardware_to(next_x, next_y)
             except Exception as exc:
-                print(colored(f"Error during hardware move: {exc}", "red"))
+                LOGGER.error(f"Error during hardware move: {exc}")
                 return False
             if not self.delay_policy.wait(duration / steps, active_context):
                 return False
@@ -374,7 +376,7 @@ class InputController:
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
         if window_rect and not self.validate_bounds(x, y, window_rect):
-            print(colored(f"Click blocked: ({x}, {y}) is outside the target window.", "red"))
+            LOGGER.error(f"Click blocked: ({x}, {y}) is outside the target window.")
             return False
 
         target_x, target_y = self.sample_click_target(x, y, window_rect)
@@ -391,7 +393,7 @@ class InputController:
             mouse_is_down = False
             return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
         except Exception as exc:
-            print(colored(f"Error during click execution: {exc}", "red"))
+            LOGGER.error(f"Error during click execution: {exc}")
             return False
         finally:
             if mouse_is_down:
@@ -405,13 +407,13 @@ class InputController:
         if not self.check_interlock(active_context):
             return False
         if window_rect and not self.validate_bounds(x, y, window_rect):
-            print(colored(f"Move blocked: ({x}, {y}) is outside the target window.", "red"))
+            LOGGER.error(f"Move blocked: ({x}, {y}) is outside the target window.")
             return False
 
         try:
             return self.smooth_move_to(x, y, active_context, window_rect=window_rect)
         except Exception as exc:
-            print(colored(f"Error during move execution: {exc}", "red"))
+            LOGGER.error(f"Error during move execution: {exc}")
             return False
 
     def key_press(self, key, hold_seconds=None, presses=1, context=None):
@@ -433,7 +435,7 @@ class InputController:
                 self._key_up(normalized_key)
                 key_is_down = False
             except Exception as exc:
-                print(colored(f"Error during key press '{key}': {exc}", "red"))
+                LOGGER.error(f"Error during key press '{key}': {exc}")
                 return False
             finally:
                 if key_is_down:
@@ -458,7 +460,7 @@ class InputController:
                 except TypeError:
                     self._call_interception(("scroll",), 0, direction)
             except Exception as exc:
-                print(colored(f"Error during scroll execution: {exc}", "red"))
+                LOGGER.error(f"Error during scroll execution: {exc}")
                 return False
             if not self.delay_policy.wait(self.delay_policy.scroll_settle_delay, active_context):
                 return False

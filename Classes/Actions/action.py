@@ -1,9 +1,17 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from input_controller import DelayPolicy, InputController
 
-
 DEFAULT_DELAY_POLICY = DelayPolicy()
+
+
+@dataclass(frozen=True)
+class ActionMetadata:
+    name: str
+    detail: str = ""
+    delay: float = 0
+    post_delay: float = 0
 
 
 class Action(ABC):
@@ -23,19 +31,21 @@ class Action(ABC):
         self.delay = delay
         self.post_delay = post_delay
 
+    def get_action_metadata(self) -> ActionMetadata:
+        return ActionMetadata(
+            name=self.__class__.__name__,
+            delay=self.delay,
+            post_delay=self.post_delay,
+        )
+
     @property
     def status_text(self):
-        details = ""
-        if hasattr(self, "image") and "captcha" not in str(self.image).lower():
-            details = str(self.image)
-        elif hasattr(self, "key"):
-            details = str(self.key)
-
+        metadata = self.get_action_metadata()
         lines = [
-            self.__class__.__name__,
-            details,
-            f"{getattr(self, 'delay', 0)}s delay",
-            f"{getattr(self, 'post_delay', 0)}s post_delay",
+            metadata.name,
+            metadata.detail,
+            f"{metadata.delay}s delay",
+            f"{metadata.post_delay}s post_delay",
         ]
         status = "\n".join(lines)
         return (
@@ -49,12 +59,12 @@ class Action(ABC):
     def perform(self, context=None):
         if context:
             context.emit_state(self.status_text)
-        if not DEFAULT_DELAY_POLICY.wait(getattr(self, "delay", 0), context):
+        if not DEFAULT_DELAY_POLICY.wait(self.delay, context):
             return False
         if not InputController.is_allowed(context):
             return False
         result = self.execute(context) if context else self.execute()
-        if not DEFAULT_DELAY_POLICY.wait(getattr(self, "post_delay", 0), context):
+        if not DEFAULT_DELAY_POLICY.wait(self.post_delay, context):
             return False
         return result
 

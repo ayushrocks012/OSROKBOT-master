@@ -1,9 +1,8 @@
-from termcolor import colored
-
 from Actions.dynamic_planner_action import DynamicPlannerAction
+from logging_config import get_logger
 from state_machine import StateMachine
 
-
+LOGGER = get_logger(__name__)
 LEGACY_WORKFLOWS = {
     "scout_explore",
     "farm_barb",
@@ -44,22 +43,27 @@ class ActionSets:
 
     @staticmethod
     def idle_march_precondition(required=1):
+        _ = required
         return lambda context=None: True
 
     @staticmethod
     def ap_precondition(required=50):
+        _ = required
         return lambda context=None: True
 
     @staticmethod
     def march_and_ap_precondition(required_slots=1, required_ap=50):
+        _ = (required_slots, required_ap)
         return lambda context=None: True
 
     @staticmethod
     def map_and_march_precondition(required_slots=1):
+        _ = required_slots
         return lambda context=None: True
 
     @staticmethod
     def map_march_and_ap_precondition(required_slots=1, required_ap=50):
+        _ = (required_slots, required_ap)
         return lambda context=None: True
 
     def dynamic_planner(self):
@@ -69,11 +73,9 @@ class ActionSets:
         return machine
 
     def _legacy_workflow_removed(self, workflow_name):
-        print(
-            colored(
-                f"Workflow '{workflow_name}' used deleted OpenCV templates and now routes to DynamicPlanner.",
-                "yellow",
-            )
+        LOGGER.warning(
+            "Workflow %r used deleted OpenCV templates and now routes to DynamicPlanner.",
+            workflow_name,
         )
         return self.dynamic_planner()
 

@@ -1,7 +1,9 @@
-from Actions.action import Action
+from Actions.action import Action, ActionMetadata
 from image_finder import ImageFinder
+from logging_config import get_logger
 from window_handler import WindowHandler
-from termcolor import colored
+
+LOGGER = get_logger(__name__)
 
 
 class FindImageAction(Action):
@@ -35,8 +37,16 @@ class FindImageAction(Action):
 
         # Check if the number of matches is greater or equal to the specified count
         if num_matches >= self.count:
-            print(colored(f"Found {self.image} {num_matches} times, satisfying the count condition of {self.count}.", "green"))
+            LOGGER.info(f"Found {self.image} {num_matches} times, satisfying the count condition of {self.count}.")
             return True
-        else:
-            print(colored(f"Found {self.image} {num_matches} times, not satisfying the count condition of {self.count}.", "red"))
-            return False
+        LOGGER.error(f"Found {self.image} {num_matches} times, not satisfying the count condition of {self.count}.")
+        return False
+
+    def get_action_metadata(self) -> ActionMetadata:
+        detail = "" if "captcha" in str(self.image).lower() else str(self.image)
+        return ActionMetadata(
+            name=self.__class__.__name__,
+            detail=detail,
+            delay=self.delay,
+            post_delay=self.post_delay,
+        )

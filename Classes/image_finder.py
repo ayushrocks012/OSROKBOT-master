@@ -4,7 +4,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 from input_controller import InputController
-from termcolor import colored
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 class ImageFinder:
@@ -46,10 +48,10 @@ class ImageFinder:
             else:
                 cv2.imwrite(str(path), screenshot)
         except Exception as exc:
-            print(colored(f"Unable to save diagnostic screenshot: {exc}", "red"))
+            LOGGER.error(f"Unable to save diagnostic screenshot: {exc}")
             return None
 
-        print(colored(f"Diagnostic screenshot saved: {path}", "yellow"))
+        LOGGER.warning(f"Diagnostic screenshot saved: {path}")
         return path
 
     def _get_scaling_factor(self, screenshot):
@@ -65,7 +67,7 @@ class ImageFinder:
 
         template = cv2.imread(target_image_path, cv2.IMREAD_UNCHANGED)
         if template is None:
-            print(colored(f"Template image not found: {target_image_path}", "red"))
+            LOGGER.error(f"Template image not found: {target_image_path}")
             self._template_cache[cache_key] = (None, None)
             return None, None
 
@@ -73,7 +75,7 @@ class ImageFinder:
         if template.ndim == 3 and template.shape[2] == 4:
             mask = template[:, :, 3]
             template = template[:, :, :3]
-            print(colored(f"template match: alpha mask enabled for {target_image_path}", "cyan"))
+            LOGGER.info(f"template match: alpha mask enabled for {target_image_path}")
 
         if template.ndim == 3:
             template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
@@ -116,12 +118,7 @@ class ImageFinder:
             scaled_w = int(round(width * screenshot_w))
             scaled_h = int(round(height * screenshot_h))
         else:
-            print(
-                colored(
-                    f"Legacy pixel ROI used: {search_region}. Prefer normalized 0.0-1.0 regions.",
-                    "yellow",
-                )
-            )
+            LOGGER.warning(f"Legacy pixel ROI used: {search_region}. Prefer normalized 0.0-1.0 regions.")
             scaled_x = int(round(x * base_scale[0]))
             scaled_y = int(round(y * base_scale[1]))
             scaled_w = int(round(width * base_scale[0]))
@@ -175,7 +172,7 @@ class ImageFinder:
             else:
                 result = cv2.matchTemplate(search_gray, resized_template, method)
         except cv2.error as exc:
-            print(colored(f"Unable to match {target_image_path} at scale {scale}: {exc}", "red"))
+            LOGGER.error(f"Unable to match {target_image_path} at scale {scale}: {exc}")
             return None
 
         return np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
@@ -273,10 +270,10 @@ class ImageFinder:
         try:
             cv2.imwrite(str(path), heatmap)
         except Exception as exc:
-            print(colored(f"Unable to save match heatmap: {exc}", "red"))
+            LOGGER.error(f"Unable to save match heatmap: {exc}")
             return None
 
-        print(colored(f"Match heatmap saved: {path}", "yellow"))
+        LOGGER.warning(f"Match heatmap saved: {path}")
         return path
 
     @staticmethod
@@ -330,15 +327,9 @@ class ImageFinder:
         if self.debug_output:
             cv2.imwrite("screenshot.png", screenshot_cv)
 
-        color = "green" if best_max_val >= self.threshold else "red"
-        print(
-            colored(
-                f"{method_name}: {target_image_path} confidence={best_max_val:.4f} "
+        LOGGER.info(f"{method_name}: {target_image_path} confidence={best_max_val:.4f} "
                 f"scale=({best_scale[0]:.2f},{best_scale[1]:.2f}) "
-                f"roi={region if region else 'full'} matches={len(picked_matches)}",
-                color,
-            )
-        )
+                f"roi={region if region else 'full'} matches={len(picked_matches)}")
 
         if best_max_val < self.threshold:
             self._save_match_heatmap(target_image_path, best_result, best_max_val)
@@ -443,10 +434,8 @@ class ImageFinder:
             )
 
         if "captcha" not in str(target_image_path).lower():
-            print(colored(f"No matches for {target_image_path} found in screenshot.", "red"))
-        if max_matches != 0:
-            return True
-        return False
+            LOGGER.error(f"No matches for {target_image_path} found in screenshot.")
+        return max_matches != 0
 
     def find_world_object(self, target_path, screenshot, min_matches=10, ratio_threshold=0.75):
         screenshot_gray, _ = self._to_gray_screenshot(screenshot)
@@ -458,14 +447,14 @@ class ImageFinder:
             try:
                 self._sift = cv2.SIFT_create()
             except AttributeError:
-                print(colored("SIFT is not available in this OpenCV build.", "red"))
+                LOGGER.error("SIFT is not available in this OpenCV build.")
                 return False, None
 
         keypoints_template, descriptors_template = self._sift.detectAndCompute(template, None)
         keypoints_screen, descriptors_screen = self._sift.detectAndCompute(screenshot_gray, None)
 
         if descriptors_template is None or descriptors_screen is None:
-            print(colored(f"SIFT: no descriptors for {target_path}", "red"))
+            LOGGER.error(f"SIFT: no descriptors for {target_path}")
             return False, None
 
         matcher = cv2.BFMatcher(cv2.NORM_L2)
@@ -479,13 +468,8 @@ class ImageFinder:
                 good_matches.append(first)
 
         confidence = len(good_matches) / max(len(keypoints_template), 1)
-        print(
-            colored(
-                f"SIFT world match: {target_path} good_matches={len(good_matches)} "
-                f"confidence={confidence:.4f}",
-                "green" if len(good_matches) >= min_matches else "red",
-            )
-        )
+        LOGGER.info(f"SIFT world match: {target_path} good_matches={len(good_matches)} "
+                f"confidence={confidence:.4f}")
 
         if len(good_matches) < min_matches:
             return False, None
@@ -542,9 +526,9 @@ class ImageFinder:
         )
 
         if best_max_val >= self.threshold:
-            print(colored(f"found {target_image_path} {num_matches}x at {best_max_val:.4f}", "green"))
+            LOGGER.info(f"found {target_image_path} {num_matches}x at {best_max_val:.4f}")
             return True
-        print(colored(f"No matches for {target_image_path} found in screenshot.", "red"))
+        LOGGER.error(f"No matches for {target_image_path} found in screenshot.")
         return False
 
     def locate_primary_anchor(
@@ -570,7 +554,7 @@ class ImageFinder:
             search_region=search_region,
         )
         if not found or x is None or y is None:
-            print(colored(f"Primary UI anchor not found: {target_image_path}", "yellow"))
+            LOGGER.warning(f"Primary UI anchor not found: {target_image_path}")
             return False
 
         context.set_ui_anchor(

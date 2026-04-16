@@ -1,7 +1,9 @@
-from Actions.action import Action
+from Actions.action import Action, ActionMetadata
 from image_finder import ImageFinder
+from logging_config import get_logger
 from window_handler import WindowHandler
-from termcolor import colored
+
+LOGGER = get_logger(__name__)
 
 class FindAndClickImageAction(Action):
     def __init__(
@@ -53,10 +55,16 @@ class FindAndClickImageAction(Action):
                 return controller.click(x, y, window_rect=win)
             return False
                 
-        else:
-            if "captcha" not in str(self.image).lower():
-                print(colored(f"No matches for {self.image} found in screenshot.", "red"))
-            if self.max_matches != 0:
-                return True
-            return False
+        if "captcha" not in str(self.image).lower():
+            LOGGER.error(f"No matches for {self.image} found in screenshot.")
+        return self.max_matches != 0
+
+    def get_action_metadata(self) -> ActionMetadata:
+        detail = "" if "captcha" in str(self.image).lower() else str(self.image)
+        return ActionMetadata(
+            name=self.__class__.__name__,
+            detail=detail,
+            delay=self.delay,
+            post_delay=self.post_delay,
+        )
 

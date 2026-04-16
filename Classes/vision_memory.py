@@ -3,8 +3,10 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from logging_config import get_logger
 from PIL import Image
-from termcolor import colored
+
+LOGGER = get_logger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -50,7 +52,7 @@ class VisionMemory:
             entries = raw.get("entries", raw if isinstance(raw, list) else [])
             self.entries = [entry for entry in entries if isinstance(entry, dict)]
         except Exception as exc:
-            print(colored(f"Vision memory ignored: {exc}", "yellow"))
+            LOGGER.warning(f"Vision memory ignored: {exc}")
             self.entries = []
         return self
 
@@ -78,7 +80,7 @@ class VisionMemory:
             return self._model
         except Exception as exc:
             self._model_error = exc
-            print(colored(f"CLIP vision memory unavailable: {exc}", "yellow"))
+            LOGGER.warning(f"CLIP vision memory unavailable: {exc}")
             return None
 
     @staticmethod
@@ -107,7 +109,7 @@ class VisionMemory:
             numpy.ndarray | None: Normalized embedding, or None if embedding is
             unavailable.
         """
-        if isinstance(screenshot_or_embedding, (list, tuple, np.ndarray)):
+        if isinstance(screenshot_or_embedding, list | tuple | np.ndarray):
             return self._normalize(screenshot_or_embedding)
         model = self._load_model()
         if not model:
@@ -117,7 +119,7 @@ class VisionMemory:
             encoded = model.encode([image])
             return self._normalize(encoded[0] if hasattr(encoded, "__len__") else encoded)
         except Exception as exc:
-            print(colored(f"Unable to embed screenshot for vision memory: {exc}", "yellow"))
+            LOGGER.warning(f"Unable to embed screenshot for vision memory: {exc}")
             return None
 
     @staticmethod
@@ -260,7 +262,7 @@ class VisionMemory:
         """
         entry = self._record(screenshot_path, decision, visible_labels=visible_labels, source=source, corrected=False)
         if entry:
-            print(colored(f"Vision memory success recorded: {entry.get('label')}", "cyan"))
+            LOGGER.info(f"Vision memory success recorded: {entry.get('label')}")
         return entry
 
     def record_correction(self, screenshot_path, decision, corrected_point, visible_labels=None):
@@ -283,7 +285,7 @@ class VisionMemory:
         corrected["confidence"] = 1.0
         entry = self._record(screenshot_path, corrected, visible_labels=visible_labels, source="manual", corrected=True)
         if entry:
-            print(colored(f"Vision memory correction recorded: {entry.get('label')}", "cyan"))
+            LOGGER.info(f"Vision memory correction recorded: {entry.get('label')}")
         return entry
 
     def record_failure(self, entry_or_decision):
@@ -295,10 +297,7 @@ class VisionMemory:
         Returns:
             dict | None: Updated entry, when one is available.
         """
-        if isinstance(entry_or_decision, dict) and entry_or_decision in self.entries:
-            entry = entry_or_decision
-        else:
-            entry = None
+        entry = entry_or_decision if isinstance(entry_or_decision, dict) and entry_or_decision in self.entries else None
         if not entry and self.entries:
             entry = self.entries[-1]
         if not entry:
@@ -306,7 +305,7 @@ class VisionMemory:
         entry["failure_count"] = int(entry.get("failure_count", 0)) + 1
         entry["last_used"] = datetime.now().isoformat(timespec="seconds")
         self.save()
-        print(colored("Vision memory failure recorded.", "yellow"))
+        LOGGER.warning("Vision memory failure recorded.")
         return entry
 
     def is_trusted_label(self, label, min_success=3):

@@ -1,5 +1,6 @@
-from Actions.action import Action
+from Actions.action import Action, ActionMetadata
 from input_controller import DelayPolicy
+
 
 class ManualSleepAction(Action):
     def __init__(self, break_action=False, delay=1, post_delay=0):
@@ -7,10 +8,12 @@ class ManualSleepAction(Action):
         self.break_action = break_action
         self.sleep_seconds = delay
 
-    @property
-    def status_text(self):
-        return f"ManualSleep\n{self.sleep_seconds}s delay\n{self.post_delay}s post_delay"
-
+    def get_action_metadata(self) -> ActionMetadata:
+        return ActionMetadata(
+            name="ManualSleep",
+            delay=self.sleep_seconds,
+            post_delay=self.post_delay,
+        )
 
     def execute(self, context=None):
         if not DelayPolicy().wait(self.sleep_seconds, context):

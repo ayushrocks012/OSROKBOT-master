@@ -13,18 +13,37 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import sys
 from pathlib import Path
-
-from termcolor import colored
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CLASSES_DIR = PROJECT_ROOT / "Classes"
 ACTION_SETS_PATH = CLASSES_DIR / "action_sets.py"
 ENV_PATH = PROJECT_ROOT / ".env"
 CONFIG_PATH = PROJECT_ROOT / "config.json"
+REQUIREMENTS_PATH = PROJECT_ROOT / "requirements.txt"
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
+
+if str(CLASSES_DIR) not in sys.path:
+    sys.path.insert(0, str(CLASSES_DIR))
+
+from logging_config import get_logger
+
+LOGGER = get_logger(Path(__file__).stem)
+DEPENDENCY_ENV_REQUIREMENTS = {
+    "openai": (("OPENAI_KEY", "OPENAI_API_KEY"),),
+    "pytesseract": (("TESSERACT_PATH",),),
+}
+ENV_VAR_PATTERN = re.compile(r"%([^%]+)%|\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_env_vars(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        key = next(group for group in match.groups() if group)
+        return os.environ.get(key, match.group(0))
+
+    return ENV_VAR_PATTERN.sub(replace, value)
 
 
 def _normalize_media_path(value: str) -> Path | None:
@@ -197,13 +216,50 @@ def _read_config_values() -> dict[str, str]:
     return values
 
 
+def _requirements_packages() -> set[str]:
+    if not REQUIREMENTS_PATH.is_file():
+        return set()
+    packages: set[str] = set()
+    for raw_line in REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        package_name = re.split(r"[<>=~!; \[]", line, maxsplit=1)[0].strip().lower()
+        if package_name:
+            packages.add(package_name)
+    return packages
+
+
+def check_required_dependency_env() -> list[str]:
+    values = _read_config_values()
+    packages = _requirements_packages()
+    failures: list[str] = []
+
+    for package_name, required_groups in DEPENDENCY_ENV_REQUIREMENTS.items():
+        if package_name not in packages:
+            continue
+        for required_group in required_groups:
+            if any(values.get(key) for key in required_group):
+                continue
+            failures.append(
+                f"{package_name} is installed but none of these config/.env values are set: "
+                f"{', '.join(required_group)}"
+            )
+
+    return failures
+
+
+def _configured_path(value: str) -> Path:
+    return Path(_expand_env_vars(value)).expanduser()
+
+
 def check_tesseract_path() -> list[str]:
     values = _read_config_values()
     tesseract_path = values.get("TESSERACT_PATH")
     if not tesseract_path:
         return ["TESSERACT_PATH is missing from config.json or .env"]
 
-    resolved = Path(os.path.expandvars(tesseract_path))
+    resolved = _configured_path(tesseract_path)
     if not resolved.is_file():
         return [f"TESSERACT_PATH is not accessible: {resolved}"]
     return []
@@ -225,12 +281,9 @@ def check_runtime_health() -> list[str]:
             from openai import OpenAI
 
             client = OpenAI(api_key=openai_key)
-            getattr(client, "responses")
+            _ = client.responses
         except Exception as exc:
             failures.append(f"OpenAI Responses API is unavailable: {exc}")
-
-    if str(CLASSES_DIR) not in sys.path:
-        sys.path.insert(0, str(CLASSES_DIR))
 
     try:
         from window_handler import WindowHandler, win32gui
@@ -274,7 +327,7 @@ def check_optional_yolo_detector() -> list[str]:
     if not weights_path:
         return []
 
-    resolved = Path(os.path.expandvars(weights_path))
+    resolved = _configured_path(weights_path)
     if not resolved.is_file():
         return [f"ROK_YOLO_WEIGHTS is configured but not accessible: {resolved}"]
 
@@ -310,8 +363,6 @@ def check_interception_input() -> list[str]:
 
 
 def check_planner_modules() -> list[str]:
-    if str(CLASSES_DIR) not in sys.path:
-        sys.path.insert(0, str(CLASSES_DIR))
     failures: list[str] = []
     for module_name in ["dynamic_planner", "ocr_service", "vision_memory", "Actions.dynamic_planner_action"]:
         try:
@@ -343,10 +394,10 @@ def check_watchdog_module() -> list[str]:
         if restart_explicitly_enabled:
             failures.append(message)
         else:
-            print(colored(f"[WARN] {message}", "yellow"))
+            LOGGER.warning(message)
         return failures
 
-    resolved = Path(os.path.expandvars(client_path))
+    resolved = _configured_path(client_path)
     if not resolved.is_file():
         failures.append(f"ROK_CLIENT_PATH is configured but not accessible: {resolved}")
 
@@ -355,9 +406,6 @@ def check_watchdog_module() -> list[str]:
 
 def check_ui_map_coordinates() -> list[str]:
     failures: list[str] = []
-    if str(CLASSES_DIR) not in sys.path:
-        sys.path.insert(0, str(CLASSES_DIR))
-
     try:
         from helpers import UIMap
     except Exception as exc:
@@ -372,7 +420,7 @@ def check_ui_map_coordinates() -> list[str]:
         if len(value) != 4:
             failures.append(f"UIMap.{name} must contain 4 values: (x, y, width, height)")
             continue
-        if not all(isinstance(item, (int, float)) for item in value):
+        if not all(isinstance(item, int | float) for item in value):
             failures.append(f"UIMap.{name} contains non-numeric values: {value!r}")
             continue
 
@@ -394,6 +442,7 @@ def main() -> int:
         "action set image paths": check_action_set_images,
         "state-machine transitions": check_state_machine_transitions,
         "UIMap coordinates": check_ui_map_coordinates,
+        "required dependency environment": check_required_dependency_env,
         "runtime health": check_runtime_health,
         "Interception hardware input": check_interception_input,
         "guarded planner modules": check_planner_modules,
@@ -409,18 +458,18 @@ def main() -> int:
             check_failures = [f"{label} check crashed: {exc}"]
 
         if check_failures:
-            print(colored(f"[FAIL] {label}", "red"))
+            LOGGER.error("[FAIL] %s", label)
             for failure in check_failures:
-                print(colored(f"  - {failure}", "red"))
+                LOGGER.error("  - %s", failure)
             failures.extend(check_failures)
         else:
-            print(colored(f"[OK] {label}", "green"))
+            LOGGER.info("[OK] %s", label)
 
     if failures:
-        print(colored(f"\nIntegrity check failed with {len(failures)} issue(s).", "red"))
+        LOGGER.error("Integrity check failed with %s issue(s).", len(failures))
         return 1
 
-    print(colored("\nIntegrity check passed.", "green"))
+    LOGGER.info("Integrity check passed.")
     return 0
 
 

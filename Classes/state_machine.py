@@ -1,4 +1,6 @@
-from termcolor import colored
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 class StateMachine:
@@ -142,7 +144,7 @@ class StateMachine:
         try:
             from ai_recovery_executor import AIRecoveryExecutor
         except Exception as exc:
-            print(colored(f"AI recovery unavailable: {exc}", "yellow"))
+            LOGGER.warning(f"AI recovery unavailable: {exc}")
             return None
         self.recovery_executor = AIRecoveryExecutor()
         return self.recovery_executor

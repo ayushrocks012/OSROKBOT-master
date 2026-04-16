@@ -31,10 +31,7 @@ class SpiralScanAction(Action):
         return key, self.hold_seconds_by_key.get(key, self.hold_seconds)
 
     def _find_target(self, context=None):
-        for target in self.targets:
-            if FindAndClickImageAction(target).perform(context):
-                return True
-        return False
+        return any(FindAndClickImageAction(target).perform(context) for target in self.targets)
 
     def execute(self, context=None):
         found = 0

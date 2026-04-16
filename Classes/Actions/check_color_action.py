@@ -1,5 +1,6 @@
-from Actions.window_percent_action import WindowPercentAction
 from colorsys import rgb_to_hsv
+
+from Actions.window_percent_action import WindowPercentAction
 
 
 class CheckColorAction(WindowPercentAction):
@@ -28,6 +29,5 @@ class CheckColorAction(WindowPercentAction):
         if abs(color_h - target_h) < threshold:
             print("Green: ", color)
             return True
-        else:
-            print("NOT GREEN ", color)
-            return False
+        print("NOT GREEN ", color)
+        return False

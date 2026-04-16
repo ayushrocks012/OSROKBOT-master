@@ -2,10 +2,11 @@ import base64
 import json
 from pathlib import Path
 
-from openai import OpenAI
-from termcolor import colored
-
 from config_manager import ConfigManager
+from logging_config import get_logger
+from openai import OpenAI
+
+LOGGER = get_logger(__name__)
 
 
 DEFAULT_MODEL = "gpt-5.4-mini"
@@ -87,10 +88,10 @@ class AIFallback:
 
     def _request_json(self, instructions, user_content, schema_name, schema):
         if not self.enabled:
-            print(colored("AI fallback skipped: OPENAI_KEY/OPENAI_API_KEY is not configured.", "yellow"))
+            LOGGER.warning("AI fallback skipped: OPENAI_KEY/OPENAI_API_KEY is not configured.")
             return None
         if not hasattr(self.client, "responses"):
-            print(colored("AI fallback skipped: installed openai package lacks Responses API support.", "yellow"))
+            LOGGER.warning("AI fallback skipped: installed openai package lacks Responses API support.")
             return None
 
         try:
@@ -108,13 +109,13 @@ class AIFallback:
                 },
             )
         except Exception as exc:
-            print(colored(f"AI fallback request failed: {exc}", "red"))
+            LOGGER.error(f"AI fallback request failed: {exc}")
             return None
 
         try:
             return self._safe_json_loads(response.output_text)
         except Exception as exc:
-            print(colored(f"AI fallback returned unreadable JSON: {exc}", "red"))
+            LOGGER.error(f"AI fallback returned unreadable JSON: {exc}")
             return None
 
     def analyze_failure(self, context, screenshot_path, state_history):
@@ -146,14 +147,14 @@ class AIFallback:
         )
         if result and context:
             context.extracted["ai_recovery"] = result
-            print(colored(f"AI recovery suggestion: {result.get('suggested_recovery', '')}", "cyan"))
+            LOGGER.info(f"AI recovery suggestion: {result.get('suggested_recovery', '')}")
         return result
 
     def answer_lyceum(self, question, options):
         if not question or len(options) != 4:
             return None
 
-        option_text = "\n".join(f"{letter}: {value or ''}" for letter, value in zip("ABCD", options))
+        option_text = "\n".join(f"{letter}: {value or ''}" for letter, value in zip("ABCD", options, strict=False))
         user_content = [
             {
                 "type": "input_text",

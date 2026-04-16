@@ -2,7 +2,9 @@ from datetime import datetime
 from pathlib import Path
 from shutil import copyfile
 
-from termcolor import colored
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -48,10 +50,10 @@ class DetectionDataset:
                 meta_lines.append(f"detection={detection}")
             meta_path.write_text("\n".join(meta_lines) + "\n", encoding="utf-8")
         except Exception as exc:
-            print(colored(f"Unable to export detection dataset stub: {exc}", "red"))
+            LOGGER.error(f"Unable to export detection dataset stub: {exc}")
             return None
 
-        print(colored(f"Detection dataset stub exported: {image_path}", "yellow"))
+        LOGGER.warning(f"Detection dataset stub exported: {image_path}")
         return image_path
 
     def export_correction(self, screenshot_path, decision, corrected_point, detections=None):

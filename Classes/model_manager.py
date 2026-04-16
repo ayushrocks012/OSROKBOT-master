@@ -1,14 +1,26 @@
 import os
+import re
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlretrieve
 
-from termcolor import colored
+from config_manager import PROJECT_ROOT, ConfigManager
+from logging_config import get_logger
 
-from config_manager import ConfigManager, PROJECT_ROOT
+LOGGER = get_logger(__name__)
 
 
 MODELS_DIR = PROJECT_ROOT / "models"
+ENV_VAR_PATTERN = re.compile(r"%([^%]+)%|\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_env_vars(value):
+    def replace(match):
+        key = next(group for group in match.groups() if group)
+        return os.environ.get(key, match.group(0))
+
+    return ENV_VAR_PATTERN.sub(replace, str(value))
 
 
 class ModelManager:
@@ -19,12 +31,12 @@ class ModelManager:
     def ensure_yolo_weights(self):
         configured_path = self.config.get("ROK_YOLO_WEIGHTS")
         if configured_path:
-            resolved = Path(os.path.expandvars(configured_path))
+            resolved = Path(_expand_env_vars(configured_path)).expanduser()
             if not resolved.is_absolute():
                 resolved = PROJECT_ROOT / resolved
             if resolved.is_file():
                 return resolved
-            print(colored(f"Configured YOLO weights are not accessible: {resolved}", "yellow"))
+            LOGGER.warning(f"Configured YOLO weights are not accessible: {resolved}")
 
         url = self.config.get("ROK_YOLO_WEIGHTS_URL")
         if not url:
@@ -32,7 +44,7 @@ class ModelManager:
 
         parsed = urlparse(url)
         if parsed.scheme.lower() != "https" or not parsed.netloc:
-            print(colored("YOLO weights URL must be an HTTPS URL.", "red"))
+            LOGGER.error("YOLO weights URL must be an HTTPS URL.")
             return None
 
         filename = Path(parsed.path).name or "rok_yolo_weights.pt"
@@ -48,18 +60,16 @@ class ModelManager:
             return final_path
 
         try:
-            print(colored(f"Downloading YOLO weights: {url}", "cyan"))
+            LOGGER.info(f"Downloading YOLO weights: {url}")
             urlretrieve(url, temp_path)
             temp_path.replace(final_path)
         except Exception as exc:
             if temp_path.exists():
-                try:
+                with suppress(OSError):
                     temp_path.unlink()
-                except OSError:
-                    pass
-            print(colored(f"YOLO weights download failed: {exc}", "red"))
+            LOGGER.error(f"YOLO weights download failed: {exc}")
             return None
 
         self.config.set_many({"ROK_YOLO_WEIGHTS": str(final_path)})
-        print(colored(f"YOLO weights saved: {final_path}", "green"))
+        LOGGER.info(f"YOLO weights saved: {final_path}")
         return final_path

@@ -1,21 +1,18 @@
 import os
 import sys
+import threading
 from pathlib import Path
 
-from PyQt5 import QtWidgets, QtGui, QtCore
-
-from action_sets import ActionSets
-from OS_ROKBOT import OSROKBOT
 import pygetwindow as gw
-import time
-from window_handler import WindowHandler
-from context import Context
+from action_sets import ActionSets
 from config_manager import ConfigManager
+from context import Context
 from emergency_stop import EmergencyStop
-from model_manager import ModelManager
 from input_controller import InputController
-import threading
-
+from model_manager import ModelManager
+from OS_ROKBOT import OSROKBOT
+from PyQt5 import QtCore, QtGui, QtWidgets
+from window_handler import WindowHandler
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EmergencyStop.start_once()
@@ -513,33 +510,32 @@ class UI(QtWidgets.QWidget):
         if self.OS_ROKBOT.is_running or not self.OS_ROKBOT.all_threads_joined:
             self.current_state_label.setText('Finishing last job\nwait 2s')
             return
-        else:
-            if self.OS_ROKBOT.is_paused():
-                self.toggle_pause()
-            WindowHandler().activate_window('Rise of Kingdoms')
-            mission = self.mission_input.text().strip() or "Safely continue the selected Rise of Kingdoms task."
-            ConfigManager().set_many({"PLANNER_GOAL": mission})
-            action_group = self.action_sets.dynamic_planner()
-            if action_group:
-                actions_groups = [action_group]
-                if self.check_captcha_checkbutton.isChecked():
-                    actions_groups.append(self.action_sets.email_captcha())
+        if self.OS_ROKBOT.is_paused():
+            self.toggle_pause()
+        WindowHandler().activate_window('Rise of Kingdoms')
+        mission = self.mission_input.text().strip() or "Safely continue the selected Rise of Kingdoms task."
+        ConfigManager().set_many({"PLANNER_GOAL": mission})
+        action_group = self.action_sets.dynamic_planner()
+        if action_group:
+            actions_groups = [action_group]
+            if self.check_captcha_checkbutton.isChecked():
+                actions_groups.append(self.action_sets.email_captcha())
 
-                context = Context(
-                    ui_instance=self,
-                    bot=self.OS_ROKBOT,
-                    signal_emitter=self.OS_ROKBOT.signal_emitter,
-                    window_title=self.target_title,
-                )
-                context.planner_goal = mission
-                context.planner_autonomy_level = self.autonomy_combo_box.currentIndex() + 1
-                self.current_context = context
-                if self.OS_ROKBOT.start(actions_groups, context):
-                    self.status_label.setText(' Running')
-                    self.status_label.setStyleSheet("color: green;font-weight: bold;")
-            self.play_button.hide()
-            self.stop_button.show()
-            self.pause_button.show()
+            context = Context(
+                ui_instance=self,
+                bot=self.OS_ROKBOT,
+                signal_emitter=self.OS_ROKBOT.signal_emitter,
+                window_title=self.target_title,
+            )
+            context.planner_goal = mission
+            context.planner_autonomy_level = self.autonomy_combo_box.currentIndex() + 1
+            self.current_context = context
+            if self.OS_ROKBOT.start(actions_groups, context):
+                self.status_label.setText(' Running')
+                self.status_label.setStyleSheet("color: green;font-weight: bold;")
+        self.play_button.hide()
+        self.stop_button.show()
+        self.pause_button.show()
 
     def stop_automation(self):
         
@@ -549,12 +545,12 @@ class UI(QtWidgets.QWidget):
         self.play_button.show()
         self.stop_button.hide()
         self.pause_button.hide()
-        threading.Thread(target=self.call_current_state, args=("Ready",)).start()
+        QtCore.QTimer.singleShot(2000, lambda: self.currentState("Ready"))
 
     def toggle_pause(self):
         self.OS_ROKBOT.toggle_pause()
         if self.OS_ROKBOT.is_paused():
-            threading.Thread(target=self.call_current_state, args=("Paused",)).start()
+            QtCore.QTimer.singleShot(2000, lambda: self.currentState("Paused"))
 
     def open_settings(self):
         dialog = SettingsDialog(self)
@@ -609,11 +605,6 @@ class UI(QtWidgets.QWidget):
         context.resolve_planner_decision(True, corrected_point=corrected)
         self.status_label.setText("Planner correction saved")
         
-        
-    def call_current_state(self,info):
-        time.sleep(2)
-        self.currentState(info)
-
     def closeEvent(self, event):
         self.stop_automation()
         event.accept()

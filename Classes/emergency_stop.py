@@ -2,7 +2,9 @@ import os
 import threading
 import time
 
-from termcolor import colored
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 class EmergencyStop:
@@ -30,7 +32,7 @@ class EmergencyStop:
                 import keyboard
             except Exception as exc:
                 cls._error = exc
-                print(colored(f"Emergency F12 stop unavailable: {exc}", "red"))
+                LOGGER.error(f"Emergency F12 stop unavailable: {exc}")
                 return False
             cls._keyboard = keyboard
 
@@ -38,7 +40,7 @@ class EmergencyStop:
                 keyboard.add_hotkey("f12", cls._kill_now, suppress=False)
             except Exception as exc:
                 cls._error = exc
-                print(colored(f"Emergency F12 stop hook failed: {exc}", "red"))
+                LOGGER.error(f"Emergency F12 stop hook failed: {exc}")
             else:
                 cls._error = None
 
@@ -46,7 +48,7 @@ class EmergencyStop:
             poll_thread.start()
 
             cls._started = True
-            print(colored("Emergency stop armed: press F12 to immediately terminate OSROKBOT.", "yellow"))
+            LOGGER.warning("Emergency stop armed: press F12 to immediately terminate OSROKBOT.")
             return True
 
     @classmethod
@@ -61,5 +63,5 @@ class EmergencyStop:
 
     @staticmethod
     def _kill_now():
-        print(colored("Emergency F12 stop triggered. Terminating OSROKBOT now.", "red"))
+        LOGGER.error("Emergency F12 stop triggered. Terminating OSROKBOT now.")
         EmergencyStop._exit_func(0)

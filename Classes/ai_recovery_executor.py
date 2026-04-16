@@ -1,13 +1,14 @@
 from pathlib import Path
 
-from PIL import Image
-from termcolor import colored
-
 from detection_dataset import DetectionDataset
 from input_controller import InputController
+from logging_config import get_logger
 from object_detector import create_detector
+from PIL import Image
 from recovery_memory import RecoveryMemory
 from window_handler import WindowHandler
+
+LOGGER = get_logger(__name__)
 
 
 ALLOWED_LABELS = {
@@ -85,7 +86,7 @@ class AIRecoveryExecutor:
             screenshot = Image.open(screenshot_path).convert("RGB")
             return self.detector.detect(screenshot)
         except Exception as exc:
-            print(colored(f"Object detection skipped: {exc}", "yellow"))
+            LOGGER.warning(f"Object detection skipped: {exc}")
             return []
 
     def _memory_hint(self, signature_parts):
@@ -110,7 +111,7 @@ class AIRecoveryExecutor:
         try:
             from ai_fallback import AIFallback
         except Exception as exc:
-            print(colored(f"AI recovery unavailable: {exc}", "yellow"))
+            LOGGER.warning(f"AI recovery unavailable: {exc}")
             return None
 
         if context:
@@ -129,7 +130,7 @@ class AIRecoveryExecutor:
         ]
         allowed_hints = [hint for hint in hints if self._hint_allowed(hint)]
         if not allowed_hints:
-            print(colored("AI recovery produced no allowed target hints.", "yellow"))
+            LOGGER.warning("AI recovery produced no allowed target hints.")
             return None
         return max(allowed_hints, key=lambda hint: hint["confidence"])
 
@@ -140,10 +141,10 @@ class AIRecoveryExecutor:
 
         target_x, target_y = context.resolve_anchor_relative_point(hint["x"], hint["y"], window_rect)
         if not InputController.validate_bounds(target_x, target_y, window_rect):
-            print(colored(f"AI recovery target rejected outside window: {target_x}, {target_y}", "red"))
+            LOGGER.error(f"AI recovery target rejected outside window: {target_x}, {target_y}")
             return False
 
-        print(colored(f"AI recovery guarded click: {hint['label']} ({hint['x']:.3f}, {hint['y']:.3f})", "cyan"))
+        LOGGER.info(f"AI recovery guarded click: {hint['label']} ({hint['x']:.3f}, {hint['y']:.3f})")
         return InputController(context=context, coordinate_noise_px=0).click(
             target_x,
             target_y,
@@ -156,7 +157,7 @@ class AIRecoveryExecutor:
         if not context or not screenshot_path:
             return False
         if self._is_manual_or_captcha(state_name, action):
-            print(colored("AI recovery skipped for captcha/manual state.", "yellow"))
+            LOGGER.warning("AI recovery skipped for captcha/manual state.")
             return False
 
         detections = self._detections(screenshot_path)

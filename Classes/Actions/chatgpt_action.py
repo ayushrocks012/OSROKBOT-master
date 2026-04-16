@@ -1,20 +1,25 @@
+import csv
+from pathlib import Path
+
 from Actions.action import Action
+from Actions.check_color_action import CheckColorAction
 from Actions.manual_click_action import ManualClickAction
 from Actions.manual_move_action import ManualMoveAction
-from termcolor import colored
-import csv
-from Actions.check_color_action import CheckColorAction
-from input_controller import DelayPolicy
 from ai_fallback import AIFallback
+from input_controller import DelayPolicy
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 class ChatGPTAction(Action):
     def __init__(self, midterm=False, filepath="string.txt", delay=0, post_delay=0):
         super().__init__(delay=delay, post_delay=post_delay)
         self.midterm = midterm
+        self.filepath = filepath
 
     def checkCorrect(self, context=None):
-        with open('roklyceum.csv', mode='a', newline='', encoding='utf-8') as file:
+        with Path("roklyceum.csv").open(mode='a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             if not DelayPolicy().wait(.5, context):
                 return
@@ -28,7 +33,7 @@ class ChatGPTAction(Action):
                 elif CheckColorAction(60, 58).execute(context):
                     writer.writerow([context.Q, context.D])
             else:
-                print(colored("Warning: Context missing in checkCorrect", "yellow"))
+                LOGGER.warning("Warning: Context missing in checkCorrect")
 
     def _apply_answer(self, answer, context=None):
         if not self.midterm:
@@ -59,7 +64,7 @@ class ChatGPTAction(Action):
 
     def execute(self, context=None):
         if not context:
-            print(colored("Warning: Context is None in ChatGPTAction", "yellow"))
+            LOGGER.warning("Warning: Context is None in ChatGPTAction")
             return False
 
         result = AIFallback().answer_lyceum(
@@ -70,7 +75,7 @@ class ChatGPTAction(Action):
             return False
 
         answer = result.get("answer")
-        print(colored(f"AI Lyceum answer: {answer} confidence={result.get('confidence')}", "cyan"))
+        LOGGER.info(f"AI Lyceum answer: {answer} confidence={result.get('confidence')}")
         if result.get("reason"):
-            print(colored(result["reason"], "cyan"))
+            LOGGER.info(result["reason"])
         return self._apply_answer(answer, context)

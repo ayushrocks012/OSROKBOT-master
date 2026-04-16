@@ -1,10 +1,11 @@
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from PIL import Image
-from termcolor import colored
-
+from logging_config import get_logger
 from model_manager import ModelManager
+from PIL import Image
+
+LOGGER = get_logger(__name__)
 
 
 @dataclass
@@ -36,7 +37,7 @@ class YOLODetector:
 
     def detect(self, screenshot):
         image = screenshot
-        if isinstance(screenshot, (str, Path)):
+        if isinstance(screenshot, str | Path):
             image = Image.open(screenshot).convert("RGB")
 
         image_width, image_height = image.size
@@ -73,11 +74,11 @@ def create_detector():
 
     resolved = Path(weights_path)
     if not resolved.is_file():
-        print(colored(f"YOLO detector disabled: weights not found: {resolved}", "yellow"))
+        LOGGER.warning(f"YOLO detector disabled: weights not found: {resolved}")
         return NoOpDetector()
 
     try:
         return YOLODetector(resolved)
     except Exception as exc:
-        print(colored(f"YOLO detector disabled: {exc}", "yellow"))
+        LOGGER.warning(f"YOLO detector disabled: {exc}")
         return NoOpDetector()

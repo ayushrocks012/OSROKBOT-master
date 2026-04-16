@@ -2,8 +2,10 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from logging_config import get_logger
 from PIL import Image
-from termcolor import colored
+
+LOGGER = get_logger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +27,7 @@ class RecoveryMemory:
         try:
             raw = json.loads(memory.path.read_text(encoding="utf-8"))
         except Exception as exc:
-            print(colored(f"Recovery memory ignored: {exc}", "yellow"))
+            LOGGER.warning(f"Recovery memory ignored: {exc}")
             return memory
 
         entries = raw.get("entries", raw if isinstance(raw, list) else [])
@@ -191,7 +193,7 @@ class RecoveryMemory:
             entry["visible_labels"] = visible_labels
         self.entries[stable_signature] = entry
         self.save()
-        print(colored(f"Recovery memory success recorded: {label}", "cyan"))
+        LOGGER.info(f"Recovery memory success recorded: {label}")
         return entry
 
     def record_failure(self, signature):
@@ -211,5 +213,5 @@ class RecoveryMemory:
         entry["last_used"] = now
         self.entries[signature] = entry
         self.save()
-        print(colored("Recovery memory failure recorded.", "yellow"))
+        LOGGER.warning("Recovery memory failure recorded.")
         return entry

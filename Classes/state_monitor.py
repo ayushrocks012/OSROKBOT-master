@@ -1,4 +1,3 @@
-import os
 import re
 import subprocess
 import time
@@ -6,14 +5,15 @@ from enum import Enum
 from pathlib import Path
 
 import pytesseract
-from PIL import Image, ImageOps
-from termcolor import colored
-
 from config_manager import ConfigManager
 from helpers import UIMap
 from image_finder import ImageFinder
 from input_controller import InputController
+from logging_config import get_logger
+from PIL import Image, ImageOps
 from window_handler import WindowHandler
+
+LOGGER = get_logger(__name__)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -65,7 +65,7 @@ class GameStateMonitor:
     def _ocr_digits(self, image, invert=True):
         image = image.convert("L")
         width, height = image.size
-        resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
         image = image.resize((max(1, width * 5), max(1, height * 5)), resampling)
         image = image.point(lambda value: 0 if value < 145 else 255, "1")
         if invert:
@@ -120,7 +120,7 @@ class GameStateMonitor:
     def save_diagnostic_screenshot(self, label="recovery"):
         screenshot, _ = self._screenshot()
         if screenshot is None:
-            print(colored("Diagnostic screenshot skipped: screenshot unavailable.", "yellow"))
+            LOGGER.warning("Diagnostic screenshot skipped: screenshot unavailable.")
             return None
         return self.image_finder.save_screenshot(screenshot, label=label)
 
@@ -140,22 +140,22 @@ class GameStateMonitor:
 
         screenshot, _ = self._screenshot()
         if screenshot is None:
-            print(colored("March slot check skipped: screenshot unavailable.", "yellow"))
+            LOGGER.warning("March slot check skipped: screenshot unavailable.")
             return None
 
         try:
             text = self._ocr_digits(self._extract_roi(screenshot, UIMap.TOP_RIGHT_MARCH_SLOTS))
             fraction = self._parse_fraction(text)
             if not fraction:
-                print(colored(f"March slot OCR unreadable: {text!r}", "yellow"))
+                LOGGER.warning(f"March slot OCR unreadable: {text!r}")
                 return None
             used, total = fraction
             idle = max(0, total - used)
-            print(colored(f"March slots: used={used} total={total} idle={idle}", "cyan"))
+            LOGGER.info(f"March slots: used={used} total={total} idle={idle}")
             self._cache_set("idle_march_slots", idle)
             return idle
         except Exception as exc:
-            print(colored(f"March slot OCR failed: {exc}", "yellow"))
+            LOGGER.warning(f"March slot OCR failed: {exc}")
             return None
 
     def has_idle_march_slots(self, required=1):
@@ -171,20 +171,20 @@ class GameStateMonitor:
 
         screenshot, _ = self._screenshot()
         if screenshot is None:
-            print(colored("AP check skipped: screenshot unavailable.", "yellow"))
+            LOGGER.warning("AP check skipped: screenshot unavailable.")
             return None
 
         try:
             text = self._ocr_digits(self._extract_roi(screenshot, UIMap.TOP_ACTION_POINTS))
             action_points = self._parse_first_number(text)
             if action_points is None:
-                print(colored(f"AP OCR unreadable: {text!r}", "yellow"))
+                LOGGER.warning(f"AP OCR unreadable: {text!r}")
                 return None
-            print(colored(f"Action points: {action_points}", "cyan"))
+            LOGGER.info(f"Action points: {action_points}")
             self._cache_set("action_points", action_points)
             return action_points
         except Exception as exc:
-            print(colored(f"AP OCR failed: {exc}", "yellow"))
+            LOGGER.warning(f"AP OCR failed: {exc}")
             return None
 
     def has_action_points(self, required=DEFAULT_BARBARIAN_AP_COST):
@@ -198,12 +198,12 @@ class GameStateMonitor:
         bot = getattr(self.context, "bot", None) if self.context else None
         restart_hook = getattr(bot, "restart_client", None)
         if callable(restart_hook):
-            print(colored("Restarting client through bot restart hook.", "yellow"))
+            LOGGER.warning("Restarting client through bot restart hook.")
             return bool(restart_hook())
 
         client_path = ConfigManager().get("ROK_CLIENT_PATH")
         if not client_path:
-            print(colored("Client restart skipped: ROK_CLIENT_PATH is not configured.", "yellow"))
+            LOGGER.warning("Client restart skipped: ROK_CLIENT_PATH is not configured.")
             return False
 
         window = self.window_handler.get_window(self._window_title())
@@ -216,7 +216,7 @@ class GameStateMonitor:
         try:
             subprocess.Popen([client_path], cwd=str(Path(client_path).parent))
         except Exception as exc:
-            print(colored(f"Client restart failed: {exc}", "red"))
+            LOGGER.error(f"Client restart failed: {exc}")
             return False
 
         self.input_controller.wait(8, context=self.context)

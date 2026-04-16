@@ -1,10 +1,13 @@
-from Actions.action import Action
 import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import time
-from termcolor import colored
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+from Actions.action import Action
 from config_manager import ConfigManager
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 class SendEmailAction(Action):
     def __init__(self, delay=0.1, subject="Captcha detected", body=" ", smtp_server=None, smtp_port=None, post_delay=0):
@@ -28,7 +31,7 @@ class SendEmailAction(Action):
             if not value
         ]
         if missing:
-            print(colored(f"Email notification skipped. Missing config values: {', '.join(missing)}", "yellow"))
+            LOGGER.warning(f"Email notification skipped. Missing config values: {', '.join(missing)}")
             return False
 
         msg = MIMEMultipart()

@@ -1,6 +1,8 @@
-from termcolor import colored
 
 from Actions.action import Action
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 class FindGemAction(Action):
@@ -10,5 +12,5 @@ class FindGemAction(Action):
         super().__init__(delay=delay, post_delay=post_delay)
 
     def execute(self, context=None):
-        print(colored("FindGemAction skipped: gem templates were removed; use DynamicPlanner/YOLO.", "yellow"))
+        LOGGER.warning("FindGemAction skipped: gem templates were removed; use DynamicPlanner/YOLO.")
         return False

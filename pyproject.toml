@@ -12,10 +12,11 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM"]
+select = ["E", "F", "I", "B", "UP", "SIM", "ANN", "PTH", "RET"]
 ignore = [
     "E501",  # Existing UI/status strings are often easier to read as one line.
     "E402",  # This project uses script-style entrypoints with local path setup.
+    "ANN401",  # Context and PyQt payloads intentionally carry dynamic data.
 ]
 
 [tool.ruff.format]
@@ -23,7 +24,33 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 
+[tool.ruff.lint.per-file-ignores]
+"Classes/input_controller.py" = [
+    "SIM103",  # Keep explicit pause/stop guard branches around hardware input.
+    "SIM105",  # Keep defensive release paths obvious in low-level input cleanup.
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["Classes"]
 addopts = "-q"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = ["Classes"]
+ignore_missing_imports = true
+explicit_package_bases = true
+exclude = [
+    "Media/",
+    "data/",
+    "datasets/",
+    "diagnostics/",
+    "models/",
+]
+
+[tool.vulture]
+paths = ["Classes", "verify_integrity.py", "watchdog.py", "cleanup_media.py"]
+exclude = ["Media/", "data/", "datasets/", "diagnostics/", "models/"]
+min_confidence = 80
+sort_by_size = true

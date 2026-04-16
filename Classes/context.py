@@ -1,9 +1,11 @@
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-import threading
-from typing import Any, Optional
+from typing import Any
 
-from termcolor import colored
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 DEFAULT_WINDOW_TITLE = "Rise of Kingdoms"
@@ -24,26 +26,26 @@ class Context:
         results. Actions also call `emit_state()` to update the UI safely.
     """
 
-    ui_instance: Optional[Any] = None
-    bot: Optional[Any] = None
-    signal_emitter: Optional[Any] = None
+    ui_instance: Any | None = None
+    bot: Any | None = None
+    signal_emitter: Any | None = None
     window_title: str = DEFAULT_WINDOW_TITLE
-    Q: Optional[str] = None
-    A: Optional[str] = None
-    B: Optional[str] = None
-    C: Optional[str] = None
-    D: Optional[str] = None
+    Q: str | None = None
+    A: str | None = None
+    B: str | None = None
+    C: str | None = None
+    D: str | None = None
     extracted: dict[str, Any] = field(default_factory=dict)
-    idle_march_slots: Optional[int] = None
-    idle_march_slots_checked_at: Optional[float] = None
-    action_points: Optional[int] = None
-    action_points_checked_at: Optional[float] = None
+    idle_march_slots: int | None = None
+    idle_march_slots_checked_at: float | None = None
+    action_points: int | None = None
+    action_points_checked_at: float | None = None
     state_history: list[dict[str, Any]] = field(default_factory=list)
     max_state_history: int = 10
     ui_anchors: dict[str, dict[str, Any]] = field(default_factory=dict)
     primary_ui_anchor: str = "primary"
-    primary_anchor_image: Optional[str] = None
-    primary_anchor_reference_normalized: Optional[tuple[float, float]] = None
+    primary_anchor_image: str | None = None
+    primary_anchor_reference_normalized: tuple[float, float] | None = None
     planner_goal: str = "Safely continue the selected Rise of Kingdoms task."
     planner_autonomy_level: int = 1
 
@@ -93,7 +95,7 @@ class Context:
 
         screenshot, _ = WindowHandler().screenshot_window(self.window_title)
         if screenshot is None:
-            print(colored("Diagnostic capture skipped: screenshot unavailable.", "yellow"))
+            LOGGER.warning("Diagnostic capture skipped: screenshot unavailable.")
             return None
         screenshot_path = ImageFinder().save_screenshot(screenshot, label=f"diagnostic_{state_name}")
         if screenshot_path:
@@ -116,10 +118,10 @@ class Context:
                 )
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         except Exception as exc:
-            print(colored(f"Unable to export state history: {exc}", "red"))
+            LOGGER.error(f"Unable to export state history: {exc}")
             return None
 
-        print(colored(f"State history saved: {path}", "yellow"))
+        LOGGER.warning(f"State history saved: {path}")
         return path
 
     def set_ui_anchor(self, name, screen_x, screen_y, window_rect, reference_normalized=None):
@@ -134,12 +136,7 @@ class Context:
             "window_size": (int(window_rect.width), int(window_rect.height)),
             "captured_at": datetime.now().isoformat(timespec="seconds"),
         }
-        print(
-            colored(
-                f"UI anchor '{name}' stored at normalized=({normalized_x:.3f},{normalized_y:.3f})",
-                "cyan",
-            )
-        )
+        LOGGER.info(f"UI anchor '{name}' stored at normalized=({normalized_x:.3f},{normalized_y:.3f})")
 
     def resolve_anchor_relative_point(
         self,

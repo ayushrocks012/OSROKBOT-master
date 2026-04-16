@@ -1,11 +1,15 @@
 import csv
+from pathlib import Path
+
 from Actions.action import Action
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import linear_kernel
 from Actions.manual_click_action import ManualClickAction
 from Actions.manual_move_action import ManualMoveAction
 from ai_fallback import AIFallback
-from termcolor import colored
+from logging_config import get_logger
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
+
+LOGGER = get_logger(__name__)
 
 
 class LyceumAction(Action):
@@ -17,12 +21,12 @@ class LyceumAction(Action):
 
     def fetch_data_from_csv(self, csv_filename):
         try:
-            with open(csv_filename, mode='r', encoding='utf-8') as file:
+            with Path(csv_filename).open(encoding='utf-8') as file:
                 reader = csv.reader(file)
                 next(reader)
                 return [(row[0], row[1]) for row in reader if len(row) >= 2]
         except FileNotFoundError:
-            print(colored(f"Lyceum CSV not found: {csv_filename}", "yellow"))
+            LOGGER.warning(f"Lyceum CSV not found: {csv_filename}")
             return []
 
     def tokenizer(self, text):
@@ -38,7 +42,7 @@ class LyceumAction(Action):
         
         # Print the highest similarity score
         print(f"Most similar entry '{text_list[max_similarity_index]}' has a similarity score of: {cosine_similarities[max_similarity_index]:.4f} with")
-        if context and (context.Q == input_text):
+        if context and (input_text == context.Q):
             self.score = cosine_similarities[max_similarity_index]
         else:
             self.optionScore = cosine_similarities[max_similarity_index]
@@ -77,19 +81,14 @@ class LyceumAction(Action):
         if answer not in option_map:
             return False
 
-        print(
-            colored(
-                f"AI Lyceum fallback chose {answer} confidence={result.get('confidence')}",
-                "cyan",
-            )
-        )
+        LOGGER.info(f"AI Lyceum fallback chose {answer} confidence={result.get('confidence')}")
         if result.get("reason"):
-            print(colored(result["reason"], "cyan"))
+            LOGGER.info(result["reason"])
         return self._apply_option(option_map[answer], context)
 
     def execute(self, context=None):
         if not context:
-            print(colored("Warning: Context is None in LyceumAction", "yellow"))
+            LOGGER.warning("Warning: Context is None in LyceumAction")
             return False
 
         data = self.fetch_data_from_csv("roklyceum.csv")
@@ -122,7 +121,7 @@ class LyceumAction(Action):
         print(f"with : {self.score}")
         
         if not ((self.score >= 0.98 and self.optionScore >= 0.8) or (self.score > 0.93 and self.optionScore >= 0.85)):
-            print(colored("\nI couldn't find the answer in the database, trying OpenAI fallback.", "yellow"))
+            LOGGER.warning("\nI couldn't find the answer in the database, trying OpenAI fallback.")
             return self._ai_fallback(context, options)
 
         return self._apply_option(option_index, context)

@@ -2,12 +2,12 @@ import json
 import os
 from pathlib import Path
 
-from termcolor import colored
-
+from logging_config import get_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 ENV_PATH = PROJECT_ROOT / ".env"
+LOGGER = get_logger(__name__)
 
 
 class ConfigManager:
@@ -66,7 +66,7 @@ class ConfigManager:
                 if isinstance(raw, dict):
                     self.values = {str(key): str(value) for key, value in raw.items() if value is not None}
             except Exception as exc:
-                print(colored(f"Unable to read config.json: {exc}", "yellow"))
+                LOGGER.warning("Unable to read config.json: %s", exc)
         return self
 
     def save(self):

@@ -23,18 +23,24 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
-from termcolor import colored
-
-
 PROJECT_ROOT = Path(__file__).resolve().parent
+CLASSES_DIR = PROJECT_ROOT / "Classes"
 MEDIA_DIR = PROJECT_ROOT / "Media"
 LEGACY_DIR = MEDIA_DIR / "Legacy"
 PROTECTED_DIRS = {
     (MEDIA_DIR / "UI").resolve(),
     (MEDIA_DIR / "Readme").resolve(),
 }
+
+if str(CLASSES_DIR) not in sys.path:
+    sys.path.insert(0, str(CLASSES_DIR))
+
+from logging_config import get_logger
+
+LOGGER = get_logger(Path(__file__).stem)
 
 
 def _is_protected(path: Path) -> bool:
@@ -62,7 +68,7 @@ def collect_targets() -> list[Path]:
 
 def delete_target(path: Path, dry_run: bool) -> None:
     action = "Would delete" if dry_run else "Deleting"
-    print(colored(f"{action}: {path}", "yellow"))
+    LOGGER.warning("%s: %s", action, path)
     if dry_run:
         return
 
@@ -84,31 +90,31 @@ def main() -> int:
     targets = collect_targets()
 
     if not targets:
-        print(colored("No legacy gameplay media targets found.", "green"))
+        LOGGER.info("No legacy gameplay media targets found.")
         return 0
 
-    print(colored("Protected directories will not be touched:", "cyan"))
+    LOGGER.info("Protected directories will not be touched:")
     for protected in sorted(PROTECTED_DIRS):
-        print(colored(f"  - {protected}", "cyan"))
+        LOGGER.info("  - %s", protected)
 
-    print(colored("\nTargets:", "yellow"))
+    LOGGER.warning("Targets:")
     for target in targets:
-        print(f"  - {target}")
+        LOGGER.warning("  - %s", target)
 
     if args.dry_run:
-        print(colored("\nDry run complete. No files were deleted.", "green"))
+        LOGGER.info("Dry run complete. No files were deleted.")
         return 0
 
     if not args.yes:
         answer = input("\nDelete these legacy gameplay media files? Type DELETE to continue: ").strip()
         if answer != "DELETE":
-            print(colored("Cleanup cancelled.", "yellow"))
+            LOGGER.warning("Cleanup cancelled.")
             return 1
 
     for target in targets:
         delete_target(target, dry_run=False)
 
-    print(colored("Legacy gameplay media cleanup complete.", "green"))
+    LOGGER.info("Legacy gameplay media cleanup complete.")
     return 0
 
 

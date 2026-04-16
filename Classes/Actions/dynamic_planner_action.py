@@ -1,16 +1,17 @@
 from dataclasses import replace
 
-from termcolor import colored
-
 from Actions.action import Action
 from config_manager import ConfigManager
 from detection_dataset import DetectionDataset
 from dynamic_planner import DynamicPlanner
 from input_controller import DelayPolicy, InputController
+from logging_config import get_logger
 from object_detector import create_detector
 from ocr_service import OCRService
 from vision_memory import VisionMemory
 from window_handler import WindowHandler
+
+LOGGER = get_logger(__name__)
 
 
 class DynamicPlannerAction(Action):
@@ -70,7 +71,7 @@ class DynamicPlannerAction(Action):
 
         pending = self._wait_for_approval(context, decision, screenshot_path, window_rect)
         if not pending or pending.get("result") != "approved":
-            print(colored("Dynamic planner action rejected by user.", "yellow"))
+            LOGGER.warning("Dynamic planner action rejected by user.")
             return None, False
 
         corrected_point = pending.get("corrected_point")
@@ -88,7 +89,7 @@ class DynamicPlannerAction(Action):
     def _execute_click(self, context, decision, window_rect):
         target_x, target_y = self._absolute_point(decision, window_rect)
         if not InputController.validate_bounds(target_x, target_y, window_rect):
-            print(colored(f"Dynamic planner target outside window: {target_x}, {target_y}", "red"))
+            LOGGER.error(f"Dynamic planner target outside window: {target_x}, {target_y}")
             return False
         return InputController(context=context, coordinate_noise_px=0).click(
             target_x,

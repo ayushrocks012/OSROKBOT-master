@@ -1,9 +1,10 @@
 from pathlib import Path
 
-from PIL import Image
-from termcolor import colored
-
 from config_manager import ConfigManager
+from logging_config import get_logger
+from PIL import Image
+
+LOGGER = get_logger(__name__)
 
 
 class OCRService:
@@ -29,7 +30,7 @@ class OCRService:
             return cls._easyocr_reader
         except Exception as exc:
             cls._easyocr_error = exc
-            print(colored(f"EasyOCR unavailable; using Tesseract fallback when possible: {exc}", "yellow"))
+            LOGGER.warning(f"EasyOCR unavailable; using Tesseract fallback when possible: {exc}")
             return None
 
     @staticmethod
@@ -48,7 +49,7 @@ class OCRService:
             results = reader.readtext(np.asarray(image))
             return " ".join(str(item[1]) for item in results if len(item) >= 2).strip()
         except Exception as exc:
-            print(colored(f"EasyOCR read failed: {exc}", "yellow"))
+            LOGGER.warning(f"EasyOCR read failed: {exc}")
             return ""
 
     def _read_tesseract(self, image):
@@ -60,10 +61,11 @@ class OCRService:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
             return pytesseract.image_to_string(image, lang="eng").strip()
         except Exception as exc:
-            print(colored(f"Tesseract fallback failed: {exc}", "yellow"))
+            LOGGER.warning(f"Tesseract fallback failed: {exc}")
             return ""
 
     def read(self, image_or_roi, purpose=None):
+        LOGGER.debug("OCR read purpose: %s", purpose or "general")
         image = self._image(image_or_roi)
         text = self._read_easyocr(image)
         if text:

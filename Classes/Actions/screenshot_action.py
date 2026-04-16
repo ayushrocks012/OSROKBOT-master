@@ -1,7 +1,9 @@
+from pathlib import Path
+
 from Actions.action import Action
 from Actions.window_percent_action import WindowPercentAction
 from window_handler import WindowHandler
-import os
+
 
 class ScreenshotAction(Action):
     def __init__(self, x_begin, x_end, y_begin, y_end, output_path="test.png", delay=0, post_delay =0):
@@ -42,10 +44,7 @@ class ScreenshotAction(Action):
         
         cropped_screenshot = screenshot.crop((left, upper, right, lower))
 
-        #delete self.output_path if it exists
-        try:
-            os.remove(self.output_path)
-        except OSError:
-            pass
-        cropped_screenshot.save(self.output_path)
+        output_path = Path(self.output_path)
+        output_path.unlink(missing_ok=True)
+        cropped_screenshot.save(output_path)
         return True

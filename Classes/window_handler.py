@@ -3,9 +3,11 @@ import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
-from PIL import Image
 import pygetwindow as gw
-from termcolor import colored
+from logging_config import get_logger
+from PIL import Image
+
+LOGGER = get_logger(__name__)
 
 try:
     import win32con
@@ -36,7 +38,7 @@ class WindowHandler:
         windows = gw.getWindowsWithTitle(title)
 
         if not windows:
-            print(colored(f"No window found with title: {title}", "red"))
+            LOGGER.error(f"No window found with title: {title}")
             return None
         return windows[0]
 
@@ -89,7 +91,7 @@ class WindowHandler:
         that case BitBlt is used as a compatibility fallback.
         """
         if not self._win32_available():
-            print(colored("pywin32 is required for background window capture.", "red"))
+            LOGGER.error("pywin32 is required for background window capture.")
             return None
 
         window_left, window_top, window_right, window_bottom = win32gui.GetWindowRect(hwnd)
@@ -112,7 +114,7 @@ class WindowHandler:
             if not rendered:
                 rendered = print_window(hwnd, memory_dc.GetSafeHdc(), 0)
             if not rendered:
-                print(colored("PrintWindow failed; falling back to BitBlt window capture.", "yellow"))
+                LOGGER.warning("PrintWindow failed; falling back to BitBlt window capture.")
                 capture_blt = getattr(win32con, "CAPTUREBLT", 0x40000000)
                 try:
                     memory_dc.BitBlt(
@@ -124,10 +126,10 @@ class WindowHandler:
                     )
                     rendered = True
                 except Exception as exc:
-                    print(colored(f"BitBlt fallback failed: {exc}", "red"))
+                    LOGGER.error(f"BitBlt fallback failed: {exc}")
                     rendered = False
             if not rendered:
-                print(colored("Window capture failed for the target game window.", "red"))
+                LOGGER.error("Window capture failed for the target game window.")
                 return None
 
             bitmap_info = bitmap.GetInfo()
@@ -163,13 +165,13 @@ class WindowHandler:
         self._restore_no_activate(win._hWnd)
         client_rect = self._get_client_rect(win)
         if client_rect.width <= 0 or client_rect.height <= 0:
-            print(colored(f"Invalid client area for window: {title}", "red"))
+            LOGGER.error(f"Invalid client area for window: {title}")
             return None, None
 
         try:
             screenshot = self._print_window_client_image(win._hWnd, client_rect)
         except Exception as exc:
-            print(colored(f"Window capture failed for '{title}': {exc}", "red"))
+            LOGGER.error(f"Window capture failed for '{title}': {exc}")
             return None, None
 
         if screenshot is None:
@@ -184,7 +186,7 @@ class WindowHandler:
         try:
             return self._get_client_rect(win)
         except Exception as exc:
-            print(colored(f"Unable to read client area for '{title}': {exc}", "red"))
+            LOGGER.error(f"Unable to read client area for '{title}': {exc}")
             return None
 
     def enforce_aspect_ratio(self, title="Rise of Kingdoms"):
@@ -205,10 +207,10 @@ class WindowHandler:
         new_height = max(1, int(round(new_width / self.ASPECT_RATIO_16_9)))
         try:
             win.resizeTo(new_width, new_height)
-            print(colored(f"Adjusted '{title}' to 16:9 window size: {new_width}x{new_height}", "cyan"))
+            LOGGER.info(f"Adjusted '{title}' to 16:9 window size: {new_width}x{new_height}")
             return True
         except Exception as exc:
-            print(colored(f"Failed to enforce 16:9 aspect ratio for '{title}': {exc}", "red"))
+            LOGGER.error(f"Failed to enforce 16:9 aspect ratio for '{title}': {exc}")
             return False
 
     def activate_window(self, title="Rise of Kingdoms"):
@@ -218,12 +220,12 @@ class WindowHandler:
                 self._restore_no_activate(win._hWnd)
         except Exception as e:
             if "Error code from Windows: 0" not in str(e):
-                print(colored(f"Failed to prepare window '{title}': {e}", "red"))
+                LOGGER.error(f"Failed to prepare window '{title}': {e}")
         return
 
     def ensure_foreground(self, title="Rise of Kingdoms", wait_seconds=0.5):
         if not self._win32_available():
-            print(colored("pywin32 is required to enforce the foreground game window.", "red"))
+            LOGGER.error("pywin32 is required to enforce the foreground game window.")
             return False
 
         try:
@@ -244,7 +246,7 @@ class WindowHandler:
                 win32gui.BringWindowToTop(hwnd)
                 win32gui.SetForegroundWindow(hwnd)
             except Exception as exc:
-                print(colored(f"Unable to foreground '{title}': {exc}", "yellow"))
+                LOGGER.warning(f"Unable to foreground '{title}': {exc}")
 
             if wait_seconds and wait_seconds > 0:
                 time.sleep(wait_seconds)
@@ -252,8 +254,8 @@ class WindowHandler:
             if win32gui.GetForegroundWindow() == hwnd:
                 return True
 
-            print(colored(f"Target game window is not foreground: {title}", "red"))
+            LOGGER.error(f"Target game window is not foreground: {title}")
             return False
         except Exception as exc:
-            print(colored(f"Foreground check failed for '{title}': {exc}", "red"))
+            LOGGER.error(f"Foreground check failed for '{title}': {exc}")
             return False

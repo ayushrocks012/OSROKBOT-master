@@ -1,9 +1,9 @@
-from Actions.action import Action
 import pytesseract
-from PIL import Image, ImageOps
+from Actions.action import Action
 from config_manager import ConfigManager
+from PIL import Image, ImageOps
 
-DEFAULT_ANTIALIAS_METHOD = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+DEFAULT_ANTIALIAS_METHOD = getattr(Image, "Resampling", Image).LANCZOS
 
 
 def configure_tesseract():
@@ -61,9 +61,8 @@ class ExtractTextAction(Action):
                 if (int(text[0])<int(text[2])):
                     print("March not full")
                     return True
-                else:
-                    print("March full")
-                    return False
+                print("March full")
+                return False
         except Exception as e:
             print(f"Exception during extraction: {e}")
             return True
