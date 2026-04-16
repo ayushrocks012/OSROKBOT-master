@@ -26,7 +26,7 @@ class Action(ABC):
     @property
     def status_text(self):
         details = ""
-        if hasattr(self, "image") and self.image != "Media/captchachest.png":
+        if hasattr(self, "image") and "captcha" not in str(self.image).lower():
             details = str(self.image)
         elif hasattr(self, "key"):
             details = str(self.key)

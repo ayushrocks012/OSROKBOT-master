@@ -23,7 +23,6 @@ ALLOWED_LABELS = {
     "useaction",
 }
 MIN_CONFIDENCE = 0.85
-CAPTCHA_IMAGE = "Media/captchachest.png"
 
 
 class AIRecoveryExecutor:
@@ -42,8 +41,7 @@ class AIRecoveryExecutor:
         action_image = AIRecoveryExecutor._action_image(action).replace("\\", "/")
         state_text = str(state_name).lower()
         return (
-            action_image == CAPTCHA_IMAGE
-            or action_image.endswith("/captchachest.png")
+            "captcha" in action_image.lower()
             or "captcha" in state_text
             or "manual" in state_text
         )

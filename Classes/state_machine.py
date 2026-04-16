@@ -132,7 +132,7 @@ class StateMachine:
         if failure_count < self.ai_fallback_threshold:
             return False
         image = getattr(state, "image", "")
-        if image == "Media/captchachest.png":
+        if "captcha" in str(image).lower():
             return False
         return bool(image)
 

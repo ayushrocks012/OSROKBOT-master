@@ -233,7 +233,7 @@ Classes/
   input_controller.py         Interception hardware input and bounds checks.
   emergency_stop.py           F12 emergency kill switch.
   context.py                  Shared runtime state.
-Media/                        Existing template assets kept for deterministic flows.
+Media/                        UI and README assets; gameplay templates are purged.
 tests/                        Pure-logic pytest tests.
 watchdog.py                   Conservative heartbeat watchdog for overnight runs.
 verify_integrity.py           Static and runtime health checks.
@@ -270,8 +270,8 @@ Without weights, the detector safely returns no detections.
 
 ## Design Rules
 
-- Keep deterministic workflows available.
-- Do not delete `Media/` templates until YOLO parity is proven.
+- Keep DynamicPlanner as the primary workflow.
+- Keep gameplay training exports under `datasets/recovery/`, not `Media/`.
 - Do not bypass `InputController.validate_bounds(...)`.
 - Do not solve or bypass CAPTCHAs.
 - Keep secrets in `.env` or `config.json`; both are ignored by Git.

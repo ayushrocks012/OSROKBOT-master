@@ -619,7 +619,7 @@ class UI(QtWidgets.QWidget):
         event.accept()
         
 if __name__ == "__main__":
-    # Change working directory to project root so Media/ paths resolve correctly
+    # Keep script-style imports and local config paths rooted at the project.
     os.chdir(PROJECT_ROOT)
     EmergencyStop.start_once()
     # Activate Rise of Kingdoms window first

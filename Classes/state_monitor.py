@@ -27,13 +27,12 @@ class GameState(str, Enum):
 
 
 class GameStateMonitor:
-    """Reusable game-state and resource checks for workflow preconditions."""
+    """Reusable OCR and coarse state checks.
 
-    BLOCKER_IMAGES = (
-        PROJECT_ROOT / "Media" / "confirm.png",
-        PROJECT_ROOT / "Media" / "escx.png",
-    )
-    MAP_MARKER_IMAGE = PROJECT_ROOT / "Media" / "ficon.png"
+    Root-level gameplay templates have been removed. This monitor no longer
+    uses OpenCV template images for map/blocker detection.
+    """
+
     OCR_CACHE_SECONDS = 30
     DEFAULT_BARBARIAN_AP_COST = 50
 
@@ -112,38 +111,11 @@ class GameStateMonitor:
         setattr(self.context, f"{key}_checked_at", timestamp)
         self.context.extracted[key] = {"value": value, "timestamp": timestamp}
 
-    def _find_image(self, image_path, screenshot, window_rect, roi):
-        found, x, y, count = self.image_finder.find_image_coordinates(
-            str(image_path),
-            screenshot,
-            window_rect,
-            0,
-            0,
-            1,
-            search_region=roi,
-        )
-        return found, x, y, count
-
     def current_state(self):
         screenshot, window_rect = self._screenshot()
         if screenshot is None or window_rect is None:
             return GameState.UNKNOWN
-
-        for blocker_image in self.BLOCKER_IMAGES:
-            found, _, _, _ = self._find_image(blocker_image, screenshot, window_rect, UIMap.CENTER_MODAL)
-            if found:
-                return GameState.BLOCKED
-
-        found, _, _, _ = self._find_image(
-            self.MAP_MARKER_IMAGE,
-            screenshot,
-            window_rect,
-            UIMap.MAP_VIEW_MARKER,
-        )
-        if found:
-            return GameState.MAP
-
-        return GameState.CITY
+        return GameState.UNKNOWN
 
     def save_diagnostic_screenshot(self, label="recovery"):
         screenshot, _ = self._screenshot()
@@ -153,31 +125,7 @@ class GameStateMonitor:
         return self.image_finder.save_screenshot(screenshot, label=label)
 
     def clear_blockers(self):
-        screenshot, window_rect = self._screenshot()
-        if screenshot is None or window_rect is None:
-            return False
-
-        cleared = False
-        for blocker_image in self.BLOCKER_IMAGES:
-            found, click_x, click_y, _ = self._find_image(
-                blocker_image,
-                screenshot,
-                window_rect,
-                UIMap.CENTER_MODAL,
-            )
-            if not found or click_x is None or click_y is None:
-                continue
-
-            print(colored(f"State monitor clearing blocker: {blocker_image.name}", "yellow"))
-            if not self.input_controller.click(click_x, click_y, window_rect=window_rect, context=self.context):
-                return False
-            self.input_controller.wait(0.2, context=self.context)
-            cleared = True
-            screenshot, window_rect = self._screenshot()
-            if screenshot is None or window_rect is None:
-                return cleared
-
-        return cleared
+        return False
 
     def is_known_state(self):
         return self.current_state() in {GameState.CITY, GameState.MAP}

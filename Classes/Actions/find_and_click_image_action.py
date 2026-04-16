@@ -54,7 +54,7 @@ class FindAndClickImageAction(Action):
             return False
                 
         else:
-            if self.image != "Media/captchachest.png":
+            if "captcha" not in str(self.image).lower():
                 print(colored(f"No matches for {self.image} found in screenshot.", "red"))
             if self.max_matches != 0:
                 return True

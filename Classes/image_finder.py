@@ -442,7 +442,7 @@ class ImageFinder:
                 window_rect=win,
             )
 
-        if target_image_path != "Media/captchachest.png":
+        if "captcha" not in str(target_image_path).lower():
             print(colored(f"No matches for {target_image_path} found in screenshot.", "red"))
         if max_matches != 0:
             return True

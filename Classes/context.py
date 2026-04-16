@@ -42,7 +42,7 @@ class Context:
     max_state_history: int = 10
     ui_anchors: dict[str, dict[str, Any]] = field(default_factory=dict)
     primary_ui_anchor: str = "primary"
-    primary_anchor_image: Optional[str] = "Media/ficon.png"
+    primary_anchor_image: Optional[str] = None
     primary_anchor_reference_normalized: Optional[tuple[float, float]] = None
     planner_goal: str = "Safely continue the selected Rise of Kingdoms task."
     planner_autonomy_level: int = 1
