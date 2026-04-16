@@ -321,6 +321,38 @@ def check_planner_modules() -> list[str]:
     return failures
 
 
+def _truthy(value: str | None) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def check_watchdog_module() -> list[str]:
+    failures: list[str] = []
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+
+    try:
+        __import__("watchdog")
+    except Exception as exc:
+        failures.append(f"Unable to import watchdog.py: {exc}")
+
+    values = _read_config_values()
+    restart_explicitly_enabled = _truthy(values.get("WATCHDOG_RESTART_ENABLED"))
+    client_path = values.get("ROK_CLIENT_PATH")
+    if not client_path:
+        message = "ROK_CLIENT_PATH is missing; watchdog can restart the UI but cannot relaunch the game"
+        if restart_explicitly_enabled:
+            failures.append(message)
+        else:
+            print(colored(f"[WARN] {message}", "yellow"))
+        return failures
+
+    resolved = Path(os.path.expandvars(client_path))
+    if not resolved.is_file():
+        failures.append(f"ROK_CLIENT_PATH is configured but not accessible: {resolved}")
+
+    return failures
+
+
 def check_ui_map_coordinates() -> list[str]:
     failures: list[str] = []
     if str(CLASSES_DIR) not in sys.path:
@@ -365,6 +397,7 @@ def main() -> int:
         "runtime health": check_runtime_health,
         "Interception hardware input": check_interception_input,
         "guarded planner modules": check_planner_modules,
+        "watchdog module": check_watchdog_module,
         "optional YOLO detector": check_optional_yolo_detector,
     }
 

@@ -160,6 +160,33 @@ coordinates. Press:
 - `Fix` to correct. After pressing `Fix`, move your cursor to the correct game
   target. The bot samples that position and saves it to memory.
 
+## Run the Watchdog for Overnight Sessions
+
+The watchdog is a separate safety process. It reads `data/heartbeat.json`, which
+OSROKBOT updates while automation is running. If the heartbeat becomes stale,
+the watchdog restarts only the tracked bot/game PIDs written in that file.
+
+Open a second PowerShell window in the project folder and run:
+
+```powershell
+python watchdog.py
+```
+
+For a one-time manual check, run:
+
+```powershell
+python watchdog.py --once
+```
+
+To let the watchdog relaunch Rise of Kingdoms, configure:
+
+```dotenv
+ROK_CLIENT_PATH=C:\Path\To\RiseOfKingdoms.exe
+```
+
+If `ROK_CLIENT_PATH` is missing, the watchdog can still restart the UI from the
+heartbeat, but it will not guess or kill processes by name.
+
 ## Development and QA
 
 Run the integrity checker:
@@ -208,6 +235,7 @@ Classes/
   context.py                  Shared runtime state.
 Media/                        Existing template assets kept for deterministic flows.
 tests/                        Pure-logic pytest tests.
+watchdog.py                   Conservative heartbeat watchdog for overnight runs.
 verify_integrity.py           Static and runtime health checks.
 requirements.txt              Python dependencies.
 pyproject.toml                Ruff and pytest configuration.

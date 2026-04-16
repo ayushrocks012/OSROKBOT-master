@@ -1,0 +1,274 @@
+"""Conservative watchdog for OSROKBOT overnight runs.
+
+The watchdog reads the heartbeat written by ``Classes/OS_ROKBOT.py`` and only
+acts on the exact PIDs recorded there. It never kills processes by name.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+from termcolor import colored
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+CLASSES_DIR = PROJECT_ROOT / "Classes"
+DEFAULT_HEARTBEAT_PATH = PROJECT_ROOT / "data" / "heartbeat.json"
+DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_GAME_RESTART_WAIT_SECONDS = 20.0
+
+if str(CLASSES_DIR) not in sys.path:
+    sys.path.insert(0, str(CLASSES_DIR))
+
+try:
+    from config_manager import ConfigManager
+except Exception:  # pragma: no cover - import failure is reported at runtime.
+    ConfigManager = None
+
+try:
+    import win32gui
+except Exception:  # pragma: no cover - pywin32 is optional for unit tests.
+    win32gui = None
+
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configured_value(key: str, default: Any = None) -> Any:
+    if ConfigManager is None:
+        return os.getenv(key, default)
+    return ConfigManager().get(key, default)
+
+
+def _configured_path(key: str, default: Path | None = None) -> Path | None:
+    value = _configured_value(key)
+    if value:
+        return Path(os.path.expandvars(str(value))).expanduser()
+    return default
+
+
+def heartbeat_path_from_config() -> Path:
+    return _configured_path("WATCHDOG_HEARTBEAT_PATH", DEFAULT_HEARTBEAT_PATH) or DEFAULT_HEARTBEAT_PATH
+
+
+def timeout_from_config() -> float:
+    try:
+        return float(_configured_value("WATCHDOG_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SECONDS
+
+
+def game_restart_wait_from_config() -> float:
+    try:
+        return float(_configured_value("WATCHDOG_GAME_RESTART_WAIT_SECONDS", DEFAULT_GAME_RESTART_WAIT_SECONDS))
+    except (TypeError, ValueError):
+        return DEFAULT_GAME_RESTART_WAIT_SECONDS
+
+
+def restart_enabled_from_config() -> bool:
+    value = _configured_value("WATCHDOG_RESTART_ENABLED", "1")
+    return _truthy(value)
+
+
+def read_heartbeat(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        print(colored(f"Heartbeat not found yet: {path}", "yellow"))
+        return None
+    except Exception as exc:
+        print(colored(f"Unable to read heartbeat {path}: {exc}", "red"))
+        return None
+
+    if not isinstance(payload, dict):
+        print(colored(f"Heartbeat is not a JSON object: {path}", "red"))
+        return None
+    return payload
+
+
+def heartbeat_age_seconds(payload: dict[str, Any], now: float | None = None) -> float:
+    now = time.time() if now is None else now
+    timestamp = payload.get("timestamp_epoch")
+    try:
+        return max(0.0, now - float(timestamp))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def safe_pid(value: Any) -> int | None:
+    try:
+        pid = int(value)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0 or pid == os.getpid():
+        return None
+    return pid
+
+
+def is_pid_running(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False
+    return str(pid) in result.stdout
+
+
+def terminate_tracked_pid(pid_value: Any, label: str) -> bool:
+    pid = safe_pid(pid_value)
+    if pid is None:
+        print(colored(f"Skipping invalid {label} PID: {pid_value!r}", "yellow"))
+        return False
+
+    print(colored(f"Terminating tracked {label} PID {pid}", "yellow"))
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+    except Exception as exc:
+        print(colored(f"Unable to terminate {label} PID {pid}: {exc}", "red"))
+        return False
+    return True
+
+
+def find_window_by_title(title: str | None) -> int | None:
+    if win32gui is None or not title:
+        return None
+
+    target = title.lower()
+    found: list[int] = []
+
+    def callback(hwnd: int, _extra: object) -> bool:
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        window_text = win32gui.GetWindowText(hwnd)
+        if target in window_text.lower():
+            found.append(hwnd)
+            return False
+        return True
+
+    try:
+        win32gui.EnumWindows(callback, None)
+    except Exception:
+        return None
+    return found[0] if found else None
+
+
+def game_is_missing(payload: dict[str, Any]) -> bool:
+    game_pid = safe_pid(payload.get("game_pid"))
+    if game_pid is not None and is_pid_running(game_pid):
+        return False
+
+    window_title = str(payload.get("window_title") or "").strip()
+    if window_title and find_window_by_title(window_title):
+        return False
+
+    return True
+
+
+def relaunch_game() -> bool:
+    client_path = _configured_path("ROK_CLIENT_PATH")
+    if not client_path:
+        print(colored("ROK_CLIENT_PATH is not configured; game relaunch skipped.", "yellow"))
+        return False
+    if not client_path.is_file():
+        print(colored(f"ROK_CLIENT_PATH is not accessible; game relaunch skipped: {client_path}", "red"))
+        return False
+
+    print(colored(f"Launching Rise of Kingdoms from {client_path}", "cyan"))
+    try:
+        subprocess.Popen([str(client_path)], cwd=str(client_path.parent))
+    except Exception as exc:
+        print(colored(f"Unable to relaunch game: {exc}", "red"))
+        return False
+    return True
+
+
+def restart_ui_from_heartbeat(payload: dict[str, Any]) -> bool:
+    python_executable = Path(str(payload.get("python_executable") or sys.executable))
+    ui_entrypoint = Path(str(payload.get("ui_entrypoint") or PROJECT_ROOT / "Classes" / "UI.py"))
+    repo_root = Path(str(payload.get("repo_root") or PROJECT_ROOT))
+
+    if not ui_entrypoint.is_file():
+        print(colored(f"UI entrypoint is not accessible; UI restart skipped: {ui_entrypoint}", "red"))
+        return False
+
+    print(colored(f"Restarting OSROKBOT UI with {python_executable}", "cyan"))
+    try:
+        subprocess.Popen([str(python_executable), str(ui_entrypoint)], cwd=str(repo_root))
+    except Exception as exc:
+        print(colored(f"Unable to restart OSROKBOT UI: {exc}", "red"))
+        return False
+    return True
+
+
+def handle_stale_heartbeat(payload: dict[str, Any]) -> bool:
+    if not restart_enabled_from_config():
+        print(colored("Watchdog restart is disabled by WATCHDOG_RESTART_ENABLED.", "yellow"))
+        return False
+
+    terminate_tracked_pid(payload.get("bot_pid"), "bot")
+    terminate_tracked_pid(payload.get("game_pid"), "game")
+
+    relaunch_game()
+    time.sleep(game_restart_wait_from_config())
+    return restart_ui_from_heartbeat(payload)
+
+
+def check_once(heartbeat_path: Path, timeout_seconds: float, now: float | None = None) -> bool:
+    payload = read_heartbeat(heartbeat_path)
+    if payload is None:
+        return False
+
+    age = heartbeat_age_seconds(payload, now=now)
+    if age > timeout_seconds:
+        print(colored(f"Heartbeat is stale ({age:.1f}s old); restarting tracked bot/game.", "red"))
+        return handle_stale_heartbeat(payload)
+
+    if game_is_missing(payload):
+        print(colored("Game process/window is missing while bot heartbeat is fresh.", "yellow"))
+        return relaunch_game()
+
+    print(colored(f"Heartbeat is fresh ({age:.1f}s old); no watchdog action needed.", "green"))
+    return True
+
+
+def run_daemon(heartbeat_path: Path, timeout_seconds: float) -> None:
+    print(colored(f"OSROKBOT watchdog watching {heartbeat_path}", "cyan"))
+    while True:
+        check_once(heartbeat_path, timeout_seconds)
+        time.sleep(5)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="OSROKBOT conservative heartbeat watchdog.")
+    parser.add_argument("--heartbeat", type=Path, default=heartbeat_path_from_config())
+    parser.add_argument("--timeout", type=float, default=timeout_from_config())
+    parser.add_argument("--once", action="store_true", help="Run one watchdog check and exit.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    heartbeat_path = Path(args.heartbeat)
+    timeout_seconds = float(args.timeout)
+
+    if args.once:
+        return 0 if check_once(heartbeat_path, timeout_seconds) else 1
+
+    run_daemon(heartbeat_path, timeout_seconds)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
