@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from logging_config import get_logger
+from session_logger import SessionLogger
 
 LOGGER = get_logger(__name__)
 
@@ -48,6 +49,7 @@ class Context:
     primary_anchor_reference_normalized: tuple[float, float] | None = None
     planner_goal: str = "Safely continue the selected Rise of Kingdoms task."
     planner_autonomy_level: int = 1
+    session_logger: SessionLogger | None = None
 
     @property
     def UI(self):

@@ -3,7 +3,7 @@ import re
 from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import urlretrieve
+from urllib.request import Request, urlopen
 
 from config_manager import PROJECT_ROOT, ConfigManager
 from logging_config import get_logger
@@ -61,7 +61,9 @@ class ModelManager:
 
         try:
             LOGGER.info(f"Downloading YOLO weights: {url}")
-            urlretrieve(url, temp_path)
+            req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urlopen(req) as response, open(temp_path, 'wb') as out_file:  # nosec B310
+                out_file.write(response.read())
             temp_path.replace(final_path)
         except Exception as exc:
             if temp_path.exists():

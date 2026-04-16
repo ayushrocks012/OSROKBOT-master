@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import dynamic_planner as dynamic_planner_module
 import pytest
 from dynamic_planner import DynamicPlanner, PlannerDecision, PlannerLLMDecision
+from encoding_utils import safe_json_loads
 from pydantic import ValidationError
 
 
@@ -64,7 +65,7 @@ def _click_response():
 def test_safe_json_loads_accepts_wrapped_json():
     raw = 'assistant says: {"action_type": "wait", "label": "none"} done'
 
-    parsed = DynamicPlanner._safe_json_loads(raw)
+    parsed = safe_json_loads(raw)
 
     assert parsed["action_type"] == "wait"
     assert parsed["label"] == "none"
@@ -109,13 +110,13 @@ def test_llm_decision_rejects_unsupported_action_type():
     with pytest.raises(ValidationError):
         PlannerLLMDecision.model_validate(
             {
-                "thought_process": "Need to drag.",
-                "action_type": "drag",
+                "thought_process": "Need to teleport.",
+                "action_type": "teleport",
                 "target_id": "det_1",
                 "label": "Map",
                 "confidence": 0.91,
                 "delay_seconds": 1.0,
-                "reason": "Drag is not allowed.",
+                "reason": "Teleport is not allowed.",
             }
         )
 
@@ -126,7 +127,7 @@ def test_llm_decision_rejects_unsupported_action_type():
         PlannerDecision("t", "click", "bad", -0.1, 0.5, 0.9, "x is outside"),
         PlannerDecision("t", "click", "bad", 0.5, 1.1, 0.9, "y is outside"),
         PlannerDecision("t", "click", "bad", 0.5, 0.5, 0.1, "low confidence"),
-        PlannerDecision("t", "drag", "bad", 0.5, 0.5, 0.9, "unsupported action"),
+        PlannerDecision("t", "teleport", "bad", 0.5, 0.5, 0.9, "unsupported action"),
         PlannerDecision("t", "click", "bad", math.nan, 0.5, 0.9, "nan x"),
     ],
 )

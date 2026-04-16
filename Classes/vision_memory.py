@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +12,8 @@ LOGGER = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_VISION_MEMORY_PATH = PROJECT_ROOT / "data" / "vision_memory.json"
+DEFAULT_MAX_ENTRIES = 500
+DECAY_HALF_LIFE_DAYS = 30.0
 
 
 class VisionMemory:
@@ -20,17 +23,29 @@ class VisionMemory:
     screen before. This class stores CLIP image embeddings in JSON metadata and
     uses FAISS for fast similarity search when FAISS is installed. If FAISS is
     unavailable, it falls back to a small NumPy dot-product search.
+
+    Improvements over the original design:
+    - Time-weighted decay: older entries score lower.
+    - Max-entries cap with eviction of lowest-value entries.
+    - Per-label failure tracking: failures are matched by embedding similarity
+      to the actual failing entry, not blindly applied to the most recent one.
+    - Label-match bonus: entries whose label matches a currently visible label
+      get a similarity boost.
     """
 
-    def __init__(self, path=DEFAULT_VISION_MEMORY_PATH, similarity_threshold=0.86):
+    def __init__(self, path=DEFAULT_VISION_MEMORY_PATH, similarity_threshold=0.86,
+                 max_entries=DEFAULT_MAX_ENTRIES):
         """Initialize a memory store and load existing entries.
 
         Args:
             path: JSON file used for persistent memory entries.
             similarity_threshold: Minimum cosine similarity needed for a match.
+            max_entries: Maximum number of entries to keep. Oldest/lowest-value
+                entries are evicted when this limit is exceeded.
         """
         self.path = Path(path)
         self.similarity_threshold = float(similarity_threshold)
+        self.max_entries = int(max_entries)
         self.entries = []
         self._model = None
         self._model_error = None
@@ -57,12 +72,51 @@ class VisionMemory:
         return self
 
     def save(self):
-        """Persist memory entries to disk as JSON."""
+        """Persist memory entries to disk as JSON, enforcing the max-entries cap."""
+        self._evict_if_needed()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"version": 1, "entries": self.entries}
+        payload = {"version": 2, "entries": self.entries}
         temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
         temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temp_path.replace(self.path)
+
+    def _evict_if_needed(self):
+        """Remove lowest-value entries when the cap is exceeded."""
+        if len(self.entries) <= self.max_entries:
+            return
+
+        scored = []
+        for entry in self.entries:
+            freshness = self._freshness_factor(entry)
+            success = int(entry.get("success_count", 0))
+            failure = int(entry.get("failure_count", 0))
+            # Value = freshness-weighted net success score.
+            value = freshness * max(0.0, success - failure * 0.5)
+            scored.append((value, entry))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        self.entries = [entry for _, entry in scored[:self.max_entries]]
+        evicted = len(scored) - len(self.entries)
+        if evicted > 0:
+            LOGGER.info(f"Vision memory evicted {evicted} low-value entries (cap={self.max_entries}).")
+
+    @staticmethod
+    def _freshness_factor(entry):
+        """Compute a time-decay factor based on last_used timestamp.
+
+        Returns a value between 0 and 1, where 1 means "just used" and
+        values decrease exponentially with a half-life of DECAY_HALF_LIFE_DAYS.
+        """
+        last_used = entry.get("last_used")
+        if not last_used:
+            return 0.5  # Unknown age gets a neutral score.
+        try:
+            then = datetime.fromisoformat(last_used)
+            now = datetime.now()
+            days_elapsed = max(0.0, (now - then).total_seconds() / 86400.0)
+            return math.exp(-0.693 * days_elapsed / DECAY_HALF_LIFE_DAYS)
+        except Exception:
+            return 0.5
 
     def _load_model(self):
         """Load the CLIP embedding model lazily.
@@ -167,12 +221,14 @@ class VisionMemory:
     def find(self, screenshot_or_embedding, visible_labels=None):
         """Find the most similar successful memory entry.
 
+        Uses time-weighted decay and label-match bonuses for better ranking.
+
         Args:
             screenshot_or_embedding: Screenshot path or precomputed embedding.
             visible_labels: Optional labels used to narrow candidates.
 
         Returns:
-            dict | None: Best matching entry with a `similarity` field, or None
+            dict | None: Best matching entry with a ``similarity`` field, or None
             when no safe match is found.
         """
         query = self.embed(screenshot_or_embedding)
@@ -197,22 +253,97 @@ class VisionMemory:
 
         index = self._ensure_faiss_index(embeddings)
         if index is not None:
-            distances, indexes = index.search(np.asarray([query], dtype="float32"), 1)
-            score = float(distances[0][0])
-            candidate = candidates[int(indexes[0][0])]
+            distances, indexes = index.search(np.asarray([query], dtype="float32"), min(5, len(candidates)))
+            scored = []
+            for rank in range(len(distances[0])):
+                raw_score = float(distances[0][rank])
+                candidate = candidates[int(indexes[0][rank])]
+                scored.append((raw_score, candidate))
         else:
             scores = [float(np.dot(query, embedding)) for embedding in embeddings]
-            best_index = int(np.argmax(scores))
-            score = scores[best_index]
-            candidate = candidates[best_index]
+            scored = sorted(zip(scores, candidates, strict=False), key=lambda x: x[0], reverse=True)[:5]
 
-        if score < self.similarity_threshold:
+        # Apply time decay and label-match bonus to top candidates.
+        best_entry = None
+        best_adjusted_score = -1.0
+        for raw_score, candidate in scored:
+            if raw_score < self.similarity_threshold * 0.9:
+                continue
+
+            freshness = self._freshness_factor(candidate)
+            # Label-match bonus: +5% if the entry label matches a visible label.
+            label_bonus = 0.0
+            entry_label = str(candidate.get("label", "")).lower()
+            if labels and entry_label and any(
+                label.lower() == entry_label for label in labels
+            ):
+                label_bonus = 0.05
+
+            adjusted_score = raw_score * freshness + label_bonus
+
+            # Failure gate: per-label check.
+            if int(candidate.get("failure_count", 0)) > int(candidate.get("success_count", 0)) + 2:
+                continue
+
+            if adjusted_score > best_adjusted_score:
+                best_adjusted_score = adjusted_score
+                best_entry = candidate
+
+        if best_entry is None or best_adjusted_score < self.similarity_threshold:
             return None
-        if int(candidate.get("failure_count", 0)) > int(candidate.get("success_count", 0)) + 2:
-            return None
-        result = dict(candidate)
-        result["similarity"] = score
+
+        result = dict(best_entry)
+        result["similarity"] = best_adjusted_score
         return result
+
+    def _find_matching_entry(self, decision_or_embedding):
+        """Find the entry that best matches a failed decision by embedding similarity.
+
+        This prevents the old bug of blindly penalizing entries[-1].
+
+        Args:
+            decision_or_embedding: A decision dict, embedding vector, or entry.
+
+        Returns:
+            dict | None: The matching entry from self.entries, or None.
+        """
+        # If it *is* one of our entries, return it directly.
+        if isinstance(decision_or_embedding, dict) and decision_or_embedding in self.entries:
+            return decision_or_embedding
+
+        # Try to find by embedding similarity.
+        embedding = None
+        if isinstance(decision_or_embedding, dict):
+            embedding = decision_or_embedding.get("embedding")
+            if embedding:
+                embedding = self._normalize(embedding)
+
+        if embedding is not None and len(self.entries) > 0:
+            best_entry = None
+            best_score = -1.0
+            for entry in self.entries:
+                entry_embedding = entry.get("embedding")
+                if not entry_embedding:
+                    continue
+                score = float(np.dot(embedding, self._normalize(entry_embedding)))
+                if score > best_score:
+                    best_score = score
+                    best_entry = entry
+            if best_entry is not None and best_score > 0.8:
+                return best_entry
+
+        # Try to match by label+target_id if available.
+        if isinstance(decision_or_embedding, dict):
+            label = str(decision_or_embedding.get("label", "")).lower()
+            target_id = decision_or_embedding.get("target_id", "")
+            if label or target_id:
+                for entry in reversed(self.entries):
+                    entry_label = str(entry.get("label", "")).lower()
+                    entry_target = entry.get("target_id", "")
+                    if (label and entry_label == label) or (target_id and entry_target == target_id):
+                        return entry
+
+        return None
 
     def _record(self, screenshot_path, decision, visible_labels=None, source="ai", corrected=False):
         """Record a successful decision and its visual embedding.
@@ -293,7 +424,10 @@ class VisionMemory:
         return entry
 
     def record_failure(self, entry_or_decision):
-        """Increment a failure counter for a memory entry.
+        """Increment a failure counter for the matching memory entry.
+
+        Fixed: Now finds the actual matching entry by embedding similarity
+        or label+target_id, instead of blindly penalizing the last entry.
 
         Args:
             entry_or_decision: Existing entry or decision dictionary.
@@ -301,15 +435,14 @@ class VisionMemory:
         Returns:
             dict | None: Updated entry, when one is available.
         """
-        entry = entry_or_decision if isinstance(entry_or_decision, dict) and entry_or_decision in self.entries else None
-        if not entry and self.entries:
-            entry = self.entries[-1]
+        entry = self._find_matching_entry(entry_or_decision)
         if not entry:
+            LOGGER.warning("Vision memory failure: no matching entry found to penalize.")
             return None
         entry["failure_count"] = int(entry.get("failure_count", 0)) + 1
         entry["last_used"] = datetime.now().isoformat(timespec="seconds")
         self.save()
-        LOGGER.warning("Vision memory failure recorded.")
+        LOGGER.warning(f"Vision memory failure recorded for label: {entry.get('label', 'unknown')}")
         return entry
 
     def is_trusted_label(self, label, min_success=3):

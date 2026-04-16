@@ -18,32 +18,65 @@ class ActionSets:
 
     @staticmethod
     def map_view_precondition():
-        return lambda context=None: True
+        """Precondition: game should be on the world map."""
+        def _check(context=None):
+            if not context:
+                return True
+            try:
+                from state_monitor import GameState, GameStateMonitor
+                state = GameStateMonitor(context=context).current_state()
+                return state in {GameState.MAP, GameState.UNKNOWN}
+            except Exception:
+                return True
+        return _check
 
     @staticmethod
     def idle_march_precondition(required=1):
-        _ = required
-        return lambda context=None: True
+        """Precondition: at least `required` idle march slots."""
+        def _check(context=None):
+            if not context:
+                return True
+            try:
+                from state_monitor import GameStateMonitor
+                return GameStateMonitor(context=context).has_idle_march_slots(required)
+            except Exception:
+                return True
+        return _check
 
     @staticmethod
     def ap_precondition(required=50):
-        _ = required
-        return lambda context=None: True
+        """Precondition: at least `required` action points."""
+        def _check(context=None):
+            if not context:
+                return True
+            try:
+                from state_monitor import GameStateMonitor
+                return GameStateMonitor(context=context).has_action_points(required)
+            except Exception:
+                return True
+        return _check
 
     @staticmethod
     def march_and_ap_precondition(required_slots=1, required_ap=50):
-        _ = (required_slots, required_ap)
-        return lambda context=None: True
+        """Precondition: idle march slots AND action points."""
+        march_check = ActionSets.idle_march_precondition(required_slots)
+        ap_check = ActionSets.ap_precondition(required_ap)
+        return lambda context=None: march_check(context) and ap_check(context)
 
     @staticmethod
     def map_and_march_precondition(required_slots=1):
-        _ = required_slots
-        return lambda context=None: True
+        """Precondition: map view AND idle march slots."""
+        map_check = ActionSets.map_view_precondition()
+        march_check = ActionSets.idle_march_precondition(required_slots)
+        return lambda context=None: map_check(context) and march_check(context)
 
     @staticmethod
     def map_march_and_ap_precondition(required_slots=1, required_ap=50):
-        _ = (required_slots, required_ap)
-        return lambda context=None: True
+        """Precondition: map view AND march slots AND action points."""
+        map_check = ActionSets.map_view_precondition()
+        march_check = ActionSets.idle_march_precondition(required_slots)
+        ap_check = ActionSets.ap_precondition(required_ap)
+        return lambda context=None: map_check(context) and march_check(context) and ap_check(context)
 
     def dynamic_planner(self):
         machine = self.create_machine()

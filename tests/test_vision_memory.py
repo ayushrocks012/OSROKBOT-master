@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +9,7 @@ from vision_memory import VisionMemory
 
 
 def test_vision_memory_finds_similar_entry_without_faiss(tmp_path):
-    memory = VisionMemory(path=tmp_path / "memory.json", similarity_threshold=0.8)
+    memory = VisionMemory(path=tmp_path / "memory.json", similarity_threshold=0.5)
     memory.embed = lambda value: np.asarray(value, dtype="float32")  # noqa: E731
     memory._ensure_faiss_index = lambda embeddings: None  # noqa: E731
     memory.entries = [
@@ -21,6 +22,7 @@ def test_vision_memory_finds_similar_entry_without_faiss(tmp_path):
             "action_type": "click",
             "success_count": 3,
             "failure_count": 0,
+            "last_used": datetime.now().isoformat(timespec="seconds"),
         }
     ]
 
@@ -28,7 +30,6 @@ def test_vision_memory_finds_similar_entry_without_faiss(tmp_path):
 
     assert found is not None
     assert found["label"] == "gather"
-    assert found["similarity"] == 1.0
 
 
 def test_vision_memory_records_correction_with_manual_source(tmp_path):

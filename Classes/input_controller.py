@@ -1,6 +1,8 @@
 import ctypes
 import math
-import random
+import secrets
+
+SYS_RANDOM = secrets.SystemRandom()
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -42,7 +44,7 @@ class DelayPolicy:
         if delay <= 0:
             return 0.0
         jitter = abs(delay) * max(0.0, self.jitter_ratio)
-        return max(0.0, random.uniform(delay - jitter, delay + jitter))
+        return max(0.0, SYS_RANDOM.uniform(delay - jitter, delay + jitter))
 
     def wait(self, seconds: float | None = None, context=None):
         delay = self.adjusted_delay(seconds)
@@ -281,8 +283,8 @@ class InputController:
         noise = self.coordinate_noise_px
         if noise:
             sigma = max(0.1, noise / 2)
-            x_offset = self._clamp(random.gauss(0, sigma), -noise, noise)
-            y_offset = self._clamp(random.gauss(0, sigma), -noise, noise)
+            x_offset = self._clamp(SYS_RANDOM.gauss(0, sigma), -noise, noise)
+            y_offset = self._clamp(SYS_RANDOM.gauss(0, sigma), -noise, noise)
             sampled_x = int(round(x + x_offset))
             sampled_y = int(round(y + y_offset))
         else:
@@ -328,8 +330,9 @@ class InputController:
             for key in reversed(normalized_keys):
                 try:
                     self._key_up(key)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    LOGGER.critical(f"Emergency: Hardware key/mouse stuck! Failed to release: {exc}")
+                    InputController._pause_for_foreground_failure(active_context)
         return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
 
     def smooth_move_to(self, x, y, context=None, duration=None, window_rect=None):
@@ -355,10 +358,10 @@ class InputController:
 
         distance = math.hypot(target_x - start_x, target_y - start_y)
         wobble = min(distance * 0.3, 100)
-        ctrl1_x = start_x + random.uniform(-wobble, wobble)
-        ctrl1_y = start_y + random.uniform(-wobble, wobble)
-        ctrl2_x = target_x + random.uniform(-wobble, wobble)
-        ctrl2_y = target_y + random.uniform(-wobble, wobble)
+        ctrl1_x = start_x + SYS_RANDOM.uniform(-wobble, wobble)
+        ctrl1_y = start_y + SYS_RANDOM.uniform(-wobble, wobble)
+        ctrl2_x = target_x + SYS_RANDOM.uniform(-wobble, wobble)
+        ctrl2_y = target_y + SYS_RANDOM.uniform(-wobble, wobble)
         steps = max(5, int(duration * self.move_steps_per_second))
 
         for step in range(1, steps + 1):
@@ -392,7 +395,7 @@ class InputController:
         try:
             self._mouse_down()
             mouse_is_down = True
-            if not self.delay_policy.wait(random.uniform(0.04, 0.12), active_context):
+            if not self.delay_policy.wait(SYS_RANDOM.uniform(0.04, 0.12), active_context):
                 return False
             self._mouse_up()
             mouse_is_down = False
@@ -404,8 +407,9 @@ class InputController:
             if mouse_is_down:
                 try:
                     self._mouse_up()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    LOGGER.critical(f"Emergency: Hardware key/mouse stuck! Failed to release: {exc}")
+                    InputController._pause_for_foreground_failure(active_context)
 
     def move_to(self, x, y, window_rect=None, remember_position=False, context=None):
         active_context = self._context(context)
@@ -446,8 +450,9 @@ class InputController:
                 if key_is_down:
                     try:
                         self._key_up(normalized_key)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        LOGGER.critical(f"Emergency: Hardware key/mouse stuck! Failed to release: {exc}")
+                        InputController._pause_for_foreground_failure(active_context)
         return True
 
     def scroll(self, y_scroll=0, context=None):

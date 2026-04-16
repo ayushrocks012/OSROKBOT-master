@@ -35,6 +35,10 @@ class ConfigManager:
         "WATCHDOG_TIMEOUT_SECONDS",
         "WATCHDOG_GAME_RESTART_WAIT_SECONDS",
         "WATCHDOG_RESTART_ENABLED",
+        "PLANNER_CACHE_TTL_SECONDS",
+        "PLANNER_STUCK_THRESHOLD",
+        "PLANNER_MAX_MEMORY_ENTRIES",
+        "MISSION_HISTORY",
     }
 
     def __init__(self, config_path=CONFIG_PATH, env_path=ENV_PATH):

@@ -29,12 +29,28 @@ class GameState(str, Enum):
 class GameStateMonitor:
     """Reusable OCR and coarse state checks.
 
-    This monitor uses OCR and coarse runtime state only; planner perception is
-    handled by the YOLO/VLM path.
+    This monitor uses the YOLO object detector and OCR to classify the
+    current game screen into CITY, MAP, BLOCKED, or UNKNOWN states.
+    Planner-level perception is still handled by the YOLO/VLM path.
     """
 
     OCR_CACHE_SECONDS = 30
     DEFAULT_BARBARIAN_AP_COST = 50
+
+    # Labels whose presence signals the game is on the world MAP.
+    MAP_LABELS = {
+        "searchaction", "gatheraction", "attackaction", "marchaction",
+        "smallmarchaction", "scoutaction", "rallyaction",
+    }
+
+    # Labels whose presence signals a modal/blocker is covering the screen.
+    BLOCKER_LABELS = {"confirm", "escx", "captcha", "captchachest", "captcha_chest"}
+
+    # Labels associated with city-level UI.
+    CITY_LABELS = {
+        "newtroopaction", "useaction", "trainaction", "upgradeaction",
+        "buildaction",
+    }
 
     def __init__(self, context=None, threshold=0.85):
         _ = threshold
@@ -44,6 +60,13 @@ class GameStateMonitor:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
         self.window_handler = WindowHandler()
         self.input_controller = InputController(context=context)
+        self._detector = None
+
+    def _get_detector(self):
+        if self._detector is None:
+            from object_detector import create_detector
+            self._detector = create_detector()
+        return self._detector
 
     def _window_title(self):
         if self.context and getattr(self.context, "window_title", None):
@@ -111,10 +134,53 @@ class GameStateMonitor:
         setattr(self.context, f"{key}_checked_at", timestamp)
         self.context.extracted[key] = {"value": value, "timestamp": timestamp}
 
+    def _detect_labels(self, screenshot):
+        """Run the YOLO detector and return a set of lowercased label strings."""
+        try:
+            detections = self._get_detector().detect(screenshot)
+        except Exception as exc:
+            LOGGER.warning("State monitor detector skipped: %s", exc)
+            return set()
+        return {
+            str(getattr(det, "label", "")).lower().replace(" ", "_")
+            for det in detections
+            if getattr(det, "label", "")
+        }
+
     def current_state(self):
+        """Classify the current game screen using YOLO detector labels.
+
+        Returns:
+            GameState: BLOCKED if modal overlay detected, MAP if map-specific
+            labels found, CITY if city-specific labels found, UNKNOWN otherwise.
+        """
         screenshot, window_rect = self._screenshot()
         if screenshot is None or window_rect is None:
             return GameState.UNKNOWN
+
+        labels = self._detect_labels(screenshot)
+        if not labels:
+            return GameState.UNKNOWN
+
+        # Blocker labels take highest priority — a modal covers any state.
+        if labels.intersection(self.BLOCKER_LABELS):
+            LOGGER.info("State monitor: BLOCKED (labels: %s)",
+                        labels.intersection(self.BLOCKER_LABELS))
+            return GameState.BLOCKED
+
+        # Map-specific labels indicate world-map view.
+        if labels.intersection(self.MAP_LABELS):
+            LOGGER.info("State monitor: MAP (labels: %s)",
+                        labels.intersection(self.MAP_LABELS))
+            return GameState.MAP
+
+        # City-specific labels indicate city view.
+        if labels.intersection(self.CITY_LABELS):
+            LOGGER.info("State monitor: CITY (labels: %s)",
+                        labels.intersection(self.CITY_LABELS))
+            return GameState.CITY
+
+        LOGGER.info("State monitor: UNKNOWN (detected labels: %s)", labels)
         return GameState.UNKNOWN
 
     def save_diagnostic_screenshot(self, label="recovery"):
@@ -125,7 +191,24 @@ class GameStateMonitor:
         return save_diagnostic_screenshot(screenshot, label=label)
 
     def clear_blockers(self):
-        return False
+        """Attempt to dismiss detected modal overlays by pressing Escape.
+
+        Returns:
+            bool: True if a blocker was detected and an Escape was sent.
+        """
+        screenshot, _ = self._screenshot()
+        if screenshot is None:
+            return False
+
+        labels = self._detect_labels(screenshot)
+        blocker_labels = labels.intersection(self.BLOCKER_LABELS)
+        if not blocker_labels:
+            return False
+
+        LOGGER.info("Clearing blocker (labels: %s)", blocker_labels)
+        return self.input_controller.key_press(
+            "escape", hold_seconds=0.1, context=self.context
+        )
 
     def is_known_state(self):
         return self.current_state() in {GameState.CITY, GameState.MAP}
@@ -214,7 +297,11 @@ class GameStateMonitor:
             self.input_controller.wait(3, context=self.context)
 
         try:
-            subprocess.Popen([client_path], cwd=str(Path(client_path).parent))
+            client_p = Path(client_path).resolve()
+            if not client_p.is_absolute() or not client_p.is_file():
+                LOGGER.error("Client path is invalid or non-absolute.")
+                return False
+            subprocess.Popen([str(client_p)], cwd=str(client_p.parent))  # nosec B603
         except Exception as exc:
             LOGGER.error(f"Client restart failed: {exc}")
             return False

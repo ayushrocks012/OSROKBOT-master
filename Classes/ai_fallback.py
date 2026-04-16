@@ -1,8 +1,7 @@
-import base64
 import json
-from pathlib import Path
 
 from config_manager import ConfigManager
+from encoding_utils import image_data_url, safe_json_loads
 from logging_config import get_logger
 from openai import OpenAI
 
@@ -68,23 +67,11 @@ class AIFallback:
 
     @staticmethod
     def _safe_json_loads(text):
-        try:
-            return json.loads(text)
-        except Exception:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                return json.loads(text[start:end + 1])
-            raise
+        return safe_json_loads(text)
 
     @staticmethod
     def _image_data_url(path):
-        path = Path(path)
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        suffix = path.suffix.lower().lstrip(".") or "png"
-        if suffix == "jpg":
-            suffix = "jpeg"
-        return f"data:image/{suffix};base64,{encoded}"
+        return image_data_url(path)
 
     def _request_json(self, instructions, user_content, schema_name, schema):
         if not self.enabled:

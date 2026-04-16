@@ -1,14 +1,13 @@
-import base64
 import json
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
-from pathlib import Path
 from typing import ClassVar, Literal
 
 from config_manager import ConfigManager
+from encoding_utils import image_data_url, safe_json_loads
 from logging_config import get_logger
 from openai import (
     APIConnectionError,
@@ -27,7 +26,7 @@ from vision_memory import VisionMemory
 LOGGER = get_logger(__name__)
 
 
-ALLOWED_ACTION_TYPES = {"click", "wait", "stop"}
+ALLOWED_ACTION_TYPES = {"click", "wait", "stop", "drag", "long_press", "key", "type"}
 DEFAULT_MODEL = "gpt-5.4-mini"
 MIN_PLANNER_CONFIDENCE = 0.70
 MAX_PLANNER_DELAY_SECONDS = 10.0
@@ -79,17 +78,31 @@ class PlannerLLMDecision(BaseModel):
 
     The model may select a local target by ID, but it must not return raw
     coordinates. Coordinates are resolved from current detector/OCR targets.
+
+    Extended action types:
+    - click: Click a target by ID.
+    - wait: Pause and observe again.
+    - stop: Stop the automation run.
+    - drag: Drag from one target to another (or in a direction).
+    - long_press: Long-press a target.
+    - key: Press a keyboard key.
+    - type: Type text into an input field.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     thought_process: str
-    action_type: Literal["click", "wait", "stop"]
+    action_type: Literal["click", "wait", "stop", "drag", "long_press", "key", "type"]
     target_id: str
     label: str
     confidence: float
     delay_seconds: float
     reason: str
+    # Extended fields for new action types.
+    end_target_id: str = ""
+    key_name: str = ""
+    text_content: str = ""
+    drag_direction: str = ""
 
     @field_validator("action_type", mode="before")
     @classmethod
@@ -110,6 +123,14 @@ class PlannerLLMDecision(BaseModel):
     def _require_target_for_click(self):
         if self.action_type == "click" and not self.target_id:
             raise ValueError("click decisions must reference a target_id")
+        if self.action_type == "drag" and not self.target_id:
+            raise ValueError("drag decisions must reference a target_id")
+        if self.action_type == "long_press" and not self.target_id:
+            raise ValueError("long_press decisions must reference a target_id")
+        if self.action_type == "key" and not self.key_name:
+            raise ValueError("key decisions must specify a key_name")
+        if self.action_type == "type" and not self.text_content:
+            raise ValueError("type decisions must specify text_content")
         return self
 
 
@@ -118,7 +139,7 @@ class PlannerDecision(BaseModel):
 
     Attributes:
         thought_process: Short model explanation shown only for debugging.
-        action_type: One of `click`, `wait`, or `stop`.
+        action_type: One of `click`, `wait`, `stop`, `drag`, `long_press`, `key`, `type`.
         label: Human-readable target name, such as `gather button`.
         x: Normalized horizontal coordinate from 0.0 to 1.0.
         y: Normalized vertical coordinate from 0.0 to 1.0.
@@ -127,6 +148,12 @@ class PlannerDecision(BaseModel):
         source: Where the decision came from, usually `ai` or `memory`.
         target_id: Local detector/OCR target ID used to resolve click coordinates.
         delay_seconds: Bounded planner-recommended wait/settle delay.
+        end_target_id: For drag actions, the target to drag to.
+        end_x: For drag actions, the resolved end x coordinate.
+        end_y: For drag actions, the resolved end y coordinate.
+        key_name: For key actions, the key to press.
+        text_content: For type actions, the text to type.
+        drag_direction: For drag actions without end target, direction hint.
     """
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=True)
@@ -154,6 +181,12 @@ class PlannerDecision(BaseModel):
     source: str = "ai"
     target_id: str = ""
     delay_seconds: float = 1.0
+    end_target_id: str = ""
+    end_x: float = Field(default=math.nan)
+    end_y: float = Field(default=math.nan)
+    key_name: str = ""
+    text_content: str = ""
+    drag_direction: str = ""
 
     def __init__(self, *args, **data):
         if args:
@@ -171,7 +204,7 @@ class PlannerDecision(BaseModel):
     def _normalize_action_type(cls, value):
         return str(value or "wait").lower()
 
-    @field_validator("x", "y", mode="before")
+    @field_validator("x", "y", "end_x", "end_y", mode="before")
     @classmethod
     def _coerce_coordinate(cls, value):
         return _safe_float(value, math.nan)
@@ -209,6 +242,12 @@ class PlannerDecision(BaseModel):
             source=source,
             target_id=raw.get("target_id", ""),
             delay_seconds=raw.get("delay_seconds", 1.0),
+            end_target_id=raw.get("end_target_id", ""),
+            end_x=raw.get("end_x", math.nan),
+            end_y=raw.get("end_y", math.nan),
+            key_name=raw.get("key_name", ""),
+            text_content=raw.get("text_content", ""),
+            drag_direction=raw.get("drag_direction", ""),
         )
 
     @classmethod
@@ -223,6 +262,10 @@ class PlannerDecision(BaseModel):
             source=source,
             target_id=decision.target_id,
             delay_seconds=decision.delay_seconds,
+            end_target_id=getattr(decision, "end_target_id", ""),
+            key_name=getattr(decision, "key_name", ""),
+            text_content=getattr(decision, "text_content", ""),
+            drag_direction=getattr(decision, "drag_direction", ""),
         )
 
     def to_dict(self):
@@ -255,42 +298,6 @@ class DynamicPlanner:
         self.model = self.config.get("OPENAI_VISION_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
         self.memory = memory or VisionMemory()
         self._request_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Planner")
-
-    @staticmethod
-    def _image_data_url(path):
-        """Encode an image file as a data URL for OpenAI vision input.
-
-        Args:
-            path: Path to a PNG/JPEG screenshot.
-
-        Returns:
-            str: A `data:image/...;base64,...` URL.
-        """
-        path = Path(path)
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        suffix = path.suffix.lower().lstrip(".") or "png"
-        if suffix == "jpg":
-            suffix = "jpeg"
-        return f"data:image/{suffix};base64,{encoded}"
-
-    @staticmethod
-    def _safe_json_loads(text):
-        """Parse strict JSON, with a small fallback for wrapped model output.
-
-        Args:
-            text: Raw model output text.
-
-        Returns:
-            dict: Parsed JSON object.
-        """
-        try:
-            return json.loads(text)
-        except Exception:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                return json.loads(text[start:end + 1])
-            raise
 
     @staticmethod
     def _visible_labels(detections):
@@ -358,26 +365,50 @@ class DynamicPlanner:
     def resolve_target_decision(decision, targets):
         if not isinstance(decision, PlannerDecision):
             return None
-        if decision.action_type != "click":
+        if decision.action_type not in {"click", "drag", "long_press"}:
             return decision
 
         target_by_id = {target.target_id: target for target in targets or []}
         target = target_by_id.get(decision.target_id)
         if not target:
-            LOGGER.warning("Dynamic planner rejected click with unknown target_id: %s", decision.target_id)
+            LOGGER.warning("Dynamic planner rejected %s with unknown target_id: %s",
+                           decision.action_type, decision.target_id)
             return None
+
+        updates = {
+            "label": decision.label or target.label,
+            "x": target.x,
+            "y": target.y,
+        }
+
+        # Resolve end target for drag actions.
+        if decision.action_type == "drag" and decision.end_target_id:
+            end_target = target_by_id.get(decision.end_target_id)
+            if end_target:
+                updates["end_x"] = end_target.x
+                updates["end_y"] = end_target.y
+            else:
+                LOGGER.warning("Dynamic planner rejected drag with unknown end_target_id: %s",
+                               decision.end_target_id)
+                return None
 
         return PlannerDecision(
             thought_process=decision.thought_process,
             action_type=decision.action_type,
-            label=decision.label or target.label,
-            x=target.x,
-            y=target.y,
+            label=updates.get("label", decision.label),
+            x=updates.get("x", decision.x),
+            y=updates.get("y", decision.y),
             confidence=decision.confidence,
             reason=decision.reason,
             source=decision.source,
-            target_id=target.target_id,
+            target_id=decision.target_id,
             delay_seconds=decision.delay_seconds,
+            end_target_id=decision.end_target_id,
+            end_x=updates.get("end_x", decision.end_x),
+            end_y=updates.get("end_y", decision.end_y),
+            key_name=decision.key_name,
+            text_content=decision.text_content,
+            drag_direction=decision.drag_direction,
         )
 
     @staticmethod
@@ -438,7 +469,7 @@ class DynamicPlanner:
             return False
         if not math.isfinite(decision.delay_seconds) or not 0.0 <= decision.delay_seconds <= MAX_PLANNER_DELAY_SECONDS:
             return False
-        if decision.action_type == "click":
+        if decision.action_type in {"click", "long_press"}:
             return (
                 bool(decision.target_id)
                 and math.isfinite(decision.x)
@@ -447,6 +478,25 @@ class DynamicPlanner:
                 and 0.0 <= decision.x <= 1.0
                 and 0.0 <= decision.y <= 1.0
             )
+        if decision.action_type == "drag":
+            valid_start = (
+                bool(decision.target_id)
+                and math.isfinite(decision.x)
+                and math.isfinite(decision.y)
+                and 0.0 <= decision.x <= 1.0
+                and 0.0 <= decision.y <= 1.0
+            )
+            # Drag needs either end coordinates or a direction hint.
+            valid_end = (
+                (math.isfinite(decision.end_x) and math.isfinite(decision.end_y)
+                 and 0.0 <= decision.end_x <= 1.0 and 0.0 <= decision.end_y <= 1.0)
+                or bool(decision.drag_direction)
+            )
+            return valid_start and valid_end and decision.confidence >= MIN_PLANNER_CONFIDENCE
+        if decision.action_type == "key":
+            return bool(decision.key_name) and decision.confidence >= MIN_PLANNER_CONFIDENCE
+        if decision.action_type == "type":
+            return bool(decision.text_content) and decision.confidence >= MIN_PLANNER_CONFIDENCE
         return True
 
     @staticmethod
@@ -509,7 +559,58 @@ class DynamicPlanner:
                     return None
         return None
 
-    def _request_decision(self, context, screenshot_path, detections, ocr_text, goal, targets):
+    @staticmethod
+    def _build_prompt(goal, labels, target_payload, ocr_text, history,
+                      resource_context=None, stuck_warning="",
+                      screen_changed=True):
+        """Build the full planner prompt with all available context.
+
+        Args:
+            goal: Natural-language mission (or focused sub-goal).
+            labels: Visible detector labels.
+            target_payload: JSON-serializable target list.
+            ocr_text: OCR text from the screenshot.
+            history: Recent state history entries.
+            resource_context: Optional dict with march_slots, action_points, etc.
+            stuck_warning: Warning text from ScreenChangeDetector.
+            screen_changed: Whether the screen changed since the last cycle.
+        """
+        parts = [
+            "You control a guarded Rise of Kingdoms automation planner. Return one safe next action. "
+            "Do not solve captchas. Do not invent UI controls. For click, drag, or long_press actions, "
+            "choose exactly one target_id from the visible_targets list. Do not return x or y coordinates. "
+            "Prefer wait or stop if no listed target is safe.\n",
+            "Available action types:\n"
+            "- click: Click a visible target by target_id.\n"
+            "- wait: Pause briefly and re-observe.\n"
+            "- stop: Stop the current automation run.\n"
+            "- drag: Drag from target_id to end_target_id, or specify drag_direction "
+            "(up/down/left/right) for map panning.\n"
+            "- long_press: Long-press a target by target_id.\n"
+            "- key: Press a keyboard key (set key_name, e.g., 'escape', 'space').\n"
+            "- type: Type text into the focused input (set text_content).\n",
+            f"\nGoal: {goal}",
+            f"\nVisible detector labels: {labels}",
+            f"\nVisible targets: {json.dumps(target_payload, ensure_ascii=True)}",
+            f"\nOCR text: {ocr_text or ''}",
+        ]
+
+        if resource_context:
+            parts.append(f"\nResource status: {json.dumps(resource_context, ensure_ascii=True)}")
+
+        if not screen_changed:
+            parts.append("\nNote: The screen has NOT changed since the last action.")
+
+        if stuck_warning:
+            parts.append(f"\n{stuck_warning}")
+
+        parts.append(f"\nRecent history: {json.dumps(history, ensure_ascii=True)}")
+
+        return "\n".join(parts)
+
+    def _request_decision(self, context, screenshot_path, detections, ocr_text, goal,
+                          targets, resource_context=None, stuck_warning="",
+                          screen_changed=True):
         """Ask OpenAI for a single next action in strict JSON format.
 
         Args:
@@ -517,8 +618,11 @@ class DynamicPlanner:
             screenshot_path: Screenshot file to send as vision input.
             detections: YOLO detections visible on screen.
             ocr_text: OCR text extracted from the screenshot.
-            goal: Natural-language mission from the Commander UI.
+            goal: Natural-language mission (or focused sub-goal) from the UI.
             targets: Local detector/OCR targets the model may reference.
+            resource_context: Optional resource awareness dict.
+            stuck_warning: Warning from ScreenChangeDetector.
+            screen_changed: Whether screen changed since last cycle.
 
         Returns:
             PlannerDecision | None: Parsed model decision, or None if the
@@ -534,17 +638,18 @@ class DynamicPlanner:
         labels = self._visible_labels(detections)
         target_payload = [target.to_prompt_dict() for target in targets]
         history = getattr(context, "state_history", [])[-10:] if context else []
-        prompt = (
-            "You control a guarded Rise of Kingdoms automation planner. Return one safe next action. "
-            "Do not solve captchas. Do not invent UI controls. For click actions, choose exactly one target_id "
-            "from the visible_targets list. Do not return x or y coordinates. Prefer wait or stop if no listed "
-            "target is safe.\n\n"
-            f"Goal: {goal}\n"
-            f"Visible detector labels: {labels}\n"
-            f"Visible targets: {json.dumps(target_payload, ensure_ascii=True)}\n"
-            f"OCR text: {ocr_text or ''}\n"
-            f"Recent history: {json.dumps(history, ensure_ascii=True)}"
+
+        prompt = self._build_prompt(
+            goal=goal,
+            labels=labels,
+            target_payload=target_payload,
+            ocr_text=ocr_text,
+            history=history,
+            resource_context=resource_context,
+            stuck_warning=stuck_warning,
+            screen_changed=screen_changed,
         )
+
         try:
             request_payload = {
                 "model": self.model,
@@ -554,7 +659,7 @@ class DynamicPlanner:
                         "role": "user",
                         "content": [
                             {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image_url": self._image_data_url(screenshot_path)},
+                            {"type": "input_image", "image_url": image_data_url(screenshot_path)},
                         ],
                     }
                 ],
@@ -570,14 +675,16 @@ class DynamicPlanner:
             response = self._request_response_with_retries(context, request_payload)
             if response is None:
                 return None
-            raw = self._safe_json_loads(response.output_text)
+            raw = safe_json_loads(response.output_text)
             llm_decision = PlannerLLMDecision.model_validate(raw)
             return self.resolve_target_decision(PlannerDecision.from_llm_decision(llm_decision, source="ai"), targets)
         except Exception as exc:
             LOGGER.error(f"Dynamic planner request failed: {exc}")
             return None
 
-    def plan_next(self, context, screenshot_path, detections, ocr_text, goal, ocr_regions=None):
+    def plan_next(self, context, screenshot_path, detections, ocr_text, goal,
+                  ocr_regions=None, resource_context=None, stuck_warning="",
+                  screen_changed=True):
         """Return the next safe planner decision for the current screen.
 
         Args:
@@ -585,8 +692,11 @@ class DynamicPlanner:
             screenshot_path: Current screenshot path.
             detections: Object detector outputs for the screenshot.
             ocr_text: OCR text from the screenshot.
-            goal: Natural-language mission prompt.
+            goal: Natural-language mission prompt (or focused sub-goal).
             ocr_regions: Optional OCR regions with normalized boxes.
+            resource_context: Optional resource awareness dict.
+            stuck_warning: Warning from ScreenChangeDetector.
+            screen_changed: Whether screen changed since last cycle.
 
         Returns:
             PlannerDecision | None: A validated memory or AI decision. None is
@@ -600,7 +710,12 @@ class DynamicPlanner:
             if self.validate_decision(decision):
                 return decision
 
-        decision = self._request_decision(context, screenshot_path, detections, ocr_text, goal, targets)
+        decision = self._request_decision(
+            context, screenshot_path, detections, ocr_text, goal, targets,
+            resource_context=resource_context,
+            stuck_warning=stuck_warning,
+            screen_changed=screen_changed,
+        )
         if not self.validate_decision(decision):
             LOGGER.warning("Dynamic planner rejected an invalid or low-confidence decision.")
             return None

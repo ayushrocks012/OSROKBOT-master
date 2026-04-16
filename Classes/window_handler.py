@@ -3,6 +3,7 @@ import time
 from contextlib import contextmanager
 from ctypes import wintypes
 from dataclasses import dataclass
+from typing import Any
 
 import pygetwindow as gw
 from logging_config import get_logger
@@ -80,7 +81,7 @@ class WindowHandler:
     ASPECT_RATIO_16_9 = 16 / 9
     ASPECT_RATIO_EPSILON = 0.02
 
-    def get_window(self, title):
+    def get_window(self, title: str) -> Any:
         windows = gw.getWindowsWithTitle(title)
 
         if not windows:
@@ -88,7 +89,7 @@ class WindowHandler:
             return None
         return windows[0]
 
-    def _get_client_rect(self, win):
+    def _get_client_rect(self, win: Any) -> ClientRect:
         hwnd = win._hWnd
         rect = wintypes.RECT()
         point = wintypes.POINT(0, 0)
@@ -129,7 +130,7 @@ class WindowHandler:
                 | win32con.SWP_NOACTIVATE,
             )
 
-    def _print_window_client_image(self, hwnd, client_rect):
+    def _print_window_client_image(self, hwnd: int, client_rect: ClientRect) -> Image.Image | None:
         """Capture the client area from the window render buffer.
 
         PrintWindow reads the target window instead of the desktop surface when
@@ -197,7 +198,7 @@ class WindowHandler:
                 )
             )
 
-    def screenshot_window(self, title):
+    def screenshot_window(self, title: str) -> tuple[Image.Image | None, ClientRect | None]:
         win = self.get_window(title)
         if not win:
             return None, None
@@ -218,7 +219,7 @@ class WindowHandler:
             return None, None
         return screenshot.convert("RGB"), client_rect
 
-    def get_client_window_rect(self, title):
+    def get_client_window_rect(self, title: str) -> ClientRect | None:
         win = self.get_window(title)
         if not win:
             return None
@@ -229,7 +230,7 @@ class WindowHandler:
             LOGGER.error(f"Unable to read client area for '{title}': {exc}")
             return None
 
-    def enforce_aspect_ratio(self, title="Rise of Kingdoms"):
+    def enforce_aspect_ratio(self, title: str = "Rise of Kingdoms") -> bool:
         win = self.get_window(title)
         if not win:
             return False
@@ -253,7 +254,7 @@ class WindowHandler:
             LOGGER.error(f"Failed to enforce 16:9 aspect ratio for '{title}': {exc}")
             return False
 
-    def activate_window(self, title="Rise of Kingdoms"):
+    def activate_window(self, title: str = "Rise of Kingdoms") -> None:
         try:
             win = self.get_window(title)
             if win:
@@ -263,7 +264,7 @@ class WindowHandler:
                 LOGGER.error(f"Failed to prepare window '{title}': {e}")
         return
 
-    def ensure_foreground(self, title="Rise of Kingdoms", wait_seconds=0.5):
+    def ensure_foreground(self, title: str = "Rise of Kingdoms", wait_seconds: float = 0.5) -> bool:
         if not self._win32_available():
             LOGGER.error("pywin32 is required to enforce the foreground game window.")
             return False
