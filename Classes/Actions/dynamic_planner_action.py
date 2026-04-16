@@ -116,8 +116,11 @@ class DynamicPlannerAction(Action):
         screenshot.save(screenshot_path)
 
         detections = self.detector.detect(screenshot)
-        ocr_text = self.ocr.read(screenshot, purpose="planner")
-        decision = self.planner.plan_next(context, screenshot_path, detections, ocr_text, goal)
+        ocr_regions = self.ocr.read_regions(screenshot, purpose="planner")
+        ocr_text = " ".join(region.text for region in ocr_regions if getattr(region, "text", "")).strip()
+        if not ocr_text:
+            ocr_text = self.ocr.read(screenshot, purpose="planner")
+        decision = self.planner.plan_next(context, screenshot_path, detections, ocr_text, goal, ocr_regions=ocr_regions)
         if not decision:
             self.dataset.export_stub(screenshot_path, "planner_no_decision", detections=detections)
             return False
@@ -127,7 +130,7 @@ class DynamicPlannerAction(Action):
 
         if decision.action_type == "wait":
             self.memory.record_success(screenshot_path, decision, visible_labels=detections, source=decision.source)
-            return DelayPolicy().wait(1.0, context=context)
+            return DelayPolicy().wait(decision.delay_seconds, context=context)
         if decision.action_type == "stop":
             if getattr(context, "bot", None):
                 context.bot.stop()
@@ -140,6 +143,8 @@ class DynamicPlannerAction(Action):
 
         clicked = self._execute_click(context, decision, window_rect)
         if clicked:
+            if not DelayPolicy().wait(decision.delay_seconds, context=context):
+                return False
             if corrected:
                 self.memory.record_correction(screenshot_path, decision, {"x": decision.x, "y": decision.y}, visible_labels=detections)
                 self.dataset.export_correction(screenshot_path, decision, {"x": decision.x, "y": decision.y}, detections=detections)

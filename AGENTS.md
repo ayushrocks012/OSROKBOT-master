@@ -46,25 +46,27 @@ loose root-level `Media/*.png` files are deprecated and are purged by
 
 ## Planner Decision Contract
 
-`dynamic_planner.py` accepts screenshot context, YOLO labels, OCR text, recent
-state history, and a natural-language mission. It returns a validated
-`PlannerDecision` with strict JSON fields:
+`dynamic_planner.py` accepts screenshot context, local YOLO/OCR target IDs, OCR
+text, recent state history, and a natural-language mission. It returns a
+validated `PlannerDecision` with strict JSON fields:
 
 ```json
 {
   "thought_process": "short debug note",
   "action_type": "click",
+  "target_id": "det_3",
   "label": "target label",
-  "x": 0.5,
-  "y": 0.5,
   "confidence": 0.9,
+  "delay_seconds": 1.0,
   "reason": "short user-facing reason"
 }
 ```
 
-Allowed action types are `click`, `wait`, and `stop`. Click coordinates must be
-finite normalized values from `0.0` to `1.0`, and click confidence must meet the
-planner threshold before the decision can reach input execution.
+Allowed action types are `click`, `wait`, and `stop`. Click decisions must
+reference a current local detector/OCR `target_id`; `dynamic_planner.py`
+resolves that ID to normalized coordinates before validation. Missing or
+unknown target IDs, low confidence, non-finite resolved coordinates, and
+out-of-window targets must be rejected before input execution.
 
 ## Human-In-The-Loop Safety
 

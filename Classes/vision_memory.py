@@ -238,6 +238,8 @@ class VisionMemory:
             "normalized_point": {"x": float(decision.get("x", 0.0)), "y": float(decision.get("y", 0.0))},
             "confidence": float(decision.get("confidence", 0.0)),
             "action_type": decision.get("action_type", "click"),
+            "target_id": decision.get("target_id", ""),
+            "delay_seconds": float(decision.get("delay_seconds", 1.0)),
             "success_count": 1,
             "failure_count": 0,
             "source": source,

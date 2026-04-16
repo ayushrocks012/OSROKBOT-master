@@ -26,7 +26,7 @@ class _WindowRect:
 def test_pending_planner_decision_emits_absolute_coordinates():
     emitter = _FakeEmitter()
     context = Context(signal_emitter=emitter)
-    decision = PlannerDecision("t", "click", "Gather Button", 0.25, 0.50, 0.9, "Visible.")
+    decision = PlannerDecision("t", "click", "Gather Button", 0.25, 0.50, 0.9, "Visible.", target_id="det_1")
 
     pending = context.set_pending_planner_decision(decision, screenshot_path="screen.png", window_rect=_WindowRect())
 
@@ -34,6 +34,7 @@ def test_pending_planner_decision_emits_absolute_coordinates():
     assert pending["absolute_y"] == 150
     assert emitter.state_changed.payloads == ["Planner approval needed"]
     assert emitter.planner_decision.payloads[0]["absolute_x"] == 200
+    assert emitter.planner_decision.payloads[0]["decision"]["target_id"] == "det_1"
     assert emitter.planner_decision.payloads[0]["decision"]["label"] == "Gather Button"
 
 

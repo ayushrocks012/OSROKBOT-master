@@ -39,8 +39,8 @@ OSROKBOT is built around a guarded observe-plan-act loop:
 2. `Classes/object_detector.py` adds YOLO labels when `ROK_YOLO_WEIGHTS` is configured.
 3. `Classes/ocr_service.py` extracts screen text with EasyOCR and Tesseract fallback.
 4. `Classes/vision_memory.py` searches local visual memory before spending an OpenAI call.
-5. `Classes/dynamic_planner.py` asks the configured OpenAI vision model for one strict JSON action.
-6. `Classes/Actions/dynamic_planner_action.py` validates the decision, applies the autonomy policy, and only then allows input through `InputController`.
+5. `Classes/dynamic_planner.py` asks the configured OpenAI vision model for one strict JSON action that references a local target ID.
+6. `Classes/Actions/dynamic_planner_action.py` resolves that ID to local geometry, validates the decision, applies the autonomy policy, and only then allows input through `InputController`.
 
 The planner accepts natural English missions such as:
 
@@ -54,10 +54,10 @@ It produces a JSON decision with this shape:
 {
   "thought_process": "The map view is open and a gather button is visible.",
   "action_type": "click",
+  "target_id": "det_3",
   "label": "gather button",
-  "x": 0.72,
-  "y": 0.84,
   "confidence": 0.91,
+  "delay_seconds": 1.0,
   "reason": "Continue the selected resource gathering flow."
 }
 ```
@@ -66,12 +66,13 @@ Supported `action_type` values are:
 
 | Action | Meaning |
 | --- | --- |
-| `click` | Click a normalized screen coordinate after bounds validation. |
+| `click` | Click a local YOLO/OCR target ID after resolving it to a bounded screen point. |
 | `wait` | Pause briefly and observe again. |
 | `stop` | Stop the current automation run. |
 
-Invalid action types, low-confidence click decisions, non-finite coordinates,
-and out-of-window targets are rejected before hardware input.
+Invalid action types, low-confidence click decisions, missing or unknown
+`target_id` values, and out-of-window targets are rejected before hardware
+input. The model is not trusted to author click coordinates directly.
 
 ## Architecture
 
@@ -98,8 +99,10 @@ Mission text
   -> PyQt overlay
   -> Context
   -> screenshot + YOLO labels + OCR text
+  -> local detector/OCR target IDs
   -> VisionMemory lookup
   -> OpenAI JSON planner decision when memory has no safe match
+  -> target ID resolution
   -> autonomy gate
   -> InputController bounds check
   -> Interception hardware input
