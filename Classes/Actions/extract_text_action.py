@@ -1,9 +1,11 @@
 import pytesseract
 from Actions.action import Action
 from config_manager import ConfigManager
+from logging_config import get_logger
 from PIL import Image, ImageOps
 
 DEFAULT_ANTIALIAS_METHOD = getattr(Image, "Resampling", Image).LANCZOS
+LOGGER = get_logger(__name__)
 
 
 def configure_tesseract():
@@ -55,24 +57,24 @@ class ExtractTextAction(Action):
         img = self.preprocess_image(self.image_path)
         try:
             text = pytesseract.image_to_string(img, lang='eng', config="--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789//")
-            print(text)
+            LOGGER.info("Extracted numeric text: %s", text)
             if (self.description == "marchcount"):
                 #first char from text to int
                 if (int(text[0])<int(text[2])):
-                    print("March not full")
+                    LOGGER.info("March not full")
                     return True
-                print("March full")
+                LOGGER.info("March full")
                 return False
         except Exception as e:
-            print(f"Exception during extraction: {e}")
+            LOGGER.warning("Exception during extraction: %s", e)
             return True
         text = pytesseract.image_to_string(img, lang='eng', config='--oem 3 --psm 6 -c tessedit_char_blacklist=|')
         text = text.replace("\n", "")
-        print(text)
+        LOGGER.info("Extracted text: %s", text)
         if context:
             context.set_extracted_text(self.description, text)
         else:
-            print("Warning: No context provided to ExtractTextAction.")
+            LOGGER.warning("No context provided to ExtractTextAction.")
         
 
         

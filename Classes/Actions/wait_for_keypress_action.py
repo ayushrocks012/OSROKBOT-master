@@ -1,5 +1,8 @@
 import keyboard
 from Actions.action import Action
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 class WaitForKeyPressAction(Action):
@@ -9,6 +12,6 @@ class WaitForKeyPressAction(Action):
         self.msg = msg
 
     def execute(self, context=None):
-        print(f'\nPress {self.key} to {self.msg}\n')
+        LOGGER.info("Press %s to %s", self.key, self.msg)
         keyboard.wait(self.key)
         return True

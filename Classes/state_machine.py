@@ -179,14 +179,14 @@ class StateMachine:
         return state in {GameState.CITY, GameState.MAP}
 
     def _recovery_close_menus(self, monitor, controller, context, GameState):
-        print("Recovery tier 1: close menu/blockers.")
+        LOGGER.info("Recovery tier 1: close menu/blockers.")
         self._emit_recovery_state(context, "Recovery tier 1\nclose menu")
 
         for _ in range(3):
             monitor.clear_blockers()
             state = monitor.current_state()
             if self._is_known_state(state, GameState):
-                print(f"Recovery tier 1 found state: {state.value}")
+                LOGGER.info("Recovery tier 1 found state: %s", state.value)
                 return True
             if not controller.key_press("escape", hold_seconds=0.1, context=context):
                 return False
@@ -195,14 +195,14 @@ class StateMachine:
         return False
 
     def _recovery_toggle_view(self, monitor, controller, context, GameState):
-        print("Recovery tier 2: toggle city/map view.")
+        LOGGER.info("Recovery tier 2: toggle city/map view.")
         self._emit_recovery_state(context, "Recovery tier 2\ntoggle view")
 
         for _ in range(4):
             monitor.clear_blockers()
             state = monitor.current_state()
             if self._is_known_state(state, GameState):
-                print(f"Recovery tier 2 found state: {state.value}")
+                LOGGER.info("Recovery tier 2 found state: %s", state.value)
                 return True
             if not controller.key_press("space", hold_seconds=0.1, context=context):
                 return False
@@ -213,10 +213,10 @@ class StateMachine:
     def _recovery_restart_game(self, monitor, controller, context, GameState):
         state = monitor.current_state()
         if state != GameState.UNKNOWN:
-            print(f"StateMachine global recovery ended without confirming a known state: {state.value}")
+            LOGGER.warning("StateMachine global recovery ended without confirming a known state: %s", state.value)
             return False
 
-        print("Recovery tier 3: restart client.")
+        LOGGER.info("Recovery tier 3: restart client.")
         self._emit_recovery_state(context, "Recovery tier 3\nrestart client")
         if not monitor.restart_client():
             return False
@@ -224,12 +224,12 @@ class StateMachine:
         for _ in range(10):
             state = monitor.current_state()
             if self._is_known_state(state, GameState):
-                print(f"Recovery tier 3 found state: {state.value}")
+                LOGGER.info("Recovery tier 3 found state: %s", state.value)
                 return True
             if not controller.wait(1, context=context):
                 return False
 
-        print(f"StateMachine global recovery ended without confirming a known state: {state.value}")
+        LOGGER.warning("StateMachine global recovery ended without confirming a known state: %s", state.value)
         return False
 
     def global_recovery(self, context=None):
@@ -242,7 +242,7 @@ class StateMachine:
         controller = InputController(context=context)
         window_title = context.window_title if context and getattr(context, "window_title", None) else "Rise of Kingdoms"
 
-        print("StateMachine global recovery started.")
+        LOGGER.info("StateMachine global recovery started.")
         self._emit_recovery_state(context, "Global recovery\nclearing UI")
 
         WindowHandler().ensure_foreground(window_title, wait_seconds=0.5)

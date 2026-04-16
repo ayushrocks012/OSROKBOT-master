@@ -1,129 +1,96 @@
-# OSROKBOT Agent Instructions
+# OSROKBOT Maintainer Contract
 
-These instructions are for AI agents and developers changing OSROKBOT. Preserve
-the explicit state-machine design and keep changes small, inspectable, and
-recoverable.
+This file is the short-form contract for AI agents and developers modifying
+OSROKBOT. The main user-facing system guide is `README.md`; do not duplicate it
+here.
 
-## Architecture Boundaries
+## Architecture Position
 
-- `Classes/UI.py` owns the PyQt overlay and creates the per-run `Context`.
-- `Classes/context.py` is the only shared runtime state object.
-- `Classes/OS_ROKBOT.py` owns worker threads, pause/stop events, and global
-  pre-action blocker checks.
-- `Classes/state_machine.py` owns transitions, preconditions, and fallback
-  routing.
-- `Classes/action_sets.py` wires single-purpose actions into named workflows.
-- `Classes/Actions/*.py` contains action wrappers. Actions do one job and
-  return `True` or `False`.
-- `Classes/image_finder.py` owns template matching, ROI scaling, alpha masks,
-  non-maximum suppression, and SIFT world-object matching.
-- `Classes/input_controller.py` is the only module allowed to import or call
-  `pyautogui`.
+OSROKBOT is agentic-first. The primary runtime path is:
+
+```text
+UI mission -> Context -> DynamicPlannerAction -> DynamicPlanner -> autonomy gate -> InputController
+```
+
+Legacy gameplay templates are not a supported runtime path. `Media/Legacy/` and
+loose root-level `Media/*.png` files are deprecated and are purged by
+`cleanup_media.py`.
+
+## Ownership Boundaries
+
+| Module | Owns |
+| --- | --- |
+| `Classes/UI.py` | Overlay, mission input, autonomy selector, approval controls, and per-run `Context`. |
+| `Classes/context.py` | Shared runtime state, planner approval payloads, state history, and UI signal access. |
+| `Classes/OS_ROKBOT.py` | Executor-backed run loop, pause/stop events, foreground guard, CAPTCHA pause, and heartbeat scheduling. |
+| `Classes/Actions/dynamic_planner_action.py` | Observation, detector/OCR calls, approval flow, correction recording, memory updates, and guarded click execution. |
+| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, JSON schema validation, and memory-first decision selection. |
+| `Classes/vision_memory.py` | CLIP embeddings, FAISS/NumPy similarity search, success/failure memory, and trusted-label checks. |
+| `Classes/input_controller.py` | All mouse, keyboard, and scroll execution. No other module should call lower-level input APIs. |
+| `Classes/emergency_stop.py` | F12 emergency termination. |
+| `watchdog.py` | Heartbeat monitoring and conservative restart behavior. |
 
 ## Non-Negotiable Rules
 
-- Do not add process-wide mutable globals.
-- Do not reintroduce `global_vars.py`.
+- Do not reintroduce `global_vars.py` or process-wide mutable runtime state.
 - Pass shared runtime data through `Context`.
-- Do not import `pyautogui` or `pydirectinput` outside
-  `Classes/input_controller.py`.
-- Do not bypass `InputController.validate_bounds(...)` for mouse movement or
-  click execution.
-- Do not use `time.sleep()` inside actions. Use `DelayPolicy.wait(...)` or the
-  base `Action(delay=..., post_delay=...)` mechanism.
+- Do not import or call lower-level input libraries outside `Classes/input_controller.py`.
+- Do not bypass `InputController.validate_bounds(...)`.
+- Do not solve, bypass, or automate CAPTCHAs. Detection must pause for human review.
+- Do not add new root-level gameplay templates under `Media/`.
+- Do not move protected media under `Media/UI/` or `Media/Readme/` without updating `MEDIA_MAP.md`.
+- Keep `dynamic_planner.py` side-effect free. It may propose JSON decisions; it must not click.
+- Keep click-capable agentic behavior behind `DynamicPlannerAction` and the autonomy gate.
 - Do not launch live automation in tests unless explicitly requested.
-- Do not move active `Media/...` assets without updating `MEDIA_MAP.md` and
-  running `python verify_integrity.py`.
+- Use `DelayPolicy.wait(...)` or action-level delays for waits inside action flows.
 
-## Centralized Input
+## Planner Decision Contract
 
-All mouse, keyboard, and scroll operations go through `InputController`.
-`InputController` enforces pause/stop interlocks, window bounds validation,
-click settle timing, key hold timing, scroll pacing, and cursor movement
-behavior. Actions may use wrappers such as `ManualClickAction`,
-`ManualMoveAction`, `PressKeyAction`, or create an `InputController(context=...)`
-directly, but they must not call lower-level input libraries.
+`dynamic_planner.py` accepts screenshot context, YOLO labels, OCR text, recent
+state history, and a natural-language mission. It returns a validated
+`PlannerDecision` with strict JSON fields:
 
-## Action Protocol
-
-State machines and parent actions must call `child.perform(context)`, not
-`child.execute(context)`. `perform(...)` is the safety boundary: it emits UI
-status, applies pre-action and post-action delays, and checks pause/stop state
-before the action body runs.
-
-Only implement behavior inside `execute(self, context=None)` after the action
-has been entered through `perform(...)`. `execute(...)` must return `True` for
-the success transition and `False` for the failure transition.
-
-## State-First Logic
-
-Verify the expected game state before actions that depend on a specific screen.
-Reusable screen checks belong behind a named state-check abstraction, preferably
-`GameStateMonitor` when present. Do not scatter one-off image checks across
-actions when the check represents a reusable state such as Map View, City View,
-modal-open, inventory, troop selection, or march screen.
-
-Use `StateMachine.add_state(..., precondition=..., fallback_state=...)` for
-workflow recovery. The fallback should move the bot to an explicit recovery
-state instead of hiding recovery loops inside action code.
-
-## Global Blockers
-
-`OS_ROKBOT` clears known modal blockers such as `Media/confirm.png` and
-`Media/escx.png` before each workflow action. Do not duplicate this logic in
-individual actions. Add future blocker templates to the runner-level blocker
-list and keep them documented in `MEDIA_MAP.md`.
-
-## Adding A New Action
-
-1. Create a file under `Classes/Actions/` named after the action.
-2. Inherit from `Action`.
-3. Call `super().__init__(delay=delay, post_delay=post_delay)` in `__init__()`.
-4. Store action-specific configuration on `self`.
-5. Implement `execute(self, context=None)`.
-6. Read shared state from `context`.
-7. Write shared outputs through `context`, for example
-   `context.extracted["key"] = value`.
-8. Use `InputController` for input and `ImageFinder` or `GameStateMonitor` for
-   screen checks.
-9. If the action calls another action, call `child.perform(context)`.
-10. Wire the action in `Classes/action_sets.py`.
-11. Add explicit success and failure transitions unless retrying the same state
-    is intentional.
-12. Add or update a workflow comment explaining the recovery path.
-
-Minimal action template:
-
-```python
-from Actions.action import Action
-
-
-class ExampleAction(Action):
-    def __init__(self, value, delay=0, post_delay=0):
-        super().__init__(delay=delay, post_delay=post_delay)
-        self.value = value
-
-    def execute(self, context=None):
-        if context:
-            context.extracted["example"] = self.value
-        return True
+```json
+{
+  "thought_process": "short debug note",
+  "action_type": "click",
+  "label": "target label",
+  "x": 0.5,
+  "y": 0.5,
+  "confidence": 0.9,
+  "reason": "short user-facing reason"
+}
 ```
 
-## Updating A Workflow
+Allowed action types are `click`, `wait`, and `stop`. Click coordinates must be
+finite normalized values from `0.0` to `1.0`, and click confidence must meet the
+planner threshold before the decision can reach input execution.
 
-- Read the workflow comment first.
-- Keep transition names descriptive.
-- Use this transition form:
+## Human-In-The-Loop Safety
 
-```python
-machine.add_state("state_name", SomeAction(), "success_state", "failure_state")
-```
+The UI autonomy levels are part of the safety model:
 
-- Use `precondition=...` and `fallback_state=...` for required screen states.
-- If the fourth argument is omitted, failure retries the same state.
-- Confirm every literal transition target exists before handing work back.
-- Update `MEDIA_MAP.md` when adding, removing, or archiving templates.
-- Run `python verify_integrity.py` after workflow or media changes.
+- `L1 approve`: every click waits for `OK`.
+- `L2 trusted`: locally trusted labels can auto-click after enough clean successes.
+- `L3 auto`: validated planner clicks can execute without approval.
+
+Default to L1 when testing changes, new prompts, new weights, or new memory.
+
+## Media Contract
+
+The only protected media folders are:
+
+- `Media/UI/`
+- `Media/Readme/`
+
+`cleanup_media.py` is the source of truth for deprecated media cleanup. It
+deletes:
+
+- `Media/Legacy/`
+- loose root-level `Media/*.png`
+
+It does not delete protected folders or nested files under other media
+subdirectories.
 
 ## Verification
 
@@ -131,9 +98,17 @@ Run these before handing work back:
 
 ```powershell
 python verify_integrity.py
-python -m compileall Classes verify_integrity.py
+python -m compileall Classes verify_integrity.py cleanup_media.py watchdog.py
 python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports ok')"
+python -m pytest --basetemp .pytest_tmp -o cache_dir=.pytest_cache
 ```
 
-If dependencies are only visible outside the sandbox, run the import check in
-the same Python environment used to install `requirements.txt`.
+Use these for static cleanup work:
+
+```powershell
+python -m ruff check Classes verify_integrity.py cleanup_media.py watchdog.py --select I,UP,RET,SIM,B,F,PTH
+python -m vulture Classes verify_integrity.py watchdog.py cleanup_media.py --min-confidence 80
+```
+
+If `verify_integrity.py` fails only because the Rise of Kingdoms window is not
+open, report that explicitly instead of weakening the check.

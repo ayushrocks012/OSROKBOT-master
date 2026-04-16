@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytesseract
 from config_manager import ConfigManager
+from diagnostic_screenshot import save_diagnostic_screenshot
 from helpers import UIMap
-from image_finder import ImageFinder
 from input_controller import InputController
 from logging_config import get_logger
 from PIL import Image, ImageOps
@@ -29,20 +29,20 @@ class GameState(str, Enum):
 class GameStateMonitor:
     """Reusable OCR and coarse state checks.
 
-    Root-level gameplay templates have been removed. This monitor no longer
-    uses OpenCV template images for map/blocker detection.
+    This monitor uses OCR and coarse runtime state only; planner perception is
+    handled by the YOLO/VLM path.
     """
 
     OCR_CACHE_SECONDS = 30
     DEFAULT_BARBARIAN_AP_COST = 50
 
     def __init__(self, context=None, threshold=0.85):
+        _ = threshold
         self.context = context
         tesseract_path = ConfigManager().get("TESSERACT_PATH")
         if tesseract_path:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
         self.window_handler = WindowHandler()
-        self.image_finder = ImageFinder(threshold=threshold)
         self.input_controller = InputController(context=context)
 
     def _window_title(self):
@@ -122,7 +122,7 @@ class GameStateMonitor:
         if screenshot is None:
             LOGGER.warning("Diagnostic screenshot skipped: screenshot unavailable.")
             return None
-        return self.image_finder.save_screenshot(screenshot, label=label)
+        return save_diagnostic_screenshot(screenshot, label=label)
 
     def clear_blockers(self):
         return False

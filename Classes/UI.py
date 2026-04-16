@@ -1,6 +1,6 @@
 import os
 import sys
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pygetwindow as gw
@@ -143,6 +143,7 @@ class UI(QtWidgets.QWidget):
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.currentState)
         self.OS_ROKBOT.signal_emitter.planner_decision.connect(self.on_planner_decision)
         self.action_sets = ActionSets(OS_ROKBOT=self.OS_ROKBOT)
+        self._background_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-UI")
         self.current_context = None
         self._planner_correction_armed = False
         self.target_title = window_title
@@ -427,7 +428,7 @@ class UI(QtWidgets.QWidget):
         self.setWindowOpacity(0.75)
         self.show()
         WindowHandler().activate_window("OSROKBOT")
-        threading.Thread(target=ModelManager().ensure_yolo_weights, daemon=True).start()
+        self._background_executor.submit(ModelManager().ensure_yolo_weights)
 
     def currentState(self, state_text):
         self.current_state_label.setText(state_text)
@@ -518,8 +519,6 @@ class UI(QtWidgets.QWidget):
         action_group = self.action_sets.dynamic_planner()
         if action_group:
             actions_groups = [action_group]
-            if self.check_captcha_checkbutton.isChecked():
-                actions_groups.append(self.action_sets.email_captcha())
 
             context = Context(
                 ui_instance=self,
@@ -607,6 +606,7 @@ class UI(QtWidgets.QWidget):
         
     def closeEvent(self, event):
         self.stop_automation()
+        self._background_executor.shutdown(wait=False, cancel_futures=True)
         event.accept()
         
 if __name__ == "__main__":

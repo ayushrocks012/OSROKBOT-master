@@ -1,6 +1,9 @@
 from colorsys import rgb_to_hsv
 
 from Actions.window_percent_action import WindowPercentAction
+from logging_config import get_logger
+
+LOGGER = get_logger(__name__)
 
 
 class CheckColorAction(WindowPercentAction):
@@ -27,7 +30,7 @@ class CheckColorAction(WindowPercentAction):
 
         # Check if the color is close to green
         if abs(color_h - target_h) < threshold:
-            print("Green: ", color)
+            LOGGER.info("Green pixel detected: %s", color)
             return True
-        print("NOT GREEN ", color)
+        LOGGER.info("Green pixel not detected: %s", color)
         return False

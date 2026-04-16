@@ -90,14 +90,14 @@ class Context:
             del self.state_history[: len(self.state_history) - self.max_state_history]
 
     def save_failure_diagnostic(self, state_name="unknown"):
-        from image_finder import ImageFinder
+        from diagnostic_screenshot import save_diagnostic_screenshot
         from window_handler import WindowHandler
 
         screenshot, _ = WindowHandler().screenshot_window(self.window_title)
         if screenshot is None:
             LOGGER.warning("Diagnostic capture skipped: screenshot unavailable.")
             return None
-        screenshot_path = ImageFinder().save_screenshot(screenshot, label=f"diagnostic_{state_name}")
+        screenshot_path = save_diagnostic_screenshot(screenshot, label=f"diagnostic_{state_name}")
         if screenshot_path:
             self.export_state_history(screenshot_path.with_suffix(".log"))
         return screenshot_path

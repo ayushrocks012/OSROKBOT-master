@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from input_controller import DelayPolicy, InputController
 
@@ -24,7 +25,7 @@ class Action(ABC):
     updates, `delay`, and `post_delay` are applied consistently.
     """
 
-    def __init__(self, skip_check_first_time: bool = False, delay=0, post_delay=0):
+    def __init__(self, skip_check_first_time: bool = False, delay: float = 0, post_delay: float = 0) -> None:
         self.skip_check_first_time = skip_check_first_time
         self.first_run = True
         self.performance_multiplier = 1
@@ -39,7 +40,7 @@ class Action(ABC):
         )
 
     @property
-    def status_text(self):
+    def status_text(self) -> str:
         metadata = self.get_action_metadata()
         lines = [
             metadata.name,
@@ -51,12 +52,10 @@ class Action(ABC):
         return (
             status.replace("action", "")
             .replace("FindAnd", "")
-            .replace(".png", "")
-            .replace("Media/", "")
             .replace("Action", "")
         )
 
-    def perform(self, context=None):
+    def perform(self, context: Any | None = None) -> bool:
         if context:
             context.emit_state(self.status_text)
         if not DEFAULT_DELAY_POLICY.wait(self.delay, context):
@@ -69,5 +68,5 @@ class Action(ABC):
         return result
 
     @abstractmethod
-    def execute(self, context=None):
+    def execute(self, context: Any | None = None) -> bool:
         raise NotImplementedError

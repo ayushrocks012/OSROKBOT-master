@@ -40,8 +40,11 @@ class LyceumAction(Action):
         
         max_similarity_index = cosine_similarities.argmax()
         
-        # Print the highest similarity score
-        print(f"Most similar entry '{text_list[max_similarity_index]}' has a similarity score of: {cosine_similarities[max_similarity_index]:.4f} with")
+        LOGGER.info(
+            "Most similar entry %r has similarity %.4f",
+            text_list[max_similarity_index],
+            cosine_similarities[max_similarity_index],
+        )
         if context and (input_text == context.Q):
             self.score = cosine_similarities[max_similarity_index]
         else:
@@ -110,15 +113,15 @@ class LyceumAction(Action):
 
         # Switch case for reply A, B, C, D, or E
         if option_index == 0:
-            print("\nA is the closest match")
+            LOGGER.info("A is the closest match")
         elif option_index == 1:
-            print("\nB is the closest match")
+            LOGGER.info("B is the closest match")
         elif option_index == 2:
-            print("\nC is the closest match")
+            LOGGER.info("C is the closest match")
         elif option_index == 3:
-            print("\nD is the closest match")
+            LOGGER.info("D is the closest match")
 
-        print(f"with : {self.score}")
+        LOGGER.info("Question similarity score: %s", self.score)
         
         if not ((self.score >= 0.98 and self.optionScore >= 0.8) or (self.score > 0.93 and self.optionScore >= 0.85)):
             LOGGER.warning("\nI couldn't find the answer in the database, trying OpenAI fallback.")

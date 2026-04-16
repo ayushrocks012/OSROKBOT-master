@@ -9,8 +9,8 @@ from pathlib import Path
 
 from config_manager import ConfigManager
 from context import Context
+from diagnostic_screenshot import save_diagnostic_screenshot
 from emergency_stop import EmergencyStop
-from image_finder import ImageFinder
 from input_controller import InputController
 from logging_config import get_logger
 from object_detector import create_detector
@@ -32,9 +32,8 @@ class OSROKBOT:
     """Executor-backed runner for one or more automation state machines.
 
     The runner owns pause/stop events, injects a shared Context, and performs
-    foreground/captcha safety checks before each workflow step. Legacy OpenCV
-    template blockers were removed with the template media; planner and YOLO/VLM
-    recovery now handle visible modals.
+    foreground/captcha safety checks before each workflow step. Planner and
+    YOLO/VLM recovery now handle visible prompts without gameplay media assets.
     """
 
     def __init__(self, window_title, delay=1):
@@ -49,7 +48,6 @@ class OSROKBOT:
         self._runner_future: Future | None = None
         self.window_handler = WindowHandler()
         self.input_controller = InputController(context=None)
-        self.diagnostic_finder = ImageFinder(threshold=0.85, save_heatmaps=False)
         self.detector = create_detector()
         self._heartbeat_lock = threading.Lock()
         self._last_heartbeat_at = 0.0
@@ -180,7 +178,7 @@ class OSROKBOT:
 
         LOGGER.error("Captcha detected: pausing automation for manual review.")
         context.emit_state("Captcha detected - paused")
-        screenshot_path = self.diagnostic_finder.save_screenshot(screenshot, label="captcha_detected")
+        screenshot_path = save_diagnostic_screenshot(screenshot, label="captcha_detected")
         if screenshot_path and hasattr(context, "export_state_history"):
             context.export_state_history(screenshot_path.with_suffix(".log"))
         self.pause_event.set()

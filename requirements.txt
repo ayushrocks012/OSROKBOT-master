@@ -2,7 +2,7 @@
 # Target runtime: Python 3.13 on Windows.
 # Keep this as the only requirements file; do not add nested requirements files.
 
-# Hybrid image engine: grayscale template matching, alpha masks, ROI search, SIFT.
+# Image and tensor runtime for screenshots, YOLO perception, OCR, and memory.
 opencv-python==4.13.0.92
 numpy==2.4.4
 Pillow==12.2.0
