@@ -1,10 +1,14 @@
+import asyncio
+import inspect
 import json
 import math
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from config_manager import ConfigManager
 from encoding_utils import image_data_url, safe_json_loads
@@ -13,6 +17,7 @@ from openai import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
+    AsyncOpenAI,
     AuthenticationError,
     BadRequestError,
     InternalServerError,
@@ -273,6 +278,117 @@ class PlannerDecision(BaseModel):
         return self.model_dump()
 
 
+class AsyncPlannerTransport:
+    """Dedicated async transport for planner Responses API calls."""
+
+    def __init__(
+        self,
+        api_key: str,
+        is_transient_error: Callable[[Exception], bool],
+        poll_seconds: float = REQUEST_POLL_SECONDS,
+    ) -> None:
+        self._client = AsyncOpenAI(api_key=api_key)
+        self._is_transient_error = is_transient_error
+        self._poll_seconds = poll_seconds
+        self._ready = threading.Event()
+        self._closed = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._startup_error: Exception | None = None
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="OSROKBOT-PlannerAsync",
+            daemon=True,
+        )
+        self._thread.start()
+        self._ready.wait()
+        if self._startup_error is not None:
+            raise RuntimeError("Planner async transport failed to start") from self._startup_error
+
+    def _run_loop(self) -> None:
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._loop = loop
+        except Exception as exc:
+            self._startup_error = exc
+            self._ready.set()
+            return
+
+        self._ready.set()
+        try:
+            self._loop.run_forever()
+        finally:
+            try:
+                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+            finally:
+                self._loop.close()
+
+    async def _create_response(self, request_payload: dict[str, Any]) -> Any:
+        response = self._client.responses.create(**request_payload)
+        if inspect.isawaitable(response):
+            return await response
+        return response
+
+    async def _close_client(self) -> None:
+        close = getattr(self._client, "close", None)
+        if close is None:
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+
+    def _submit(self, request_payload: dict[str, Any]):
+        if self._closed or self._loop is None:
+            raise RuntimeError("Planner async transport is closed")
+        return asyncio.run_coroutine_threadsafe(self._create_response(request_payload), self._loop)
+
+    def _wait_for_future(self, future, should_cancel: Callable[[], bool]) -> Any | None:
+        while True:
+            if should_cancel():
+                future.cancel()
+                return None
+            try:
+                return future.result(timeout=self._poll_seconds)
+            except FutureTimeoutError:
+                continue
+
+    @staticmethod
+    def _interruptible_sleep(should_cancel: Callable[[], bool], seconds: float, poll_seconds: float) -> bool:
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        while time.monotonic() < deadline:
+            if should_cancel():
+                return False
+            time.sleep(min(poll_seconds, deadline - time.monotonic()))
+        return not should_cancel()
+
+    def request(self, request_payload: dict[str, Any], should_cancel: Callable[[], bool]) -> Any | None:
+        for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
+            if should_cancel():
+                return None
+            future = self._submit(request_payload)
+            try:
+                return self._wait_for_future(future, should_cancel)
+            except Exception as exc:
+                if not self._is_transient_error(exc) or attempt >= MAX_REQUEST_ATTEMPTS:
+                    raise
+                backoff = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                LOGGER.warning("Dynamic planner transient OpenAI failure; retrying: %s", exc)
+                if not self._interruptible_sleep(should_cancel, backoff, self._poll_seconds):
+                    return None
+        return None
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._loop is not None:
+            with suppress(Exception):
+                asyncio.run_coroutine_threadsafe(self._close_client(), self._loop).result(timeout=1.0)
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+
 class DynamicPlanner:
     """Vision-language planner for one guarded OSROKBOT step.
 
@@ -297,7 +413,11 @@ class DynamicPlanner:
         self.client = OpenAI(api_key=api_key) if api_key else None
         self.model = self.config.get("OPENAI_VISION_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
         self.memory = memory or VisionMemory()
-        self._request_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Planner")
+        self._transport = (
+            AsyncPlannerTransport(api_key=api_key, is_transient_error=self._is_transient_openai_error)
+            if api_key
+            else None
+        )
 
     @staticmethod
     def _visible_labels(detections):
@@ -522,42 +642,20 @@ class DynamicPlanner:
             return status_code in {408, 409, 429} or status_code >= 500
         return False
 
-    def _interruptible_sleep(self, context, seconds):
-        deadline = time.monotonic() + max(0.0, float(seconds))
-        while time.monotonic() < deadline:
-            if self._request_interrupted(context):
-                return False
-            time.sleep(min(REQUEST_POLL_SECONDS, deadline - time.monotonic()))
-        return not self._request_interrupted(context)
-
-    def _wait_for_response_future(self, context, future):
-        while True:
-            if self._request_interrupted(context):
-                future.cancel()
-                return None
-            try:
-                return future.result(timeout=REQUEST_POLL_SECONDS)
-            except FutureTimeoutError:
-                continue
-
-    def _create_response(self, request_payload):
-        return self.client.responses.create(**request_payload)
-
     def _request_response_with_retries(self, context, request_payload):
-        for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
-            if self._request_interrupted(context):
-                return None
-            future = self._request_executor.submit(self._create_response, request_payload)
-            try:
-                return self._wait_for_response_future(context, future)
-            except Exception as exc:
-                if not self._is_transient_openai_error(exc) or attempt >= MAX_REQUEST_ATTEMPTS:
-                    raise
-                backoff = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-                LOGGER.warning("Dynamic planner transient OpenAI failure; retrying: %s", exc)
-                if not self._interruptible_sleep(context, backoff):
-                    return None
-        return None
+        if not self._transport:
+            LOGGER.warning("Dynamic planner unavailable: async planner transport is not configured.")
+            return None
+        return self._transport.request(request_payload, lambda: self._request_interrupted(context))
+
+    def close(self):
+        if self._transport:
+            self._transport.close()
+            self._transport = None
+
+    def __del__(self):
+        with suppress(Exception):
+            self.close()
 
     @staticmethod
     def _build_prompt(goal, labels, target_payload, ocr_text, history,
@@ -628,11 +726,8 @@ class DynamicPlanner:
             PlannerDecision | None: Parsed model decision, or None if the
             request fails.
         """
-        if not self.client:
+        if not self._transport:
             LOGGER.warning("Dynamic planner unavailable: OPENAI_KEY/OPENAI_API_KEY is not configured.")
-            return None
-        if not hasattr(self.client, "responses"):
-            LOGGER.warning("Dynamic planner unavailable: installed openai package lacks Responses API support.")
             return None
 
         labels = self._visible_labels(detections)

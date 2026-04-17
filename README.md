@@ -53,15 +53,16 @@ OSROKBOT executes one guarded planner step at a time.
 2. `Classes/action_sets.py` builds the supported `dynamic_planner()` state
    machine.
 3. `Classes/OS_ROKBOT.py` runs the machine through an executor-backed loop,
-   writes heartbeat data, checks foreground state, and pauses on CAPTCHA-like
-   detector labels.
-4. `Classes/Actions/dynamic_planner_action.py` captures the game window,
-   gathers detector/OCR/resource/stuck-screen context, asks `TaskGraph` for the
-   current focused sub-goal, then requests one planner decision.
+   writes heartbeat data, checks foreground state, captures one shared
+   observation per loop, and pauses on CAPTCHA-like detector labels.
+4. `Classes/Actions/dynamic_planner_action.py` reuses that shared observation
+   when available, gathers OCR/resource/stuck-screen context, asks `TaskGraph`
+   for the current focused sub-goal, then requests one planner decision.
 5. `Classes/vision_memory.py` tries to reuse a successful local visual match
    before spending an OpenAI call.
-6. `Classes/dynamic_planner.py` calls the OpenAI Responses API when memory has
-   no safe match and validates the strict JSON response.
+6. `Classes/dynamic_planner.py` sends planner requests through a dedicated
+   async Responses API transport when memory has no safe match and validates
+   the strict JSON response.
 7. `DynamicPlannerAction` resolves target IDs to current screen geometry,
    applies the autonomy policy, records corrections or failures, and sends any
    hardware input through `Classes/input_controller.py`.
@@ -96,6 +97,8 @@ The model-facing schema accepts these fields:
 The model may reference current detector/OCR target IDs, but it must not return
 raw `x` or `y` coordinates. `DynamicPlanner.resolve_target_decision(...)`
 resolves target IDs to normalized coordinates after schema validation.
+Planner networking is handled behind a dedicated async transport, but the
+planner API used by the rest of the runtime remains synchronous.
 
 Supported actions:
 
@@ -122,20 +125,21 @@ they do not use the target approval prompt.
 
 | Module | Responsibility |
 | --- | --- |
-| `Classes/UI.py` | PyQt overlay, mission input, settings, autonomy selector, approval controls, mission history, session logging, and per-run `Context` creation. |
-| `Classes/context.py` | Shared runtime state, planner approval payloads, state history, resource cache, UI anchors, and signal access. |
+| `Classes/UI.py` | PyQt overlay, mission input, settings, autonomy selector, approval controls, detector-box approval overlay, mission history, session logging, and per-run `Context` creation. |
+| `Classes/context.py` | Shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and signal access. |
 | `Classes/action_sets.py` | Supported workflow factory. `dynamic_planner()` is the current runtime entry point. |
 | `Classes/state_machine.py` | Deterministic action runner, preconditions, transition history, diagnostics, and tiered global recovery. |
-| `Classes/OS_ROKBOT.py` | Executor-backed run loop, pause/stop events, foreground guard, CAPTCHA pause, heartbeat writing, and emergency-stop startup. |
-| `Classes/Actions/dynamic_planner_action.py` | Observation, OCR/detector/resource context, task graph focus, approval flow, memory updates, correction export, and guarded execution. |
-| `Classes/dynamic_planner.py` | OpenAI Responses API request construction, strict JSON schema validation, target resolution, retry handling, memory-first decision selection, and decision validation. |
+| `Classes/OS_ROKBOT.py` | Executor-backed run loop, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat writing, and emergency-stop startup. |
+| `Classes/Actions/dynamic_planner_action.py` | Shared observation reuse, OCR/resource context, task graph focus, approval flow, memory updates, correction export, and guarded execution. |
+| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, strict JSON schema validation, target resolution, retry handling, memory-first decision selection, and decision validation. |
 | `Classes/task_graph.py` | One-time mission decomposition into sub-goals, cached per mission, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
 | `Classes/ocr_service.py` | EasyOCR-first OCR with Tesseract text and region fallback. |
 | `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, and explicit client restart support. |
 | `Classes/screen_change_detector.py` | Perceptual-hash screen change checks and repeated-action warnings for the planner prompt. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS or NumPy similarity search, success/failure memory, corrections, and trusted-label checks. |
-| `Classes/input_controller.py` | The only allowed hardware input path. It owns Interception readiness, pause/stop checks, foreground checks, bounds validation, mouse movement, clicks, keys, scrolls, and waits. |
+| `Classes/input_controller.py` | The only allowed hardware input path. It owns Interception readiness, pause/stop checks, foreground checks, bounds validation, bounded humanization, mouse movement, clicks, drags, long presses, keys, scrolls, and waits. |
+| `Classes/window_handler.py` | Foreground enforcement, client-rect discovery, and named capture backend selection with Win32 PrintWindow/BitBlt as the current default. |
 | `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download from `ROK_YOLO_WEIGHTS_URL`. |
 | `Classes/detection_dataset.py` | Planner no-decision stubs and correction export for detector training data. |
 | `Classes/session_logger.py` | Local session summary and event logging. |
@@ -148,7 +152,7 @@ they do not use the target approval prompt.
 
 | Level | UI Label | Behavior |
 | --- | --- | --- |
-| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. Use this by default. |
+| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes plus the selected target. Use this by default. |
 | L2 | `L2 trusted` | Pointer actions with locally trusted labels can execute after enough clean successes. New or failed labels still require approval. |
 | L3 | `L3 auto` | Validated pointer actions can execute without approval. Use only for stable, supervised workflows. |
 
@@ -297,7 +301,7 @@ Recommended first run:
 1. Choose `L1 approve`.
 2. Enter a narrow mission in plain English.
 3. Press Play.
-4. Review each pointer action.
+4. Review each pointer action with the detector-box overlay.
 5. Use `OK`, `No`, or `Fix` from the approval controls.
 
 Example missions:

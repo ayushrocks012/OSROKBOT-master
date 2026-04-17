@@ -1,15 +1,14 @@
 import ctypes
 import math
 import secrets
-
-SYS_RANDOM = secrets.SystemRandom()
 import time
 from dataclasses import dataclass
-from typing import Protocol, Any
+from typing import Any, Protocol
 
 from logging_config import get_logger
 
 LOGGER = get_logger(__name__)
+SYS_RANDOM = secrets.SystemRandom()
 
 try:
     import interception
@@ -28,6 +27,22 @@ class WindowRect(Protocol):
     height: int
 
 
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _bounded_gaussian(mean: float, sigma: float, minimum: float, maximum: float) -> float:
+    if maximum <= minimum:
+        return minimum
+    if sigma <= 0:
+        return _clamp(mean, minimum, maximum)
+    for _ in range(8):
+        sample = SYS_RANDOM.gauss(mean, sigma)
+        if minimum <= sample <= maximum:
+            return sample
+    return _clamp(mean, minimum, maximum)
+
+
 @dataclass
 class DelayPolicy:
     """Centralized bounded pacing for UI interactions."""
@@ -44,7 +59,7 @@ class DelayPolicy:
         if delay <= 0:
             return 0.0
         jitter = abs(delay) * max(0.0, self.jitter_ratio)
-        return max(0.0, SYS_RANDOM.uniform(delay - jitter, delay + jitter))
+        return max(0.0, _bounded_gaussian(delay, max(0.001, jitter / 3.0), delay - jitter, delay + jitter))
 
     def wait(self, seconds: float | None = None, context=None):
         delay = self.adjusted_delay(seconds)
@@ -57,6 +72,44 @@ class DelayPolicy:
                 return False
             time.sleep(min(self.poll_delay, deadline - time.monotonic()))
         return True
+
+
+@dataclass(frozen=True)
+class HumanizationProfile:
+    """Bounded sampling profile for pointer movement and press timing."""
+
+    coordinate_noise_px: int = 3
+    move_duration: float = 0.18
+    move_duration_jitter_ratio: float = 0.25
+    move_duration_bounds: tuple[float, float] = (0.08, 0.45)
+    click_hold_seconds: float = 0.08
+    click_hold_jitter_ratio: float = 0.25
+    click_hold_bounds: tuple[float, float] = (0.04, 0.12)
+    long_press_seconds: float = 1.5
+    long_press_jitter_ratio: float = 0.20
+    long_press_bounds: tuple[float, float] = (1.0, 2.0)
+    drag_release_delay: float = 0.10
+    drag_settle_delay: float = 0.20
+
+    @staticmethod
+    def _sample_duration(base: float, jitter_ratio: float, bounds: tuple[float, float]) -> float:
+        lower_bound, upper_bound = bounds
+        lower = max(0.0, lower_bound)
+        upper = max(lower, upper_bound)
+        mean = _clamp(float(base), lower, upper)
+        sigma = max(0.001, abs(mean) * max(0.0, jitter_ratio) / 3.0)
+        return _bounded_gaussian(mean, sigma, lower, upper)
+
+    def sample_move_duration(self, base: float | None = None) -> float:
+        duration = self.move_duration if base is None else base
+        return self._sample_duration(duration, self.move_duration_jitter_ratio, self.move_duration_bounds)
+
+    def sample_click_hold_seconds(self) -> float:
+        return self._sample_duration(self.click_hold_seconds, self.click_hold_jitter_ratio, self.click_hold_bounds)
+
+    def sample_long_press_seconds(self, base: float | None = None) -> float:
+        duration = self.long_press_seconds if base is None else base
+        return self._sample_duration(duration, self.long_press_jitter_ratio, self.long_press_bounds)
 
 
 class _Point(ctypes.Structure):
@@ -90,14 +143,22 @@ class InputController:
         self,
         delay_policy: DelayPolicy | None = None,
         context=None,
-        coordinate_noise_px=3,
-        move_duration=0.18,
+        coordinate_noise_px: int | None = None,
+        move_duration: float | None = None,
         move_steps_per_second=60,
+        humanization_profile: HumanizationProfile | None = None,
     ):
         self.delay_policy = delay_policy or DelayPolicy()
         self.context = context
-        self.coordinate_noise_px = max(0, int(coordinate_noise_px))
-        self.move_duration = max(0.0, float(move_duration))
+        self.humanization_profile = humanization_profile or HumanizationProfile()
+        self.coordinate_noise_px = max(
+            0,
+            int(self.humanization_profile.coordinate_noise_px if coordinate_noise_px is None else coordinate_noise_px),
+        )
+        self.move_duration = max(
+            0.0,
+            float(self.humanization_profile.move_duration if move_duration is None else move_duration),
+        )
         self.move_steps_per_second = max(10, int(move_steps_per_second))
         self.ensure_interception_ready()
 
@@ -207,7 +268,12 @@ class InputController:
 
     @staticmethod
     def _clamp(value, minimum, maximum):
-        return max(minimum, min(maximum, value))
+        return _clamp(value, minimum, maximum)
+
+    def _sample_offset(self, limit: float) -> float:
+        if limit <= 0:
+            return 0.0
+        return _bounded_gaussian(0.0, max(0.1, limit / 3.0), -limit, limit)
 
     @staticmethod
     def _virtual_key(key):
@@ -343,7 +409,11 @@ class InputController:
             LOGGER.error(f"Move blocked: ({x}, {y}) is outside the target window.")
             return False
 
-        duration = self.move_duration if duration is None else max(0.0, float(duration))
+        duration = (
+            self.humanization_profile.sample_move_duration(self.move_duration)
+            if duration is None
+            else max(0.0, float(duration))
+        )
         start_x, start_y = self._mouse_position()
         target_x = int(round(x))
         target_y = int(round(y))
@@ -358,10 +428,10 @@ class InputController:
 
         distance = math.hypot(target_x - start_x, target_y - start_y)
         wobble = min(distance * 0.3, 100)
-        ctrl1_x = start_x + SYS_RANDOM.uniform(-wobble, wobble)
-        ctrl1_y = start_y + SYS_RANDOM.uniform(-wobble, wobble)
-        ctrl2_x = target_x + SYS_RANDOM.uniform(-wobble, wobble)
-        ctrl2_y = target_y + SYS_RANDOM.uniform(-wobble, wobble)
+        ctrl1_x = start_x + self._sample_offset(wobble)
+        ctrl1_y = start_y + self._sample_offset(wobble)
+        ctrl2_x = target_x + self._sample_offset(wobble)
+        ctrl2_y = target_y + self._sample_offset(wobble)
         steps = max(5, int(duration * self.move_steps_per_second))
 
         for step in range(1, steps + 1):
@@ -395,13 +465,104 @@ class InputController:
         try:
             self._mouse_down()
             mouse_is_down = True
-            if not self.delay_policy.wait(SYS_RANDOM.uniform(0.04, 0.12), active_context):
+            if not self.delay_policy.wait(self.humanization_profile.sample_click_hold_seconds(), active_context):
                 return False
             self._mouse_up()
             mouse_is_down = False
             return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
         except Exception as exc:
             LOGGER.error(f"Error during click execution: {exc}")
+            return False
+        finally:
+            if mouse_is_down:
+                try:
+                    self._mouse_up()
+                except Exception as exc:
+                    LOGGER.critical(f"Emergency: Hardware key/mouse stuck! Failed to release: {exc}")
+                    InputController._pause_for_foreground_failure(active_context)
+
+    def long_press(
+        self,
+        x: float,
+        y: float,
+        window_rect: WindowRect | None = None,
+        remember_position: bool = True,
+        context: Any | None = None,
+        hold_seconds: float | None = None,
+    ) -> bool:
+        active_context = self._context(context)
+        if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
+            return False
+        if window_rect and not self.validate_bounds(x, y, window_rect):
+            LOGGER.error(f"Long press blocked: ({x}, {y}) is outside the target window.")
+            return False
+
+        target_x, target_y = self.sample_click_target(x, y, window_rect)
+        if not self.smooth_move_to(target_x, target_y, active_context, window_rect=window_rect):
+            return False
+
+        hold_duration = (
+            self.humanization_profile.sample_long_press_seconds()
+            if hold_seconds is None
+            else max(0.0, float(hold_seconds))
+        )
+        mouse_is_down = False
+        try:
+            self._mouse_down()
+            mouse_is_down = True
+            if not self.delay_policy.wait(hold_duration, active_context):
+                return False
+            self._mouse_up()
+            mouse_is_down = False
+            return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
+        except Exception as exc:
+            LOGGER.error(f"Error during long press execution: {exc}")
+            return False
+        finally:
+            if mouse_is_down:
+                try:
+                    self._mouse_up()
+                except Exception as exc:
+                    LOGGER.critical(f"Emergency: Hardware key/mouse stuck! Failed to release: {exc}")
+                    InputController._pause_for_foreground_failure(active_context)
+
+    def drag(
+        self,
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+        window_rect: WindowRect | None = None,
+        context: Any | None = None,
+    ) -> bool:
+        active_context = self._context(context)
+        if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
+            return False
+        if window_rect and (
+            not self.validate_bounds(start_x, start_y, window_rect)
+            or not self.validate_bounds(end_x, end_y, window_rect)
+        ):
+            LOGGER.error("Drag blocked: start or end point is outside the target window.")
+            return False
+
+        sampled_start_x, sampled_start_y = self.sample_click_target(start_x, start_y, window_rect)
+        sampled_end_x, sampled_end_y = self.sample_click_target(end_x, end_y, window_rect)
+        if not self.smooth_move_to(sampled_start_x, sampled_start_y, active_context, window_rect=window_rect):
+            return False
+
+        mouse_is_down = False
+        try:
+            self._mouse_down()
+            mouse_is_down = True
+            if not self.smooth_move_to(sampled_end_x, sampled_end_y, active_context, window_rect=window_rect):
+                return False
+            if not self.delay_policy.wait(self.humanization_profile.drag_release_delay, active_context):
+                return False
+            self._mouse_up()
+            mouse_is_down = False
+            return self.delay_policy.wait(self.humanization_profile.drag_settle_delay, active_context)
+        except Exception as exc:
+            LOGGER.error(f"Error during drag execution: {exc}")
             return False
         finally:
             if mouse_is_down:

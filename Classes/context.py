@@ -12,6 +12,15 @@ LOGGER = get_logger(__name__)
 DEFAULT_WINDOW_TITLE = "Rise of Kingdoms"
 
 
+@dataclass(frozen=True)
+class ObservationSnapshot:
+    """One per-step observation reused across safety and planning checks."""
+
+    screenshot: Any
+    window_rect: Any
+    detections: tuple[Any, ...] = ()
+
+
 @dataclass
 class Context:
     """Runtime state shared by every state machine in one automation run.
@@ -50,6 +59,7 @@ class Context:
     planner_goal: str = "Safely continue the selected Rise of Kingdoms task."
     planner_autonomy_level: int = 1
     session_logger: SessionLogger | None = None
+    current_observation: ObservationSnapshot | None = None
 
     @property
     def UI(self):
@@ -126,6 +136,37 @@ class Context:
         LOGGER.warning(f"State history saved: {path}")
         return path
 
+    def set_current_observation(self, screenshot, window_rect, detections=None):
+        self.current_observation = ObservationSnapshot(
+            screenshot=screenshot,
+            window_rect=window_rect,
+            detections=tuple(detections or ()),
+        )
+        return self.current_observation
+
+    def clear_current_observation(self):
+        self.current_observation = None
+
+    @staticmethod
+    def _serialize_detections(detections):
+        serialized = []
+        for index, detection in enumerate(detections or (), start=1):
+            raw = detection.to_dict() if hasattr(detection, "to_dict") else detection
+            if not isinstance(raw, dict):
+                continue
+            serialized.append(
+                {
+                    "target_id": str(raw.get("target_id") or f"det_{index}"),
+                    "label": str(raw.get("label", "")),
+                    "x": float(raw.get("x", 0.0)),
+                    "y": float(raw.get("y", 0.0)),
+                    "width": float(raw.get("width", 0.0)),
+                    "height": float(raw.get("height", 0.0)),
+                    "confidence": float(raw.get("confidence", 0.0)),
+                }
+            )
+        return serialized
+
     def set_ui_anchor(self, name, screen_x, screen_y, window_rect, reference_normalized=None):
         normalized_x = (int(screen_x) - int(window_rect.left)) / max(1, int(window_rect.width))
         normalized_y = (int(screen_y) - int(window_rect.top)) / max(1, int(window_rect.height))
@@ -165,7 +206,7 @@ class Context:
         offset_y = (normalized_y - reference_y) * int(window_rect.height)
         return int(round(anchor_screen_x + offset_x)), int(round(anchor_screen_y + offset_y))
 
-    def set_pending_planner_decision(self, decision, screenshot_path=None, window_rect=None):
+    def set_pending_planner_decision(self, decision, screenshot_path=None, window_rect=None, detections=None):
         decision_data = decision.to_dict() if hasattr(decision, "to_dict") else decision
         rect_data = {
             "left": getattr(window_rect, "left", 0),
@@ -173,6 +214,7 @@ class Context:
             "width": getattr(window_rect, "width", 0),
             "height": getattr(window_rect, "height", 0),
         } if window_rect else {}
+        detection_data = self._serialize_detections(detections)
         absolute_x = None
         absolute_y = None
         if rect_data and decision_data:
@@ -187,6 +229,7 @@ class Context:
             "decision": decision_data,
             "screenshot_path": str(screenshot_path) if screenshot_path else "",
             "window_rect": rect_data,
+            "detections": detection_data,
             "absolute_x": absolute_x,
             "absolute_y": absolute_y,
             "event": threading.Event(),
@@ -200,6 +243,7 @@ class Context:
                 "decision": decision_data,
                 "screenshot_path": str(screenshot_path) if screenshot_path else "",
                 "window_rect": rect_data,
+                "detections": detection_data,
                 "absolute_x": absolute_x,
                 "absolute_y": absolute_y,
             }

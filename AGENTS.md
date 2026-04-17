@@ -27,18 +27,19 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 
 | Module | Owns |
 | --- | --- |
-| `Classes/UI.py` | Overlay, settings, mission input, autonomy selector, approval controls, mission history, session logger setup, and per-run `Context`. |
-| `Classes/context.py` | Shared runtime state, planner approval payloads, state history, resource cache, UI anchors, and UI signal access. |
+| `Classes/UI.py` | Overlay, settings, mission input, autonomy selector, approval controls, detector-box approval overlay, mission history, session logger setup, and per-run `Context`. |
+| `Classes/context.py` | Shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and UI signal access. |
 | `Classes/action_sets.py` | Supported workflow factory. New runtime work should use `dynamic_planner()`. |
 | `Classes/state_machine.py` | Deterministic state execution, preconditions, transition history, diagnostics, and tiered global recovery. |
-| `Classes/OS_ROKBOT.py` | Executor-backed run loop, pause/stop events, foreground guard, CAPTCHA pause, heartbeat scheduling, and emergency-stop startup. |
-| `Classes/Actions/dynamic_planner_action.py` | Observation, detector/OCR calls, task focus, resource context, approval flow, correction recording, memory updates, and guarded execution. |
-| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, strict JSON schema validation, target resolution, retries, and memory-first decision selection. |
+| `Classes/OS_ROKBOT.py` | Executor-backed run loop, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat scheduling, and emergency-stop startup. |
+| `Classes/Actions/dynamic_planner_action.py` | Shared observation reuse, detector/OCR calls, task focus, resource context, approval flow, correction recording, memory updates, and guarded execution. |
+| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, strict JSON schema validation, target resolution, retries, and memory-first decision selection. |
 | `Classes/task_graph.py` | Mission decomposition, sub-goal cache, focused-goal text, and label/OCR completion checks. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS/NumPy similarity search, success/failure memory, corrections, and trusted-label checks. |
 | `Classes/screen_change_detector.py` | Stuck-screen and repeated-action warnings for the planner prompt. |
 | `Classes/state_monitor.py` | Coarse game-state checks, blocker clearing, march-slot OCR, action-point OCR, and explicit client restart support. |
-| `Classes/input_controller.py` | All mouse, keyboard, and scroll execution. No other module should call lower-level input APIs. |
+| `Classes/input_controller.py` | All mouse, keyboard, and scroll execution, including bounded humanization for pointer actions. No other module should call lower-level input APIs. |
+| `Classes/window_handler.py` | Foreground enforcement, client-rect discovery, and named window capture backends. |
 | `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download. |
 | `Classes/emergency_stop.py` | F12 emergency termination. |
 | `watchdog.py` | Heartbeat monitoring and conservative tracked-process restart behavior. |
@@ -63,7 +64,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 `dynamic_planner.py` accepts screenshot context, local YOLO/OCR target IDs, OCR
 text, recent state history, optional resource context, stuck-screen warnings,
 and a natural-language focused mission. It returns a validated
-`PlannerDecision`.
+`PlannerDecision`. Network I/O is handled behind a dedicated async transport,
+but the planner surface used by the runtime remains synchronous.
 
 Strict model-facing JSON fields:
 
@@ -109,6 +111,9 @@ The UI autonomy levels are part of the safety model:
 - `L1 approve`: pointer-target actions wait for `OK`.
 - `L2 trusted`: locally trusted labels can auto-execute pointer actions after enough clean successes.
 - `L3 auto`: validated pointer actions can execute without approval.
+
+In `L1 approve`, the overlay highlights the selected target and the current
+YOLO detector boxes for faster human verification.
 
 Default to L1 when testing changes, new prompts, new weights, new action types,
 new missions, or new memory.

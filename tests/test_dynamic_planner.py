@@ -1,11 +1,11 @@
+import asyncio
 import math
 import threading
-import time
 from types import SimpleNamespace
 
 import dynamic_planner as dynamic_planner_module
 import pytest
-from dynamic_planner import DynamicPlanner, PlannerDecision, PlannerLLMDecision
+from dynamic_planner import AsyncPlannerTransport, DynamicPlanner, PlannerDecision, PlannerLLMDecision
 from encoding_utils import safe_json_loads
 from pydantic import ValidationError
 
@@ -25,9 +25,22 @@ class _FakeResponse:
         self.output_text = output_text
 
 
-def _planner_with_client(create):
+class _FakeTransport:
+    def __init__(self, request):
+        self._request = request
+        self.payloads = []
+
+    def request(self, request_payload, should_cancel):
+        self.payloads.append(request_payload)
+        return self._request(request_payload, should_cancel)
+
+    def close(self):
+        return None
+
+
+def _planner_with_transport(request):
     planner = DynamicPlanner(config=_FakeConfig(), memory=_FakeMemory())
-    planner.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    planner._transport = _FakeTransport(request)
     return planner
 
 
@@ -201,18 +214,31 @@ def test_planner_decision_delay_seconds_is_clamped():
     assert low.delay_seconds == pytest.approx(0.0)
 
 
-def test_request_decision_retries_transient_failures(tmp_path, monkeypatch):
+def test_async_planner_transport_retries_transient_failures(monkeypatch):
     calls = []
 
-    def create(**_payload):
+    async def create_response(_request_payload):
         calls.append("call")
         if len(calls) == 1:
             raise RuntimeError("transient")
         return _click_response()
 
     monkeypatch.setattr(dynamic_planner_module, "RETRY_BASE_DELAY_SECONDS", 0.0)
-    planner = _planner_with_client(create)
-    monkeypatch.setattr(planner, "_is_transient_openai_error", lambda exc: isinstance(exc, RuntimeError))
+    transport = AsyncPlannerTransport(
+        api_key="test-key",
+        is_transient_error=lambda exc: isinstance(exc, RuntimeError),
+        poll_seconds=0.005,
+    )
+    monkeypatch.setattr(transport, "_create_response", create_response)
+    response = transport.request({"model": "gpt-5.4-mini"}, lambda: False)
+    transport.close()
+
+    assert len(calls) == 2
+    assert response is not None
+
+
+def test_request_decision_uses_transport_and_parses_response(tmp_path):
+    planner = _planner_with_transport(lambda _payload, _should_cancel: _click_response())
 
     decision = planner._request_decision(
         SimpleNamespace(state_history=[]),
@@ -222,22 +248,17 @@ def test_request_decision_retries_transient_failures(tmp_path, monkeypatch):
         goal="Gather resources.",
         targets=_target(),
     )
-    planner._request_executor.shutdown(wait=True)
 
-    assert len(calls) == 2
     assert decision is not None
     assert decision.target_id == "det_1"
     assert decision.x == pytest.approx(0.25)
 
 
-def test_request_decision_does_not_retry_terminal_errors(tmp_path):
-    calls = []
-
-    def create(**_payload):
-        calls.append("call")
+def test_request_decision_returns_none_on_terminal_transport_error(tmp_path):
+    def request(_payload, _should_cancel):
         raise ValueError("terminal")
 
-    planner = _planner_with_client(create)
+    planner = _planner_with_transport(request)
 
     decision = planner._request_decision(
         SimpleNamespace(state_history=[]),
@@ -247,38 +268,28 @@ def test_request_decision_does_not_retry_terminal_errors(tmp_path):
         goal="Gather resources.",
         targets=_target(),
     )
-    planner._request_executor.shutdown(wait=True)
 
     assert decision is None
-    assert calls == ["call"]
 
 
-def test_request_decision_returns_when_paused_while_future_is_pending(tmp_path, monkeypatch):
+def test_async_planner_transport_returns_when_paused_while_future_is_pending(monkeypatch):
     pause_event = threading.Event()
     started = threading.Event()
 
-    def create(**_payload):
+    async def create_response(_request_payload):
         started.set()
         pause_event.set()
-        time.sleep(0.05)
+        await asyncio.sleep(0.05)
         return _click_response()
 
-    monkeypatch.setattr(dynamic_planner_module, "REQUEST_POLL_SECONDS", 0.005)
-    planner = _planner_with_client(create)
-    context = SimpleNamespace(
-        state_history=[],
-        bot=SimpleNamespace(stop_event=threading.Event(), pause_event=pause_event),
+    transport = AsyncPlannerTransport(
+        api_key="test-key",
+        is_transient_error=lambda _exc: False,
+        poll_seconds=0.005,
     )
-
-    decision = planner._request_decision(
-        context,
-        _screen_path(tmp_path),
-        detections=[],
-        ocr_text="",
-        goal="Gather resources.",
-        targets=_target(),
-    )
+    monkeypatch.setattr(transport, "_create_response", create_response)
+    decision = transport.request({"model": "gpt-5.4-mini"}, lambda: pause_event.is_set())
     assert started.is_set()
-    planner._request_executor.shutdown(wait=True)
+    transport.close()
 
     assert decision is None

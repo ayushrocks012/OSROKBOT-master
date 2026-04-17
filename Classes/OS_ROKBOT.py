@@ -203,20 +203,31 @@ class OSROKBOT:
             self._heartbeat_future.add_done_callback(self._log_future_exception)
         return True
 
-    def _detect_captcha(self, context: Context) -> bool:
+    def _observe_window(self, context: Context):
+        screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
+        if screenshot is None or window_rect is None:
+            return None
+
+        started_at = time.perf_counter()
+        try:
+            detections = tuple(self.detector.detect(screenshot))
+        except Exception as exc:
+            LOGGER.warning("Window observation detector skipped: %s", exc)
+            detections = ()
+        duration_ms = (time.perf_counter() - started_at) * 1000.0
+        LOGGER.debug("YOLO observation duration_ms=%.2f detections=%s", duration_ms, len(detections))
+        return context.set_current_observation(screenshot, window_rect, detections=detections)
+
+    def _detect_captcha(self, context: Context, observation=None) -> bool:
         if self.stop_event.is_set() or self.pause_event.is_set():
             return False
 
-        screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
-        if screenshot is None or window_rect is None:
+        observation = observation or getattr(context, "current_observation", None) or self._observe_window(context)
+        if observation is None:
             return False
 
-        try:
-            detections = self.detector.detect(screenshot)
-        except Exception as exc:
-            LOGGER.warning("Captcha detector skipped: %s", exc)
-            return False
-
+        screenshot = observation.screenshot
+        detections = observation.detections
         labels = {str(getattr(detection, "label", "")).lower().replace(" ", "_") for detection in detections}
         if not labels.intersection(CAPTCHA_LABELS):
             return False
@@ -242,26 +253,34 @@ class OSROKBOT:
 
         def run_single_machine(machine: Any) -> None:
             while not self.stop_event.is_set():
+                observation = None
                 if getattr(machine, "halted", False):
                     LOGGER.error("Workflow state machine halted; stopping workflow thread.")
                     break
-                if self.pause_event.is_set():
+                try:
+                    if self.pause_event.is_set():
+                        self.write_heartbeat(context)
+                        self.stop_event.wait(self.delay)
+                        continue
                     self.write_heartbeat(context)
-                    self.stop_event.wait(self.delay)
-                    continue
-                self.write_heartbeat(context)
-                if not self._ensure_foreground(context):
-                    continue
-                if self._detect_captcha(context):
-                    continue
-                if not self._ensure_foreground(context):
-                    continue
-                step_result = machine.execute(context)
-                if getattr(machine, "halted", False):
-                    LOGGER.error("Workflow state machine halted after execute; stopping workflow thread.")
-                    break
-                if step_result:
-                    self.stop_event.wait(self.delay)
+                    if not self._ensure_foreground(context):
+                        continue
+                    observation = self._observe_window(context)
+                    if observation is None:
+                        continue
+                    if self._detect_captcha(context, observation=observation):
+                        continue
+                    if not self._ensure_foreground(context):
+                        continue
+                    step_result = machine.execute(context)
+                    if getattr(machine, "halted", False):
+                        LOGGER.error("Workflow state machine halted after execute; stopping workflow thread.")
+                        break
+                    if step_result:
+                        self.stop_event.wait(self.delay)
+                finally:
+                    if getattr(context, "current_observation", None) is observation:
+                        context.clear_current_observation()
 
         try:
             with ThreadPoolExecutor(
@@ -329,7 +348,3 @@ class OSROKBOT:
 
     def is_paused(self) -> bool:
         return self.pause_event.is_set()
-
-# Validated Phase 2 Polish Update
-
-# Validated Phase 2 Polish Update v2

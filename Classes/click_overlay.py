@@ -60,14 +60,40 @@ class ClickOverlay(QtWidgets.QWidget):
         self._colour = _GREEN
         self._visible = False
         self._action_type = "click"
+        self._target_id = ""
+        self._detections = []
 
         # Auto-dismiss timer (safety net — hides after 30s if not dismissed).
         self._auto_hide_timer = QtCore.QTimer(self)
         self._auto_hide_timer.setSingleShot(True)
         self._auto_hide_timer.timeout.connect(self.dismiss)
 
-    def show_target(self, absolute_x, absolute_y, label, confidence,
-                    window_rect=None, action_type="click"):
+    @staticmethod
+    def normalized_detection_rect(detection, width, height):
+        try:
+            center_x = float(detection.get("x", 0.0)) * width
+            center_y = float(detection.get("y", 0.0)) * height
+            box_width = max(0.0, float(detection.get("width", 0.0)) * width)
+            box_height = max(0.0, float(detection.get("height", 0.0)) * height)
+        except Exception:
+            return None
+        if box_width <= 0 or box_height <= 0:
+            return None
+        left = int(round(center_x - box_width / 2.0))
+        top = int(round(center_y - box_height / 2.0))
+        return QtCore.QRect(left, top, int(round(box_width)), int(round(box_height)))
+
+    def show_target(
+        self,
+        absolute_x,
+        absolute_y,
+        label,
+        confidence,
+        window_rect=None,
+        action_type="click",
+        detections=None,
+        target_id="",
+    ):
         """Position the overlay and draw the crosshair at the target.
 
         Args:
@@ -98,6 +124,8 @@ class ClickOverlay(QtWidgets.QWidget):
         self._confidence = float(confidence)
         self._colour = _confidence_colour(self._confidence)
         self._action_type = str(action_type or "click")
+        self._target_id = str(target_id or "")
+        self._detections = list(detections or [])
         self._visible = True
 
         self._auto_hide_timer.start(30_000)
@@ -108,6 +136,8 @@ class ClickOverlay(QtWidgets.QWidget):
     def dismiss(self):
         """Hide the overlay."""
         self._visible = False
+        self._detections = []
+        self._target_id = ""
         self._auto_hide_timer.stop()
         self.hide()
 
@@ -122,6 +152,36 @@ class ClickOverlay(QtWidgets.QWidget):
         x = self._target_x
         y = self._target_y
         colour = self._colour
+
+        for detection in self._detections:
+            rect = self.normalized_detection_rect(detection, self.width(), self.height())
+            if rect is None:
+                continue
+            selected = str(detection.get("target_id", "")) == self._target_id
+            box_colour = colour if selected else QtGui.QColor(74, 144, 226, 170)
+            painter.setPen(QtGui.QPen(box_colour, 2.5 if selected else 1.5, QtCore.Qt.SolidLine))
+            painter.setBrush(QtGui.QColor(box_colour.red(), box_colour.green(), box_colour.blue(), 32 if selected else 20))
+            painter.drawRoundedRect(rect, 6, 6)
+
+            box_label = str(detection.get("label", "")).strip()
+            if box_label:
+                label_font = QtGui.QFont("Segoe UI", 8, QtGui.QFont.Bold if selected else QtGui.QFont.Normal)
+                painter.setFont(label_font)
+                metrics = QtGui.QFontMetrics(label_font)
+                label_rect = metrics.boundingRect(box_label)
+                label_x = max(4, min(self.width() - label_rect.width() - 8, rect.left() + 4))
+                label_y = max(label_rect.height() + 4, rect.top() - 4)
+                background_rect = QtCore.QRect(
+                    label_x - 4,
+                    label_y - label_rect.height() - 2,
+                    label_rect.width() + 8,
+                    label_rect.height() + 6,
+                )
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.setBrush(QtGui.QColor(20, 20, 20, 150))
+                painter.drawRoundedRect(background_rect, 4, 4)
+                painter.setPen(box_colour)
+                painter.drawText(label_x, label_y, box_label)
 
         # Draw semi-transparent background circle.
         painter.setBrush(QtGui.QColor(colour.red(), colour.green(), colour.blue(), 40))

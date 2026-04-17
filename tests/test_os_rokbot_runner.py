@@ -6,6 +6,7 @@ import pytest
 
 import OS_ROKBOT as os_rokbot
 from OS_ROKBOT import OSROKBOT, EmergencyStop
+from context import Context
 
 
 def _wait_for(predicate, timeout=2.0):
@@ -154,3 +155,54 @@ def test_stop_shuts_down_runner_executor_without_queueing_second_run(monkeypatch
     assert bot.is_running is False
     future.result(timeout=2)
     assert _wait_for(lambda: bot.all_threads_joined is True)
+
+
+def test_run_reuses_single_observation_for_captcha_and_execute(monkeypatch):
+    class FakeWindowRect:
+        left = 0
+        top = 0
+        width = 400
+        height = 200
+
+    class FakeWindowHandler:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot_window(self, _title):
+            self.calls += 1
+            return "screen", FakeWindowRect()
+
+    class FakeDetector:
+        def __init__(self):
+            self.calls = 0
+
+        def detect(self, screenshot):
+            self.calls += 1
+            assert screenshot == "screen"
+            return [type("Detection", (), {"label": "map"})()]
+
+    observed = {}
+
+    class FakeMachine:
+        halted = False
+
+        def execute(self, context):
+            observed["observation"] = context.current_observation
+            context.bot.stop_event.set()
+            return False
+
+    bot = OSROKBOT("Test Window", delay=0)
+    bot.window_handler = FakeWindowHandler()
+    bot.detector = FakeDetector()
+    monkeypatch.setattr(bot, "_ensure_foreground", lambda _context: True)
+    monkeypatch.setattr(bot, "write_heartbeat", lambda _context=None, force=False: True)
+
+    context = Context(bot=bot, window_title="Test Window")
+    bot.run([FakeMachine()], context)
+
+    assert bot.window_handler.calls == 1
+    assert bot.detector.calls == 1
+    assert observed["observation"] is not None
+    assert observed["observation"].screenshot == "screen"
+    assert len(observed["observation"].detections) == 1
+    assert context.current_observation is None

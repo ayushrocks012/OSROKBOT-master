@@ -1,5 +1,4 @@
-import random
-from contextlib import suppress
+import time
 
 from Actions.action import Action
 from config_manager import ConfigManager
@@ -70,8 +69,13 @@ class DynamicPlannerAction(Action):
             int(round(window_rect.top + window_rect.height * decision.end_y)),
         )
 
-    def _wait_for_approval(self, context, decision, screenshot_path, window_rect):
-        pending = context.set_pending_planner_decision(decision, screenshot_path=screenshot_path, window_rect=window_rect)
+    def _wait_for_approval(self, context, decision, screenshot_path, window_rect, detections=None):
+        pending = context.set_pending_planner_decision(
+            decision,
+            screenshot_path=screenshot_path,
+            window_rect=window_rect,
+            detections=detections,
+        )
         event = pending.get("event")
         delay_policy = DelayPolicy()
         while event and not event.is_set():
@@ -81,7 +85,7 @@ class DynamicPlannerAction(Action):
                 return None
         return pending
 
-    def _approved_decision(self, context, decision, screenshot_path, window_rect):
+    def _approved_decision(self, context, decision, screenshot_path, window_rect, detections=None):
         autonomy = self._autonomy_level(context)
         if autonomy >= 3:
             return decision, False
@@ -89,7 +93,13 @@ class DynamicPlannerAction(Action):
             context.emit_state("Planner trusted auto-click")
             return decision, False
 
-        pending = self._wait_for_approval(context, decision, screenshot_path, window_rect)
+        pending = self._wait_for_approval(
+            context,
+            decision,
+            screenshot_path,
+            window_rect,
+            detections=detections,
+        )
         if not pending or pending.get("result") != "approved":
             LOGGER.warning("Dynamic planner action rejected by user.")
             return None, False
@@ -112,7 +122,7 @@ class DynamicPlannerAction(Action):
         if not InputController.validate_bounds(target_x, target_y, window_rect):
             LOGGER.error(f"Dynamic planner target outside window: {target_x}, {target_y}")
             return False
-        return InputController(context=context, coordinate_noise_px=0).click(
+        return InputController(context=context).click(
             target_x,
             target_y,
             window_rect=window_rect,
@@ -121,27 +131,17 @@ class DynamicPlannerAction(Action):
         )
 
     def _execute_long_press(self, context, decision, window_rect):
-        """Execute a long press by holding the mouse button for an extended time."""
         target_x, target_y = self._absolute_point(decision, window_rect)
         if not InputController.validate_bounds(target_x, target_y, window_rect):
             LOGGER.error(f"Dynamic planner long_press target outside window: {target_x}, {target_y}")
             return False
-        controller = InputController(context=context, coordinate_noise_px=0)
-        if not controller.smooth_move_to(target_x, target_y, context=context, window_rect=window_rect):
-            return False
-        # Hold for 1-2 seconds for a long press.
-        hold_duration = random.uniform(1.0, 2.0)
-        try:
-            controller._mouse_down()
-            if not DelayPolicy().wait(hold_duration, context=context):
-                return False
-            controller._mouse_up()
-            return DelayPolicy().wait(0.1, context=context)
-        except Exception as exc:
-            LOGGER.error(f"Error during long press: {exc}")
-            with suppress(Exception):
-                controller._mouse_up()
-            return False
+        return InputController(context=context).long_press(
+            target_x,
+            target_y,
+            window_rect=window_rect,
+            remember_position=False,
+            context=context,
+        )
 
     def _execute_drag(self, context, decision, window_rect):
         """Execute a drag from the start target to end target or direction."""
@@ -170,25 +170,14 @@ class DynamicPlannerAction(Action):
             LOGGER.error(f"Dynamic planner drag end outside window: {end_x}, {end_y}")
             return False
 
-        controller = InputController(context=context, coordinate_noise_px=0)
-        if not controller.smooth_move_to(start_x, start_y, context=context, window_rect=window_rect):
-            return False
-
-        try:
-            controller._mouse_down()
-            if not controller.smooth_move_to(end_x, end_y, context=context, window_rect=window_rect):
-                controller._mouse_up()
-                return False
-            if not DelayPolicy().wait(0.1, context=context):
-                controller._mouse_up()
-                return False
-            controller._mouse_up()
-            return DelayPolicy().wait(0.2, context=context)
-        except Exception as exc:
-            LOGGER.error(f"Error during drag: {exc}")
-            with suppress(Exception):
-                controller._mouse_up()
-            return False
+        return InputController(context=context).drag(
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+            window_rect=window_rect,
+            context=context,
+        )
 
     def _execute_key(self, context, decision, window_rect):
         """Execute a key press."""
@@ -233,9 +222,23 @@ class DynamicPlannerAction(Action):
             "Safely continue the selected Rise of Kingdoms task.",
         )
         context.emit_state("DynamicPlanner\nobserving")
-        screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
-        if screenshot is None or window_rect is None:
-            return False
+        observation = getattr(context, "current_observation", None)
+        if observation and getattr(observation, "screenshot", None) is not None and getattr(observation, "window_rect", None) is not None:
+            screenshot = observation.screenshot
+            window_rect = observation.window_rect
+            detections = list(getattr(observation, "detections", ()))
+            LOGGER.debug("Dynamic planner reused shared observation detections=%s", len(detections))
+        else:
+            screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
+            if screenshot is None or window_rect is None:
+                return False
+            detect_started_at = time.perf_counter()
+            detections = self.detector.detect(screenshot)
+            LOGGER.debug(
+                "Dynamic planner local YOLO duration_ms=%.2f detections=%s",
+                (time.perf_counter() - detect_started_at) * 1000.0,
+                len(detections),
+            )
 
         screenshot_path = self.planner.memory.path.parent / "planner_latest.png"
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,11 +257,22 @@ class DynamicPlannerAction(Action):
         # Determine focused goal from task graph.
         focused_goal = self.task_graph.focused_goal_text(goal)
 
-        detections = self.detector.detect(screenshot)
+        ocr_started_at = time.perf_counter()
         ocr_regions = self.ocr.read_regions(screenshot, purpose="planner")
+        LOGGER.debug(
+            "Dynamic planner OCR regions duration_ms=%.2f regions=%s",
+            (time.perf_counter() - ocr_started_at) * 1000.0,
+            len(ocr_regions),
+        )
         ocr_text = " ".join(region.text for region in ocr_regions if getattr(region, "text", "")).strip()
         if not ocr_text:
+            ocr_text_started_at = time.perf_counter()
             ocr_text = self.ocr.read(screenshot, purpose="planner")
+            LOGGER.debug(
+                "Dynamic planner OCR text duration_ms=%.2f text_len=%s",
+                (time.perf_counter() - ocr_text_started_at) * 1000.0,
+                len(ocr_text),
+            )
 
         # Read resource context for planner.
         resource_context = self._read_resource_context(context)
@@ -305,10 +319,16 @@ class DynamicPlannerAction(Action):
                 context.bot.stop()
             return False
 
-        # Actions that need approval: click, drag, long_press, key, type.
+        # Pointer-target actions require approval in L1.
         needs_approval = decision.action_type in {"click", "drag", "long_press"}
         if needs_approval:
-            decision, corrected = self._approved_decision(context, decision, screenshot_path, window_rect)
+            decision, corrected = self._approved_decision(
+                context,
+                decision,
+                screenshot_path,
+                window_rect,
+                detections=detections,
+            )
             context.clear_pending_planner_decision()
             if not decision:
                 return False

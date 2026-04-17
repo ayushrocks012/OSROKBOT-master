@@ -771,6 +771,8 @@ class UI(QtWidgets.QWidget):
             self._click_overlay.show_target(
                 int(x), int(y), label, confidence,
                 window_rect=rect, action_type=action_type,
+                detections=payload.get("detections", []),
+                target_id=decision.get("target_id", ""),
             )
 
     def update_position(self):

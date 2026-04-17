@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import input_controller as input_controller_module
 import pytest
-from input_controller import DelayPolicy, InputController
+from input_controller import DelayPolicy, HumanizationProfile, InputController
 
 
 def _controller(monkeypatch):
@@ -55,3 +55,41 @@ def test_smooth_move_to_checks_interlock_between_steps(monkeypatch):
 
     assert controller.smooth_move_to(100, 0, context=context, duration=0.5) is False
     assert len(moves) == 1
+
+
+def test_humanization_profile_samples_stay_within_bounds(monkeypatch):
+    monkeypatch.setattr(
+        input_controller_module,
+        "SYS_RANDOM",
+        SimpleNamespace(
+            uniform=lambda _low, _high: 999,
+            gauss=lambda _mu, _sigma: 999,
+        ),
+    )
+    profile = HumanizationProfile()
+
+    click_hold = profile.sample_click_hold_seconds()
+    long_press = profile.sample_long_press_seconds()
+    move_duration = profile.sample_move_duration()
+
+    assert profile.click_hold_bounds[0] <= click_hold <= profile.click_hold_bounds[1]
+    assert profile.long_press_bounds[0] <= long_press <= profile.long_press_bounds[1]
+    assert profile.move_duration_bounds[0] <= move_duration <= profile.move_duration_bounds[1]
+
+
+def test_sample_click_target_stays_within_window_bounds(monkeypatch):
+    monkeypatch.setattr(InputController, "ensure_interception_ready", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        input_controller_module,
+        "SYS_RANDOM",
+        SimpleNamespace(
+            uniform=lambda _low, _high: 0,
+            gauss=lambda _mu, _sigma: 999,
+        ),
+    )
+    controller = InputController()
+    window_rect = SimpleNamespace(left=10, top=20, width=40, height=30)
+
+    sampled_x, sampled_y = controller.sample_click_target(10, 20, window_rect)
+
+    assert InputController.validate_bounds(sampled_x, sampled_y, window_rect) is True

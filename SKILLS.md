@@ -15,7 +15,9 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 
 - Owner: `Classes/dynamic_planner.py`
 - Runtime bridge: `Classes/Actions/dynamic_planner_action.py`
-- OpenAI API: Responses API with strict JSON schema output.
+- OpenAI API: Responses API with strict JSON schema output, sent through a
+  dedicated async planner transport while the runtime-facing planner API stays
+  synchronous.
 - Inputs: screenshot, natural-language focused goal, local detector/OCR target
   IDs, OCR text, recent state history, optional resource context, and
   stuck-screen warnings.
@@ -44,6 +46,24 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
   detector that returns no labels.
 - Purpose: provide structured visible UI labels and target boxes to planner,
   memory, state monitor, and CAPTCHA detection.
+
+## Shared Observation Reuse
+
+- Owners: `Classes/OS_ROKBOT.py`, `Classes/context.py`, and
+  `Classes/Actions/dynamic_planner_action.py`
+- Behavior: capture the game window and run YOLO once per guarded planner step,
+  then reuse that observation for CAPTCHA checks and planner execution.
+- Purpose: reduce duplicate capture and detector work without changing the
+  supported synchronous runtime path.
+
+## Window Capture Pipeline
+
+- Owner: `Classes/window_handler.py`
+- Default backend: Win32 `PrintWindow` with `BitBlt` compatibility fallback.
+- Behavior: keeps exact-window, overlay-free client capture semantics while
+  exposing a named backend boundary for future capture implementations.
+- Runtime diagnostics: capture timing is logged so detector and OCR costs can
+  be compared against window-read overhead.
 
 ## OCR Perception
 
@@ -94,7 +114,9 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - L2: trusted labels can auto-execute pointer actions after enough clean local
   successes.
 - L3: validated pointer actions can execute without approval.
-- Note: current target approval UI covers `click`, `drag`, and `long_press`.
+- Note: current target approval UI covers `click`, `drag`, and `long_press`,
+  and `L1 approve` now draws the current YOLO detector boxes plus the selected
+  target.
   `key` and `type` are validation-gated and still route through
   `InputController`, but do not use the target approval prompt.
 
@@ -103,8 +125,9 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Owner: `Classes/input_controller.py`
 - Backend: Oblita Interception driver through `interception-python`
 - Responsibilities: Interception readiness, pause/stop checks, foreground
-  checks, pointer bounds validation, mouse movement, click execution, key
-  presses, scroll pacing, and delay policy.
+  checks, pointer bounds validation, bounded humanization, mouse movement,
+  click execution, drag execution, long-press execution, key presses, scroll
+  pacing, and delay policy.
 - Rule: no other module should call lower-level mouse or keyboard libraries.
 
 ## CAPTCHA Pause

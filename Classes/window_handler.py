@@ -77,67 +77,24 @@ def _compatible_bitmap(source_dc, width, height):
             win32gui.DeleteObject(bitmap.GetHandle())
 
 
-class WindowHandler:
-    ASPECT_RATIO_16_9 = 16 / 9
-    ASPECT_RATIO_EPSILON = 0.02
+class _WindowCaptureBackend:
+    name = "unknown"
 
-    def get_window(self, title: str) -> Any:
-        windows = gw.getWindowsWithTitle(title)
+    def capture_client_image(self, hwnd: int, client_rect: ClientRect) -> Image.Image | None:
+        raise NotImplementedError
 
-        if not windows:
-            LOGGER.error(f"No window found with title: {title}")
-            return None
-        return windows[0]
 
-    def _get_client_rect(self, win: Any) -> ClientRect:
-        hwnd = win._hWnd
-        rect = wintypes.RECT()
-        point = wintypes.POINT(0, 0)
+class _Win32WindowCaptureBackend(_WindowCaptureBackend):
+    name = "win32_printwindow"
 
-        if not ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect)):
-            raise ctypes.WinError()
-        if not ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point)):
-            raise ctypes.WinError()
-
-        return ClientRect(
-            hwnd=int(hwnd),
-            left=int(point.x),
-            top=int(point.y),
-            width=int(rect.right - rect.left),
-            height=int(rect.bottom - rect.top),
-        )
-
-    @staticmethod
-    def _win32_available():
-        return win32con is not None and win32gui is not None and win32ui is not None
-
-    @staticmethod
-    def _restore_no_activate(hwnd):
-        if not WindowHandler._win32_available():
-            return
-        if win32gui.IsIconic(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
-            win32gui.SetWindowPos(
-                hwnd,
-                None,
-                0,
-                0,
-                0,
-                0,
-                win32con.SWP_NOMOVE
-                | win32con.SWP_NOSIZE
-                | win32con.SWP_NOZORDER
-                | win32con.SWP_NOACTIVATE,
-            )
-
-    def _print_window_client_image(self, hwnd: int, client_rect: ClientRect) -> Image.Image | None:
+    def capture_client_image(self, hwnd: int, client_rect: ClientRect) -> Image.Image | None:
         """Capture the client area from the window render buffer.
 
         PrintWindow reads the target window instead of the desktop surface when
         the game exposes that buffer. Some Unity windows reject PrintWindow; in
         that case BitBlt is used as a compatibility fallback.
         """
-        if not self._win32_available():
+        if not WindowHandler._win32_available():
             LOGGER.error("pywin32 is required for background window capture.")
             return None
 
@@ -198,6 +155,66 @@ class WindowHandler:
                 )
             )
 
+
+class WindowHandler:
+    ASPECT_RATIO_16_9 = 16 / 9
+    ASPECT_RATIO_EPSILON = 0.02
+
+    def __init__(self, capture_backend: _WindowCaptureBackend | None = None) -> None:
+        self._capture_backend = capture_backend or _Win32WindowCaptureBackend()
+
+    def get_window(self, title: str) -> Any:
+        windows = gw.getWindowsWithTitle(title)
+
+        if not windows:
+            LOGGER.error(f"No window found with title: {title}")
+            return None
+        return windows[0]
+
+    def _get_client_rect(self, win: Any) -> ClientRect:
+        hwnd = win._hWnd
+        rect = wintypes.RECT()
+        point = wintypes.POINT(0, 0)
+
+        if not ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect)):
+            raise ctypes.WinError()
+        if not ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point)):
+            raise ctypes.WinError()
+
+        return ClientRect(
+            hwnd=int(hwnd),
+            left=int(point.x),
+            top=int(point.y),
+            width=int(rect.right - rect.left),
+            height=int(rect.bottom - rect.top),
+        )
+
+    @staticmethod
+    def _win32_available():
+        return win32con is not None and win32gui is not None and win32ui is not None
+
+    @staticmethod
+    def _restore_no_activate(hwnd):
+        if not WindowHandler._win32_available():
+            return
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
+            win32gui.SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                win32con.SWP_NOMOVE
+                | win32con.SWP_NOSIZE
+                | win32con.SWP_NOZORDER
+                | win32con.SWP_NOACTIVATE,
+            )
+
+    def _print_window_client_image(self, hwnd: int, client_rect: ClientRect) -> Image.Image | None:
+        return self._capture_backend.capture_client_image(hwnd, client_rect)
+
     def screenshot_window(self, title: str) -> tuple[Image.Image | None, ClientRect | None]:
         win = self.get_window(title)
         if not win:
@@ -210,7 +227,15 @@ class WindowHandler:
             return None, None
 
         try:
+            started_at = time.perf_counter()
             screenshot = self._print_window_client_image(win._hWnd, client_rect)
+            duration_ms = (time.perf_counter() - started_at) * 1000.0
+            LOGGER.debug(
+                "Window capture backend=%s title=%s duration_ms=%.2f",
+                getattr(self._capture_backend, "name", "unknown"),
+                title,
+                duration_ms,
+            )
         except Exception as exc:
             LOGGER.error(f"Window capture failed for '{title}': {exc}")
             return None, None
