@@ -1,7 +1,8 @@
 # OSROKBOT Media Map
 
-OSROKBOT is VLM/YOLO-first. Root-level gameplay template images are deprecated
-and are not part of the supported runtime asset set.
+OSROKBOT is screenshot, YOLO, OCR, VLM, and local-memory driven. Root-level
+gameplay template images are deprecated and are not part of the supported
+runtime asset set.
 
 `cleanup_media.py` is the source of truth for media cleanup behavior.
 
@@ -27,10 +28,9 @@ The cleanup policy permanently deprecates:
 | `Media/Legacy/` | Deprecated | Deleted as a directory when present. |
 | `Media/*.png` | Deprecated | Loose PNG files directly under `Media/` are deleted. |
 
-Examples of deprecated root-level files include former button, report, resource,
-modal, CAPTCHA, march, attack, gather, and search templates. These assets are
-obsolete because planning now uses screenshots, YOLO labels, OCR text, OpenAI
-vision reasoning, and local visual memory.
+Former button, report, resource, modal, CAPTCHA, march, attack, gather, and
+search templates are obsolete. Current perception uses screenshots, local
+YOLO/OCR target IDs, OpenAI vision reasoning, and local visual memory.
 
 ## Cleanup Commands
 
@@ -75,14 +75,15 @@ Use these locations instead:
 | Overlay icons | `Media/UI/` |
 | Documentation images | `Media/Readme/` |
 | YOLO model weights | `models/` or an external local path referenced by `ROK_YOLO_WEIGHTS` |
-| Human correction datasets | `datasets/recovery/` |
-| Planner screenshots and local memory | `data/` |
-| Debug captures and heatmaps | `diagnostics/` |
+| Downloaded YOLO weights | `models/`, via `ROK_YOLO_WEIGHTS_URL` |
+| Human correction datasets | `datasets/` |
+| Planner screenshots, heartbeat data, memory, and session logs | `data/` |
+| Failure, CAPTCHA, and recovery diagnostics | `diagnostics/` |
 
 ## Maintainer Rules
 
 - Do not reintroduce loose root-level gameplay PNG templates.
 - Do not recreate `Media/Legacy/`.
-- Update this file when adding protected media directories.
-- Run the cleanup dry-run before changing media policy.
+- Update this file before adding another protected media directory.
+- Run `python cleanup_media.py --dry-run` before changing media policy.
 - Run `python verify_integrity.py` after media or documentation updates.

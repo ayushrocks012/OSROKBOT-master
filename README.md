@@ -1,175 +1,196 @@
 # OSROKBOT
 
-OSROKBOT is an agentic Windows automation system for **Rise of Kingdoms**. It
-uses a PyQt control overlay, YOLO object detection, OCR, OpenAI vision planning,
-local FAISS-backed visual memory, and the Oblita Interception driver for
-hardware-level input.
+OSROKBOT is a guarded, agentic Windows automation system for **Rise of
+Kingdoms**. The current runtime is built around a PyQt control overlay,
+window screenshots, optional YOLO UI detection, OCR, OpenAI Responses API
+planning, local visual memory, and Oblita Interception hardware input.
 
-The current architecture is **agentic-first**. A user gives the bot a natural
-English mission, the planner observes the current game screen, and
-`dynamic_planner.py` returns one validated JSON action at a time. Legacy
-gameplay templates and root-level `Media/*.png` assets are no longer part of the
-runtime design.
+This is no longer a root-level image-template bot. The supported runtime path is:
+
+```text
+UI mission
+  -> Context
+  -> StateMachine(plan_next)
+  -> DynamicPlannerAction
+  -> TaskGraph focused goal
+  -> screenshot + YOLO + OCR + resource context + stuck-screen context
+  -> VisionMemory lookup
+  -> DynamicPlanner JSON decision
+  -> validation + autonomy/approval
+  -> InputController
+```
 
 > [!WARNING]
-> OSROKBOT can move your real mouse and press real keys through a kernel-level
-> input driver. Read the setup and safety sections before running it.
+> OSROKBOT can move the real mouse and press real keys through a
+> hardware-level input driver. Install and test it conservatively. Start with
+> `L1 approve` for new missions, new YOLO weights, new memory, or any code
+> change that can affect input.
 
-## Table Of Contents
+## Contents
 
-- [Agentic Capabilities](#agentic-capabilities)
-- [Architecture](#architecture)
+- [Current Runtime](#current-runtime)
+- [Planner Contract](#planner-contract)
+- [Architecture Map](#architecture-map)
 - [Safety Model](#safety-model)
 - [Requirements](#requirements)
 - [Setup](#setup)
 - [Configuration](#configuration)
 - [Running OSROKBOT](#running-osrokbot)
-- [Correcting The AI With Fix](#correcting-the-ai-with-fix)
-- [Watchdog For Overnight Runs](#watchdog-for-overnight-runs)
+- [Corrections And Memory](#corrections-and-memory)
+- [Watchdog](#watchdog)
+- [Runtime Data](#runtime-data)
 - [Media Policy](#media-policy)
 - [Development Rules](#development-rules)
 - [Verification](#verification)
 - [Troubleshooting](#troubleshooting)
 
-## Agentic Capabilities
+## Current Runtime
 
-OSROKBOT is built around a guarded observe-plan-act loop:
+OSROKBOT executes one guarded planner step at a time.
 
-1. `Classes/Actions/dynamic_planner_action.py` captures the current game window.
-2. `Classes/object_detector.py` adds YOLO labels when `ROK_YOLO_WEIGHTS` is configured.
-3. `Classes/ocr_service.py` extracts screen text with EasyOCR and Tesseract fallback.
-4. `Classes/vision_memory.py` searches local visual memory before spending an OpenAI call.
-5. `Classes/dynamic_planner.py` asks the configured OpenAI vision model for one strict JSON action that references a local target ID.
-6. `Classes/Actions/dynamic_planner_action.py` resolves that ID to local geometry, validates the decision, applies the autonomy policy, and only then allows input through `InputController`.
+1. `Classes/UI.py` collects a plain-English mission and selected autonomy
+   level, then creates a per-run `Context`.
+2. `Classes/action_sets.py` builds the supported `dynamic_planner()` state
+   machine.
+3. `Classes/OS_ROKBOT.py` runs the machine through an executor-backed loop,
+   writes heartbeat data, checks foreground state, and pauses on CAPTCHA-like
+   detector labels.
+4. `Classes/Actions/dynamic_planner_action.py` captures the game window,
+   gathers detector/OCR/resource/stuck-screen context, asks `TaskGraph` for the
+   current focused sub-goal, then requests one planner decision.
+5. `Classes/vision_memory.py` tries to reuse a successful local visual match
+   before spending an OpenAI call.
+6. `Classes/dynamic_planner.py` calls the OpenAI Responses API when memory has
+   no safe match and validates the strict JSON response.
+7. `DynamicPlannerAction` resolves target IDs to current screen geometry,
+   applies the autonomy policy, records corrections or failures, and sends any
+   hardware input through `Classes/input_controller.py`.
 
-The planner accepts natural English missions such as:
+The historical action classes and `StateMachine` infrastructure still exist,
+but new runtime behavior should enter through `ActionSets.dynamic_planner()`.
+Legacy root-level gameplay templates under `Media/` are deprecated.
 
-```text
-Farm the nearest useful resource safely. Avoid spending action points.
-```
+## Planner Contract
 
-It produces a JSON decision with this shape:
+`dynamic_planner.py` is side-effect free. It can propose a decision; it must
+not move the mouse, press keys, write memory, or change game state.
+
+The model-facing schema accepts these fields:
 
 ```json
 {
-  "thought_process": "The map view is open and a gather button is visible.",
+  "thought_process": "short debug note",
   "action_type": "click",
   "target_id": "det_3",
-  "label": "gather button",
-  "confidence": 0.91,
+  "label": "target label",
+  "confidence": 0.9,
   "delay_seconds": 1.0,
-  "reason": "Continue the selected resource gathering flow."
+  "reason": "short user-facing reason",
+  "end_target_id": "",
+  "key_name": "",
+  "text_content": "",
+  "drag_direction": ""
 }
 ```
 
-Supported `action_type` values are:
+The model may reference current detector/OCR target IDs, but it must not return
+raw `x` or `y` coordinates. `DynamicPlanner.resolve_target_decision(...)`
+resolves target IDs to normalized coordinates after schema validation.
 
-| Action | Meaning |
-| --- | --- |
-| `click` | Click a local YOLO/OCR target ID after resolving it to a bounded screen point. |
-| `wait` | Pause briefly and observe again. |
-| `stop` | Stop the current automation run. |
+Supported actions:
 
-Invalid action types, low-confidence click decisions, missing or unknown
-`target_id` values, and out-of-window targets are rejected before hardware
-input. The model is not trusted to author click coordinates directly.
+| Action | Required Fields | Runtime Behavior |
+| --- | --- | --- |
+| `click` | `target_id` | Click the current detector/OCR target center after bounds validation. |
+| `drag` | `target_id` plus `end_target_id` or `drag_direction` | Drag from a current target to another target or in a named direction. |
+| `long_press` | `target_id` | Hold the current target for a short randomized duration. |
+| `key` | `key_name` | Press a supported keyboard key through `InputController`. |
+| `type` | `text_content` | Type text one character at a time through `InputController`. |
+| `wait` | none | Wait for `delay_seconds`, then observe again. |
+| `stop` | none | Stop the current automation run. |
 
-## Architecture
+Safety validation rejects unsupported action types, unknown target IDs,
+low-confidence input actions, non-finite coordinates, coordinates outside
+`0.0..1.0`, and planner delays outside the bounded range.
 
-### Core Modules
+Current approval behavior is implemented for pointer-target actions:
+`click`, `drag`, and `long_press`. `key` and `type` decisions still pass
+planner validation and `InputController` pause/foreground/backend guards, but
+they do not use the target approval prompt.
+
+## Architecture Map
 
 | Module | Responsibility |
 | --- | --- |
-| `Classes/UI.py` | PyQt overlay, mission input, autonomy selector, approval buttons, and per-run `Context` creation. |
-| `Classes/context.py` | Shared runtime state, planner decisions, state history, UI signal access, and human correction payloads. |
-| `Classes/OS_ROKBOT.py` | Executor-backed runner, pause/stop events, foreground checks, CAPTCHA detection, and heartbeat scheduling. |
-| `Classes/Actions/dynamic_planner_action.py` | The guarded bridge between observation, planner output, human approval, memory, and input. |
-| `Classes/dynamic_planner.py` | OpenAI vision request construction, JSON schema enforcement, memory-first planning, and decision validation. |
-| `Classes/object_detector.py` | YOLO adapter plus no-op detector fallback when weights are absent. |
-| `Classes/ocr_service.py` | EasyOCR-first text extraction with Tesseract fallback. |
-| `Classes/vision_memory.py` | CLIP embeddings, FAISS or NumPy similarity search, success/failure memory, and trusted-label support. |
-| `Classes/input_controller.py` | The only allowed input path. It owns bounds validation, Interception calls, pause/stop interlocks, pacing, and cursor behavior. |
-| `Classes/emergency_stop.py` | Process-level F12 emergency termination. |
-| `watchdog.py` | Heartbeat health monitor and conservative restart utility. |
-
-### Data Flow
-
-```text
-Mission text
-  -> PyQt overlay
-  -> Context
-  -> screenshot + YOLO labels + OCR text
-  -> local detector/OCR target IDs
-  -> VisionMemory lookup
-  -> OpenAI JSON planner decision when memory has no safe match
-  -> target ID resolution
-  -> autonomy gate
-  -> InputController bounds check
-  -> Interception hardware input
-  -> memory update
-```
-
-### Design Boundaries
-
-- `Context` is the shared runtime state object. Do not add process-wide mutable globals.
-- `InputController` is the only module allowed to execute mouse, keyboard, or scroll input.
-- `dynamic_planner.py` is side-effect free: it proposes a decision but never clicks.
-- `DynamicPlannerAction` owns human approval, correction recording, memory writes, and guarded click execution.
-- CAPTCHA handling is intentionally pause-only. The bot must not solve or bypass CAPTCHAs.
+| `Classes/UI.py` | PyQt overlay, mission input, settings, autonomy selector, approval controls, mission history, session logging, and per-run `Context` creation. |
+| `Classes/context.py` | Shared runtime state, planner approval payloads, state history, resource cache, UI anchors, and signal access. |
+| `Classes/action_sets.py` | Supported workflow factory. `dynamic_planner()` is the current runtime entry point. |
+| `Classes/state_machine.py` | Deterministic action runner, preconditions, transition history, diagnostics, and tiered global recovery. |
+| `Classes/OS_ROKBOT.py` | Executor-backed run loop, pause/stop events, foreground guard, CAPTCHA pause, heartbeat writing, and emergency-stop startup. |
+| `Classes/Actions/dynamic_planner_action.py` | Observation, OCR/detector/resource context, task graph focus, approval flow, memory updates, correction export, and guarded execution. |
+| `Classes/dynamic_planner.py` | OpenAI Responses API request construction, strict JSON schema validation, target resolution, retry handling, memory-first decision selection, and decision validation. |
+| `Classes/task_graph.py` | One-time mission decomposition into sub-goals, cached per mission, with label/OCR post-condition tracking. |
+| `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
+| `Classes/ocr_service.py` | EasyOCR-first OCR with Tesseract text and region fallback. |
+| `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, and explicit client restart support. |
+| `Classes/screen_change_detector.py` | Perceptual-hash screen change checks and repeated-action warnings for the planner prompt. |
+| `Classes/vision_memory.py` | CLIP embeddings, FAISS or NumPy similarity search, success/failure memory, corrections, and trusted-label checks. |
+| `Classes/input_controller.py` | The only allowed hardware input path. It owns Interception readiness, pause/stop checks, foreground checks, bounds validation, mouse movement, clicks, keys, scrolls, and waits. |
+| `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download from `ROK_YOLO_WEIGHTS_URL`. |
+| `Classes/detection_dataset.py` | Planner no-decision stubs and correction export for detector training data. |
+| `Classes/session_logger.py` | Local session summary and event logging. |
+| `Classes/emergency_stop.py` | F12 process-level emergency termination. |
+| `watchdog.py` | Conservative heartbeat monitor and tracked-process restart helper. |
 
 ## Safety Model
 
 ### Autonomy Levels
 
-The UI exposes three autonomy levels:
-
 | Level | UI Label | Behavior |
 | --- | --- | --- |
-| L1 | `L1 approve` | Every click decision waits for the human to press `OK`. This is the recommended starting mode. |
-| L2 | `L2 trusted` | Labels with enough clean local successes can auto-click. New or untrusted labels still require approval. |
-| L3 | `L3 auto` | Valid planner decisions can execute without approval. Use only after testing the mission and memory behavior. |
+| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. Use this by default. |
+| L2 | `L2 trusted` | Pointer actions with locally trusted labels can execute after enough clean successes. New or failed labels still require approval. |
+| L3 | `L3 auto` | Validated pointer actions can execute without approval. Use only for stable, supervised workflows. |
 
-Use L1 while training local memory or testing new YOLO weights. Use L2 only
-after repeated correct approvals. Reserve L3 for stable, supervised workflows.
-
-### F12 Emergency Kill Switch
-
-`Classes/emergency_stop.py` arms a process-level F12 kill switch. It uses the
-`keyboard` package and a polling fallback. Pressing F12 calls the configured
-exit function immediately.
-
-> [!WARNING]
-> F12 is not a pause button. It terminates OSROKBOT immediately so hardware
-> input stops even if the UI is unresponsive.
-
-### CAPTCHA Policy
-
-OSROKBOT detects CAPTCHA-like labels through the configured detector. When a
-CAPTCHA is detected, it pauses automation and emits a UI state asking for manual
-review.
-
-> [!IMPORTANT]
-> OSROKBOT intentionally does not solve CAPTCHAs. A human must solve them
-> manually before automation resumes.
+The trusted-label threshold defaults to `3` clean successes and can be adjusted
+with `PLANNER_TRUSTED_SUCCESS_COUNT`.
 
 ### Input Guardrails
 
-Before input is sent, OSROKBOT checks:
+All hardware input must go through `InputController`. Before input is sent,
+the code checks:
 
+- The Interception backend is installed and hooked.
 - The bot is not paused or stopping.
-- The target game window is foreground.
-- The click point is inside the game client rectangle.
-- The Interception backend is available.
-- The planner decision is validated and, depending on autonomy level, approved.
+- The configured game window is foreground.
+- Pointer coordinates are inside the current game window.
+- Pointer-target planner decisions are validated and gated by the selected
+  autonomy level.
+
+### F12 Emergency Stop
+
+`Classes/emergency_stop.py` arms a process-level F12 kill switch. It uses the
+`keyboard` package and a polling fallback. Pressing F12 terminates OSROKBOT so
+hardware input stops even if the overlay is unresponsive.
+
+### CAPTCHA Policy
+
+`Classes/OS_ROKBOT.py` pauses automation when detector labels match
+`captcha`, `captchachest`, or `captcha_chest`.
+
+> [!IMPORTANT]
+> OSROKBOT intentionally does not solve, bypass, or automate CAPTCHAs. A human
+> must handle them manually before resuming.
 
 ## Requirements
 
 - Windows 10 or Windows 11.
-- **Python 3.13**. Other versions are not the supported runtime target.
-- Rise of Kingdoms installed and runnable in a window titled `Rise of Kingdoms`, unless overridden with `ROK_WINDOW_TITLE`.
-- Administrator access for the Oblita Interception kernel driver installation.
-- OpenAI API access for planner decisions.
-- Optional YOLO `.pt` weights trained for relevant Rise of Kingdoms UI labels.
+- Python 3.13, matching `pyproject.toml` and `requirements.txt`.
+- Rise of Kingdoms running in a window titled `Rise of Kingdoms`, unless
+  overridden with `ROK_WINDOW_TITLE`.
+- Administrator access to install the Oblita Interception kernel driver.
+- OpenAI API access for planner decisions and task decomposition.
+- Optional YOLO `.pt` weights for Rise of Kingdoms UI labels.
 - Optional Tesseract installation for OCR fallback.
 
 Confirm Python:
@@ -178,7 +199,7 @@ Confirm Python:
 python --version
 ```
 
-The expected major/minor version is:
+Expected:
 
 ```text
 Python 3.13.x
@@ -206,17 +227,12 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### Install The Oblita Interception Driver
+### Install Interception
 
-The `interception-python` package is only the Python binding. It does not
-install the Windows kernel driver.
+The `interception-python` package is only the Python binding. The Windows
+driver must be installed separately from an Administrator PowerShell session.
 
-> [!WARNING]
-> Installing dependencies is not enough. You must install the Oblita
-> Interception driver from an Administrator PowerShell session and reboot
-> Windows before OSROKBOT can send hardware-level input.
-
-Example driver install flow:
+Example:
 
 ```powershell
 cd C:\Tools\Interception\command line installer
@@ -224,7 +240,7 @@ cd C:\Tools\Interception\command line installer
 Restart-Computer
 ```
 
-After reboot, run the import check:
+After reboot:
 
 ```powershell
 python -c "import interception; interception.auto_capture_devices(); print('interception ok')"
@@ -232,16 +248,20 @@ python -c "import interception; interception.auto_capture_devices(); print('inte
 
 ## Configuration
 
-Create `.env` in the project root. Keep secrets out of Git.
+Configuration is read in this order:
 
-Minimum recommended configuration:
+1. Local `config.json`, written by the overlay settings UI.
+2. Project `.env`.
+3. Process environment variables.
+
+Create `.env` in the project root for secrets and local paths:
 
 ```powershell
 @'
 OPENAI_KEY=your-openai-api-key
 OPENAI_VISION_MODEL=gpt-5.4-mini
-ROK_YOLO_WEIGHTS=C:\Users\hp\OneDrive\Desktop\OSROKBOT-master\models\rok-ui.pt
 ROK_WINDOW_TITLE=Rise of Kingdoms
+ROK_YOLO_WEIGHTS=C:\Users\hp\OneDrive\Desktop\OSROKBOT-master\models\rok-ui.pt
 TESSERACT_PATH=C:\Program Files\Tesseract-OCR\tesseract.exe
 '@ | Set-Content -Path .env -Encoding UTF8
 ```
@@ -250,31 +270,19 @@ Core variables:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `OPENAI_KEY` | Yes | API key used by OpenAI vision planning. `OPENAI_API_KEY` is also accepted. |
-| `OPENAI_VISION_MODEL` | Recommended | Vision model used by `dynamic_planner.py`. Defaults to `gpt-5.4-mini`. |
-| `ROK_YOLO_WEIGHTS` | Recommended | Local YOLO `.pt` weights for game UI detection. Without this, detector output safely falls back to empty labels. |
-| `ROK_WINDOW_TITLE` | Recommended | Target game window title. Defaults to `Rise of Kingdoms`. |
-| `TESSERACT_PATH` | Recommended | Tesseract executable path for OCR fallback. |
-
-The default `OPENAI_VISION_MODEL=gpt-5.4-mini` is intentional for current
-vision-capable Responses API planning. Override it only if your OpenAI project
-does not have access to that model or you want to test another vision-capable
-model.
-
-Optional watchdog variables:
-
-```powershell
-@'
-ROK_CLIENT_PATH=C:\Path\To\RiseOfKingdoms.exe
-WATCHDOG_HEARTBEAT_PATH=C:\Users\hp\OneDrive\Desktop\OSROKBOT-master\data\heartbeat.json
-WATCHDOG_TIMEOUT_SECONDS=30
-WATCHDOG_GAME_RESTART_WAIT_SECONDS=20
-WATCHDOG_RESTART_ENABLED=1
-'@ | Add-Content -Path .env -Encoding UTF8
-```
-
-Settings changed through the overlay gear button are saved to local
-`config.json`, which is ignored by Git.
+| `OPENAI_KEY` or `OPENAI_API_KEY` | Yes | API key for OpenAI Responses API planning. |
+| `OPENAI_VISION_MODEL` | Recommended | Planner and task-graph model. Defaults to `gpt-5.4-mini`. |
+| `ROK_WINDOW_TITLE` or `WINDOW_TITLE` | Recommended | Target game window title. Defaults to `Rise of Kingdoms`. |
+| `ROK_YOLO_WEIGHTS` | Optional | Local YOLO `.pt` file. Without it, detector output safely falls back to empty labels. |
+| `ROK_YOLO_WEIGHTS_URL` | Optional | HTTPS URL used by `ModelManager` to download YOLO weights into `models/`. |
+| `TESSERACT_PATH` | Optional | Tesseract executable path for OCR fallback and resource OCR. |
+| `PLANNER_AUTONOMY_LEVEL` | Optional | Default UI autonomy level, `1` to `3`. |
+| `PLANNER_TRUSTED_SUCCESS_COUNT` | Optional | Clean local successes needed for L2 trusted labels. Defaults to `3`. |
+| `ROK_CLIENT_PATH` | Optional | Game executable used by watchdog or state recovery when explicit restart is enabled. |
+| `WATCHDOG_HEARTBEAT_PATH` | Optional | Heartbeat file path. Defaults to `data/heartbeat.json`. |
+| `WATCHDOG_TIMEOUT_SECONDS` | Optional | Heartbeat staleness threshold. Defaults to `30`. |
+| `WATCHDOG_GAME_RESTART_WAIT_SECONDS` | Optional | Delay after relaunching the game client. Defaults to `20`. |
+| `WATCHDOG_RESTART_ENABLED` | Optional | Set to `0` to make watchdog stale-heartbeat handling report-only. |
 
 ## Running OSROKBOT
 
@@ -284,12 +292,13 @@ Start Rise of Kingdoms first, then run:
 python Classes\UI.py
 ```
 
-Basic run flow:
+Recommended first run:
 
-1. Type a mission in plain English.
-2. Choose autonomy level.
+1. Choose `L1 approve`.
+2. Enter a narrow mission in plain English.
 3. Press Play.
-4. In L1, inspect each proposed target and press `OK`, `No`, or `Fix`.
+4. Review each pointer action.
+5. Use `OK`, `No`, or `Fix` from the approval controls.
 
 Example missions:
 
@@ -302,42 +311,37 @@ Continue the current gathering flow safely. Stop if a CAPTCHA appears.
 ```
 
 ```text
-Navigate visible prompts conservatively and wait whenever the safe next action is unclear.
+Navigate visible prompts conservatively. Wait whenever the safe next action is unclear.
 ```
 
-## Correcting The AI With Fix
+## Corrections And Memory
 
-The `Fix` button teaches local visual memory when the planner targets the wrong
-UI element.
-
-Workflow:
+Use `Fix` when the planner chooses the wrong pointer target.
 
 1. Run in `L1 approve`.
-2. Wait for the planner to propose a click.
-3. If the target is wrong, press `Fix`.
-4. Move the cursor to the correct target inside the game window.
-5. Wait for the overlay to capture the corrected normalized position.
-6. The correction is recorded by `vision_memory.py` and exported by the dataset helper.
+2. Wait for a `click`, `drag`, or `long_press` proposal.
+3. Press `Fix`.
+4. Move the cursor to the corrected target inside the game window.
+5. Let the overlay capture the corrected normalized point.
+
+Correction data is written through:
+
+- `Classes/vision_memory.py` to `data/vision_memory.json`.
+- `Classes/detection_dataset.py` to local training/export data.
 
 Memory behavior:
 
-- Successful decisions and corrections are stored in `data/vision_memory.json`.
-- Screens are embedded with CLIP through `sentence-transformers`.
-- FAISS is used for fast similarity search when available.
-- If FAISS is unavailable, OSROKBOT falls back to NumPy similarity.
-- L2 trusted mode can auto-click labels that have enough successful local memory and no failures.
+- Screens are embedded with CLIP via `sentence-transformers`.
+- FAISS is used when available.
+- NumPy similarity is used as a fallback.
+- Successes, failures, and manual corrections influence future planner
+  decisions and L2 trusted-label behavior.
 
-> [!TIP]
-> Train memory in short L1 sessions before using L2. Corrections are local to
-> your machine and should reflect your window size, UI language, and account
-> state.
+## Watchdog
 
-## Watchdog For Overnight Runs
-
-`watchdog.py` monitors `data/heartbeat.json`, which is written by
-`OS_ROKBOT.write_heartbeat(...)` while automation is running. The heartbeat
-contains the bot PID, game PID, window title, mission, repository root, UI
-entry point, and Python executable.
+`watchdog.py` monitors the heartbeat written by `OS_ROKBOT.write_heartbeat(...)`.
+The heartbeat records the bot PID, game PID, window title, mission, autonomy
+level, repository root, UI entry point, and Python executable.
 
 Run the watchdog in a second PowerShell window:
 
@@ -345,37 +349,47 @@ Run the watchdog in a second PowerShell window:
 python watchdog.py
 ```
 
-Run a one-time check:
+Run one check and exit:
 
 ```powershell
 python watchdog.py --once
 ```
 
-What the watchdog does:
+The watchdog is intentionally conservative:
 
-- Reads only the configured heartbeat file.
-- Treats stale heartbeats as a restart condition.
-- Terminates only PIDs recorded in the heartbeat.
-- Relaunches the game only when `ROK_CLIENT_PATH` is configured.
-- Restarts the UI using the Python executable and UI entry point recorded in the heartbeat.
+- It reads only the configured heartbeat file.
+- It terminates only PIDs recorded in the heartbeat.
+- It relaunches the game only when `ROK_CLIENT_PATH` is configured and restart
+  is enabled.
+- It restarts the UI using the Python executable and UI entry point from the
+  heartbeat.
+- It does not override CAPTCHA pauses or human approval rules.
 
-What it does not do:
+## Runtime Data
 
-- It does not kill arbitrary processes by name.
-- It does not guess the game install path.
-- It does not override CAPTCHA pauses or human approval requirements.
+| Path | Purpose |
+| --- | --- |
+| `config.json` | Local settings saved by the overlay. Ignored by Git. |
+| `.env` | Local secrets and machine-specific paths. Ignored by Git. |
+| `data/vision_memory.json` | Local planner successes, failures, and corrections. |
+| `data/heartbeat.json` | Watchdog heartbeat. |
+| `data/session_logs/` | Local session logs and summaries. |
+| `data/planner_latest.png` | Most recent planner screenshot. |
+| `datasets/` | Exported correction/training data. |
+| `diagnostics/` | Failure, CAPTCHA, and recovery screenshots/logs. |
+| `models/` | Optional local YOLO weights. |
 
 ## Media Policy
 
-OSROKBOT no longer uses root-level gameplay template images. The protected media
-surface is intentionally small:
+Protected media directories:
 
-| Path | Status | Purpose |
-| --- | --- | --- |
-| `Media/UI/` | Protected | Overlay icons and local UI assets. |
-| `Media/Readme/` | Protected | Documentation images and GIFs. |
-| `Media/Legacy/` | Deprecated | Purged by `cleanup_media.py`. |
-| `Media/*.png` | Deprecated | Loose root-level gameplay templates purged by `cleanup_media.py`. |
+- `Media/UI/`
+- `Media/Readme/`
+
+Deprecated media:
+
+- `Media/Legacy/`
+- Loose root-level `Media/*.png`
 
 Preview cleanup:
 
@@ -386,34 +400,27 @@ python cleanup_media.py --dry-run
 Delete deprecated media:
 
 ```powershell
-python cleanup_media.py
-```
-
-Delete without prompt:
-
-```powershell
 python cleanup_media.py --yes
 ```
 
-> [!IMPORTANT]
-> `cleanup_media.py` deletes only `Media/Legacy/` and loose `Media/*.png`
-> files. It does not touch `Media/UI/`, `Media/Readme/`, or files nested under
-> other media subdirectories.
+`cleanup_media.py` does not delete `Media/UI/`, `Media/Readme/`, or files
+nested under other `Media/` subdirectories.
 
 ## Development Rules
 
-The agentic architecture depends on strict boundaries:
-
-- Do not reintroduce root-level gameplay templates.
-- Do not bypass `DynamicPlannerAction` for planner decisions that can click.
-- Do not import or call lower-level input libraries outside `Classes/input_controller.py`.
-- Do not bypass `InputController.validate_bounds(...)`.
-- Do not add process-wide mutable globals. Pass runtime data through `Context`.
-- Do not solve or bypass CAPTCHAs.
-- Keep generated screenshots, memory, recovery datasets, and logs under `data/`,
-  `datasets/`, or `diagnostics/`, not `Media/`.
+- Keep shared runtime state in `Context`; do not reintroduce `global_vars.py`
+  or process-wide mutable runtime state.
+- Route all hardware input through `InputController`.
+- Do not bypass `InputController.validate_bounds(...)` for pointer actions.
 - Keep `dynamic_planner.py` side-effect free.
-- Use `DelayPolicy.wait(...)` or action delays for waits inside action flows.
+- Keep agentic input execution behind `DynamicPlannerAction`.
+- Do not solve, bypass, or automate CAPTCHAs.
+- Do not add root-level gameplay templates under `Media/`.
+- Store generated screenshots, memory, recovery datasets, and logs under
+  `data/`, `datasets/`, `diagnostics/`, or `models/` as appropriate.
+- Use `DelayPolicy.wait(...)` or action-level delays for waits inside action
+  flows.
+- Do not launch live automation in tests unless explicitly requested.
 
 ## Verification
 
@@ -426,29 +433,25 @@ python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports o
 python -m pytest --basetemp .pytest_tmp -o cache_dir=.pytest_cache
 ```
 
-Optional static checks:
+Useful static checks:
 
 ```powershell
 python -m ruff check Classes verify_integrity.py cleanup_media.py watchdog.py --select I,UP,RET,SIM,B,F,PTH
 python -m vulture Classes verify_integrity.py watchdog.py cleanup_media.py --min-confidence 80
-python -m mypy Classes verify_integrity.py cleanup_media.py watchdog.py
 ```
 
-Notes:
-
-- `verify_integrity.py` checks static structure, required environment values,
-  runtime imports, Interception availability, optional YOLO configuration, and
-  target game window health.
-- The runtime health check expects the game window to be reachable.
-- Full `ANN` Ruff enforcement and strict mypy may expose existing annotation
-  debt; treat those as type-hardening work, not runtime failures.
+`verify_integrity.py` checks project structure, media references, required
+configuration, runtime imports, Interception availability, optional YOLO
+weights, watchdog configuration, and target game-window health. If it fails
+only because the Rise of Kingdoms window is not open, report that directly
+instead of weakening the check.
 
 ## Troubleshooting
 
 ### Interception Is Unavailable
 
 Install the Oblita Interception driver as Administrator and reboot. Installing
-`interception-python` alone is not sufficient.
+`interception-python` alone is not enough.
 
 ### The Bot Does Not Click
 
@@ -456,26 +459,32 @@ Check:
 
 - Rise of Kingdoms is open.
 - The configured window title matches the actual game window.
-- The game is foreground.
+- The game window is foreground.
 - The bot is not paused.
-- Interception is installed and working after reboot.
-- L1 approval has been granted, or the current label is trusted in L2.
+- Interception is installed and hooked after reboot.
+- L1 approval was granted, or the label is trusted in L2, or L3 is selected.
 
 ### The Planner Chooses The Wrong Target
 
-Use `Fix` in L1 mode. Move the cursor to the correct target and let
-`vision_memory.py` record the correction.
+Run in `L1 approve` and use `Fix` so visual memory records the corrected target.
 
 ### YOLO Labels Are Empty
 
-Set `ROK_YOLO_WEIGHTS` to a valid local `.pt` file. If weights are not
-configured, OSROKBOT still runs, but detector labels are empty and the planner
-relies more heavily on screenshots, OCR, and memory.
+Set `ROK_YOLO_WEIGHTS` to a valid local `.pt` file or set
+`ROK_YOLO_WEIGHTS_URL` to an HTTPS URL that `ModelManager` can download.
+Without weights, OSROKBOT still runs with empty detector labels and relies more
+on screenshots, OCR, and memory.
+
+### OCR Is Weak
+
+Install Tesseract and set `TESSERACT_PATH`. EasyOCR is tried first, but
+Tesseract is used for fallback text/region reads and resource counters.
 
 ### The Watchdog Does Not Relaunch The Game
 
-Set `ROK_CLIENT_PATH` to the game executable. The watchdog will not guess or
-search for a game binary.
+Set `ROK_CLIENT_PATH` to the game executable and keep
+`WATCHDOG_RESTART_ENABLED` unset or nonzero. The watchdog will not guess a game
+install path.
 
 ### CAPTCHA Appears
 
