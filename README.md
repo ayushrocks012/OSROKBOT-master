@@ -256,6 +256,11 @@ Core variables:
 | `ROK_WINDOW_TITLE` | Recommended | Target game window title. Defaults to `Rise of Kingdoms`. |
 | `TESSERACT_PATH` | Recommended | Tesseract executable path for OCR fallback. |
 
+The default `OPENAI_VISION_MODEL=gpt-5.4-mini` is intentional for current
+vision-capable Responses API planning. Override it only if your OpenAI project
+does not have access to that model or you want to test another vision-capable
+model.
+
 Optional watchdog variables:
 
 ```powershell

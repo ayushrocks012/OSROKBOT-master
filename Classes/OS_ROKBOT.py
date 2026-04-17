@@ -1,11 +1,15 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from config_manager import ConfigManager
 from context import Context
@@ -36,7 +40,7 @@ class OSROKBOT:
     YOLO/VLM recovery now handle visible prompts without gameplay media assets.
     """
 
-    def __init__(self, window_title, delay=1):
+    def __init__(self, window_title: str, delay: float = 1) -> None:
         self.window_title = window_title
         self.delay = delay
         self.stop_event = threading.Event()
@@ -45,22 +49,25 @@ class OSROKBOT:
         self.is_running = False
         self.all_threads_joined = True
         self._runner_executor: ThreadPoolExecutor | None = None
-        self._runner_future: Future | None = None
+        self._runner_future: Future[None] | None = None
         self.window_handler = WindowHandler()
         self.input_controller = InputController(context=None)
-        self.detector = create_detector()
+        self.detector: Any = create_detector()
         self._heartbeat_lock = threading.Lock()
         self._last_heartbeat_at = 0.0
         self._heartbeat_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Heartbeat")
-        self._heartbeat_future: Future | None = None
+        self._heartbeat_future: Future[None] | None = None
+        self._cached_game_pid: int | None = None
+        self._cached_game_pid_window_title: str | None = None
+        self._cached_game_pid_hwnd: int | None = None
 
-    def _emit_state(self, context, state_text):
+    def _emit_state(self, context: Context | None, state_text: str) -> None:
         if context:
             context.emit_state(state_text)
         elif self.signal_emitter:
             self.signal_emitter.state_changed.emit(state_text)
 
-    def _hardware_input_ready(self, context=None):
+    def _hardware_input_ready(self, context: Context | None = None) -> bool:
         if InputController.is_backend_available():
             return True
         message = InputController.backend_error()
@@ -71,7 +78,7 @@ class OSROKBOT:
         self._emit_state(context, "Interception unavailable")
         return False
 
-    def _ensure_foreground(self, context):
+    def _ensure_foreground(self, context: Context | None) -> bool:
         if self.stop_event.is_set() or self.pause_event.is_set():
             return False
         window_title = context.window_title if context and getattr(context, "window_title", None) else self.window_title
@@ -85,31 +92,54 @@ class OSROKBOT:
         return False
 
     @staticmethod
-    def _config_path(value, default):
+    def _config_path(value: str | os.PathLike[str] | None, default: str | os.PathLike[str]) -> Path:
         path = Path(value or default)
         if not path.is_absolute():
             path = PROJECT_ROOT / path
         return path
 
-    def _heartbeat_path(self):
+    def _heartbeat_path(self) -> Path:
         return self._config_path(
             ConfigManager().get("WATCHDOG_HEARTBEAT_PATH"),
             PROJECT_ROOT / "data" / "heartbeat.json",
         )
 
-    def _game_pid(self, window_title):
+    def _clear_game_pid_cache(self) -> None:
+        self._cached_game_pid = None
+        self._cached_game_pid_window_title = None
+        self._cached_game_pid_hwnd = None
+
+    def _game_pid(self, window_title: str) -> int | None:
         if win32process is None:
+            self._clear_game_pid_cache()
             return None
         try:
             window = self.window_handler.get_window(window_title)
             if not window:
+                self._clear_game_pid_cache()
                 return None
-            _, process_id = win32process.GetWindowThreadProcessId(int(window._hWnd))
-            return int(process_id) if process_id else None
+            hwnd = int(window._hWnd)
+            if (
+                self._cached_game_pid is not None
+                and self._cached_game_pid_window_title == window_title
+                and self._cached_game_pid_hwnd == hwnd
+            ):
+                return self._cached_game_pid
+
+            _, process_id = win32process.GetWindowThreadProcessId(hwnd)
+            if not process_id:
+                self._clear_game_pid_cache()
+                return None
+
+            self._cached_game_pid = int(process_id)
+            self._cached_game_pid_window_title = window_title
+            self._cached_game_pid_hwnd = hwnd
+            return self._cached_game_pid
         except Exception:
+            self._clear_game_pid_cache()
             return None
 
-    def _heartbeat_payload(self, context, now):
+    def _heartbeat_payload(self, context: Context | None, now: float) -> dict[str, Any]:
         active_context = context or Context(bot=self, window_title=self.window_title)
         window_title = getattr(active_context, "window_title", None) or self.window_title
         return {
@@ -126,33 +156,35 @@ class OSROKBOT:
         }
 
     @staticmethod
-    def _write_heartbeat_file(heartbeat_path, payload):
-        import time
+    def _write_heartbeat_file(heartbeat_path: Path, payload: dict[str, Any]) -> None:
         heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = heartbeat_path.with_suffix(heartbeat_path.suffix + ".tmp")
         temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        
-        for _ in range(3):
+
+        for attempt in range(3):
             try:
                 temp_path.replace(heartbeat_path)
-                break
-            except PermissionError:
+                return
+            except PermissionError as exc:
+                if attempt == 2:
+                    LOGGER.error("Failed to write heartbeat to %s due to file lock: %s", heartbeat_path, exc)
+                    raise
                 time.sleep(0.1)
 
-    def _shutdown_runner_executor(self):
+    def _shutdown_runner_executor(self) -> None:
         executor = self._runner_executor
         self._runner_executor = None
         if executor:
             executor.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod
-    def _log_future_exception(future):
+    def _log_future_exception(future: Future[Any]) -> None:
         try:
             future.result()
         except Exception as exc:
             LOGGER.warning("Background heartbeat write failed: %s", exc)
 
-    def write_heartbeat(self, context=None, force=False):
+    def write_heartbeat(self, context: Context | None = None, force: bool = False) -> bool:
         now = time.time()
         with self._heartbeat_lock:
             if not force and now - self._last_heartbeat_at < 5:
@@ -171,7 +203,7 @@ class OSROKBOT:
             self._heartbeat_future.add_done_callback(self._log_future_exception)
         return True
 
-    def _detect_captcha(self, context):
+    def _detect_captcha(self, context: Context) -> bool:
         if self.stop_event.is_set() or self.pause_event.is_set():
             return False
 
@@ -198,7 +230,7 @@ class OSROKBOT:
         self.signal_emitter.pause_toggled.emit(True)
         return True
 
-    def run(self, state_machines, context=None):
+    def run(self, state_machines: Sequence[Any], context: Context | None = None) -> None:
         context = context or Context(bot=self, window_title=self.window_title)
         context.bot = context.bot or self
         context.signal_emitter = context.signal_emitter or self.signal_emitter
@@ -208,7 +240,7 @@ class OSROKBOT:
         self.all_threads_joined = False
         self.write_heartbeat(context, force=True)
 
-        def run_single_machine(machine):
+        def run_single_machine(machine: Any) -> None:
             while not self.stop_event.is_set():
                 if getattr(machine, "halted", False):
                     LOGGER.error("Workflow state machine halted; stopping workflow thread.")
@@ -236,7 +268,9 @@ class OSROKBOT:
                 max_workers=max(1, len(state_machines)),
                 thread_name_prefix="OSROKBOT-Workflow",
             ) as executor:
-                futures = [executor.submit(run_single_machine, machine) for machine in state_machines]
+                futures: list[Future[None]] = [
+                    executor.submit(run_single_machine, machine) for machine in state_machines
+                ]
                 while futures and not self.stop_event.is_set():
                     done, _pending = wait(futures, timeout=0.5, return_when=FIRST_EXCEPTION)
                     for future in done:
@@ -247,7 +281,7 @@ class OSROKBOT:
             self.all_threads_joined = True
             self.is_running = False
 
-    def _runner_done(self, future):
+    def _runner_done(self, future: Future[None]) -> None:
         failed = False
         try:
             future.result()
@@ -263,7 +297,7 @@ class OSROKBOT:
         self._shutdown_runner_executor()
         self.all_threads_joined = True
 
-    def start(self, steps, context=None):
+    def start(self, steps: Sequence[Any], context: Context | None = None) -> bool:
         if self.is_running or not self.all_threads_joined:
             return False
         if not self._hardware_input_ready(context):
@@ -277,23 +311,23 @@ class OSROKBOT:
         self._runner_future.add_done_callback(self._runner_done)
         return True
 
-    def stop(self):
+    def stop(self) -> None:
         self.stop_event.set()
         self.is_running = False
         self._shutdown_runner_executor()
-        
+
         # Prevent zombie threads by killing the heartbeat executor
         if getattr(self, "_heartbeat_executor", None):
             self._heartbeat_executor.shutdown(wait=False, cancel_futures=True)
 
-    def toggle_pause(self):
+    def toggle_pause(self) -> None:
         if self.pause_event.is_set():
             self.pause_event.clear()
         else:
             self.pause_event.set()
         self.signal_emitter.pause_toggled.emit(self.pause_event.is_set())
 
-    def is_paused(self):
+    def is_paused(self) -> bool:
         return self.pause_event.is_set()
 
 # Validated Phase 2 Polish Update

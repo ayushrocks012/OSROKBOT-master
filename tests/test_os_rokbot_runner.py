@@ -1,6 +1,10 @@
+import json
 import threading
 import time
 
+import pytest
+
+import OS_ROKBOT as os_rokbot
 from OS_ROKBOT import OSROKBOT, EmergencyStop
 
 
@@ -16,6 +20,82 @@ def _wait_for(predicate, timeout=2.0):
 def _allow_start(monkeypatch, bot):
     monkeypatch.setattr(bot, "_hardware_input_ready", lambda context=None: True)
     monkeypatch.setattr(EmergencyStop, "start_once", staticmethod(lambda: True))
+
+
+def test_write_heartbeat_file_writes_json_atomically(tmp_path):
+    heartbeat_path = tmp_path / "nested" / "heartbeat.json"
+    payload = {
+        "timestamp_epoch": 123.5,
+        "bot_pid": 456,
+        "game_pid": 789,
+        "window_title": "Test Window",
+    }
+
+    OSROKBOT._write_heartbeat_file(heartbeat_path, payload)
+
+    assert json.loads(heartbeat_path.read_text(encoding="utf-8")) == payload
+    assert not heartbeat_path.with_suffix(heartbeat_path.suffix + ".tmp").exists()
+
+
+def test_write_heartbeat_file_raises_after_repeated_file_locks(monkeypatch, tmp_path):
+    heartbeat_path = tmp_path / "heartbeat.json"
+    replace_calls = []
+
+    def locked_replace(self, target):
+        replace_calls.append((self, target))
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(type(heartbeat_path), "replace", locked_replace)
+    monkeypatch.setattr(os_rokbot.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(PermissionError):
+        OSROKBOT._write_heartbeat_file(heartbeat_path, {"timestamp_epoch": 1.0})
+
+    assert len(replace_calls) == 3
+
+
+def test_game_pid_cache_reuses_pid_and_clears_when_window_missing(monkeypatch):
+    class FakeWindow:
+        def __init__(self, hwnd):
+            self._hWnd = hwnd
+
+    class FakeWindowHandler:
+        def __init__(self):
+            self.window = FakeWindow(100)
+
+        def get_window(self, _title):
+            return self.window
+
+    class FakeWin32Process:
+        def __init__(self):
+            self.calls = 0
+
+        def GetWindowThreadProcessId(self, hwnd):
+            self.calls += 1
+            return 0, hwnd + 1000
+
+    fake_window_handler = FakeWindowHandler()
+    fake_win32process = FakeWin32Process()
+    monkeypatch.setattr(os_rokbot, "win32process", fake_win32process)
+
+    bot = OSROKBOT("Test Window", delay=0)
+    bot.window_handler = fake_window_handler
+
+    assert bot._game_pid("Test Window") == 1100
+    assert bot._game_pid("Test Window") == 1100
+    assert fake_win32process.calls == 1
+
+    fake_window_handler.window = FakeWindow(200)
+    assert bot._game_pid("Test Window") == 1200
+    assert fake_win32process.calls == 2
+
+    fake_window_handler.window = None
+    assert bot._game_pid("Test Window") is None
+    assert bot._cached_game_pid is None
+
+    fake_window_handler.window = FakeWindow(200)
+    assert bot._game_pid("Test Window") == 1200
+    assert fake_win32process.calls == 3
 
 
 def test_start_creates_fresh_runner_executor_per_run(monkeypatch):
