@@ -1,9 +1,11 @@
+"""Deprecated Lyceum template action retained for historical reference."""
+
 import csv
 from pathlib import Path
 
 from Actions.action import Action
-from Actions.manual_click_action import ManualClickAction
-from Actions.manual_move_action import ManualMoveAction
+from Actions.legacy.manual_click_action import ManualClickAction
+from Actions.legacy.manual_move_action import ManualMoveAction
 from ai_fallback import AIFallback
 from logging_config import get_logger
 from sklearn.feature_extraction.text import TfidfVectorizer

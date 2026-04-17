@@ -1,5 +1,7 @@
 import re
-import subprocess
+
+# Restart uses explicit configured executable path without shell=True.
+import subprocess  # nosec B404
 import time
 from enum import Enum
 from pathlib import Path
@@ -14,6 +16,14 @@ from PIL import Image, ImageOps
 from window_handler import WindowHandler
 
 LOGGER = get_logger(__name__)
+OCR_READ_EXCEPTIONS = (
+    AttributeError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    getattr(pytesseract, "TesseractError", RuntimeError),
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -138,7 +148,7 @@ class GameStateMonitor:
         """Run the YOLO detector and return a set of lowercased label strings."""
         try:
             detections = self._get_detector().detect(screenshot)
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             LOGGER.warning("State monitor detector skipped: %s", exc)
             return set()
         return {
@@ -237,7 +247,7 @@ class GameStateMonitor:
             LOGGER.info(f"March slots: used={used} total={total} idle={idle}")
             self._cache_set("idle_march_slots", idle)
             return idle
-        except Exception as exc:
+        except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"March slot OCR failed: {exc}")
             return None
 
@@ -266,7 +276,7 @@ class GameStateMonitor:
             LOGGER.info(f"Action points: {action_points}")
             self._cache_set("action_points", action_points)
             return action_points
-        except Exception as exc:
+        except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"AP OCR failed: {exc}")
             return None
 
@@ -302,7 +312,7 @@ class GameStateMonitor:
                 LOGGER.error("Client path is invalid or non-absolute.")
                 return False
             subprocess.Popen([str(client_p)], cwd=str(client_p.parent))  # nosec B603
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             LOGGER.error(f"Client restart failed: {exc}")
             return False
 

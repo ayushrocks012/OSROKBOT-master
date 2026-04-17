@@ -67,11 +67,9 @@ def _target():
 
 def _click_response():
     return _FakeResponse(
-        (
-            '{"thought_process":"Need to gather.","action_type":"click","target_id":"det_1",'
-            '"label":"Gather Button","confidence":0.91,"delay_seconds":1.0,'
-            '"reason":"The gather button is visible."}'
-        )
+        '{"thought_process":"Need to gather.","action_type":"click","target_id":"det_1",'
+        '"label":"Gather Button","confidence":0.91,"delay_seconds":1.0,'
+        '"reason":"The gather button is visible."}'
     )
 
 
@@ -270,6 +268,107 @@ def test_request_decision_returns_none_on_terminal_transport_error(tmp_path):
     )
 
     assert decision is None
+
+
+def test_request_decision_records_timing(tmp_path):
+    timings = []
+    planner = _planner_with_transport(lambda _payload, _should_cancel: _click_response())
+    context = SimpleNamespace(
+        state_history=[],
+        record_runtime_timing=lambda stage, duration_ms, detail="": timings.append((stage, duration_ms, detail)),
+    )
+
+    decision = planner._request_decision(
+        context,
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="",
+        goal="Gather resources.",
+        targets=_target(),
+    )
+
+    assert decision is not None
+    assert timings
+    assert timings[-1][0] == "planner_request"
+    assert timings[-1][2] == "action=click"
+    assert timings[-1][1] >= 0.0
+
+
+def test_plan_next_prefers_memory_when_entry_resolves_to_valid_target(tmp_path):
+    class _Memory:
+        def find(self, *_args, **_kwargs):
+            return {
+                "label": "Gather Button",
+                "normalized_point": {"x": 0.25, "y": 0.75},
+                "confidence": 0.95,
+                "action_type": "click",
+                "similarity": 0.98,
+            }
+
+    planner = DynamicPlanner(config=_FakeConfig(), memory=_Memory())
+    planner._transport = _FakeTransport(lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("transport should not run")))
+    timings = []
+    context = SimpleNamespace(
+        state_history=[],
+        record_runtime_timing=lambda stage, duration_ms, detail="": timings.append((stage, duration_ms, detail)),
+    )
+
+    decision = planner.plan_next(
+        context,
+        _screen_path(tmp_path),
+        detections=[
+            {
+                "label": "Gather Button",
+                "x": 0.25,
+                "y": 0.75,
+                "width": 0.10,
+                "height": 0.20,
+                "confidence": 0.88,
+            }
+        ],
+        ocr_text="",
+        goal="Gather resources.",
+    )
+
+    assert decision is not None
+    assert decision.source == "memory"
+    assert decision.target_id == "det_1"
+    assert ("planner_memory_lookup", timings[0][1], "hit") == timings[0]
+
+
+def test_build_targets_includes_detector_and_ocr_regions():
+    targets = DynamicPlanner.build_targets(
+        detections=[{"label": "Confirm", "x": 0.20, "y": 0.30, "width": 0.10, "height": 0.10, "confidence": 0.90}],
+        ocr_regions=[{"text": "Search", "x": 0.60, "y": 0.70, "width": 0.15, "height": 0.10, "confidence": 0.80}],
+    )
+
+    assert [target.target_id for target in targets] == ["det_1", "ocr_1"]
+    assert targets[1].label == "Search"
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected"),
+    [
+        (
+            PlannerDecision("t", "drag", "map", 0.2, 0.3, 0.9, "drag", target_id="det_1", drag_direction="left"),
+            True,
+        ),
+        (
+            PlannerDecision("t", "key", "escape", math.nan, math.nan, 0.9, "key", key_name="escape"),
+            True,
+        ),
+        (
+            PlannerDecision("t", "type", "chat", math.nan, math.nan, 0.9, "type", text_content="hello"),
+            True,
+        ),
+        (
+            PlannerDecision("t", "drag", "map", 0.2, 0.3, 0.5, "drag", target_id="det_1", drag_direction="left"),
+            False,
+        ),
+    ],
+)
+def test_validate_decision_handles_extended_actions(decision, expected):
+    assert DynamicPlanner.validate_decision(decision) is expected
 
 
 def test_async_planner_transport_returns_when_paused_while_future_is_pending(monkeypatch):

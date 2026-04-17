@@ -1,3 +1,5 @@
+"""Deprecated OCR extraction action retained outside the supported runtime."""
+
 import pytesseract
 from Actions.action import Action
 from config_manager import ConfigManager

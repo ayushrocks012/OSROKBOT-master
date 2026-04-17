@@ -1,6 +1,8 @@
+"""Deprecated color-check action retained outside the supported runtime."""
+
 from colorsys import rgb_to_hsv
 
-from Actions.window_percent_action import WindowPercentAction
+from Actions.legacy.window_percent_action import WindowPercentAction
 from logging_config import get_logger
 
 LOGGER = get_logger(__name__)

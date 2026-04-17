@@ -1,9 +1,24 @@
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, cast
 
 from logging_config import get_logger
+from runtime_payloads import (
+    NormalizedPoint,
+    PlannerPendingPayload,
+    RuntimeTimingEntry,
+    StateHistoryEntry,
+    coerce_decision_payload,
+    compute_absolute_point,
+    planner_signal_payload,
+    runtime_timing_entry,
+    serialize_detections,
+    serialize_window_rect,
+    state_history_entry,
+)
 from session_logger import SessionLogger
 
 LOGGER = get_logger(__name__)
@@ -50,8 +65,10 @@ class Context:
     idle_march_slots_checked_at: float | None = None
     action_points: int | None = None
     action_points_checked_at: float | None = None
-    state_history: list[dict[str, Any]] = field(default_factory=list)
+    state_history: list[StateHistoryEntry] = field(default_factory=list)
     max_state_history: int = 10
+    runtime_timing_history: list[RuntimeTimingEntry] = field(default_factory=list)
+    max_runtime_timing_history: int = 50
     ui_anchors: dict[str, dict[str, Any]] = field(default_factory=dict)
     primary_ui_anchor: str = "primary"
     primary_anchor_image: str | None = None
@@ -60,13 +77,14 @@ class Context:
     planner_autonomy_level: int = 1
     session_logger: SessionLogger | None = None
     current_observation: ObservationSnapshot | None = None
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     @property
-    def UI(self):
+    def UI(self) -> Any | None:
         """Backward-compatible alias for older code paths."""
         return self.ui_instance
 
-    def get_signal_emitter(self):
+    def get_signal_emitter(self) -> Any | None:
         if self.signal_emitter:
             return self.signal_emitter
         if self.bot and hasattr(self.bot, "signal_emitter"):
@@ -75,33 +93,57 @@ class Context:
             return self.ui_instance.OS_ROKBOT.signal_emitter
         return None
 
-    def emit_state(self, state_text):
+    def emit_state(self, state_text: str) -> None:
         emitter = self.get_signal_emitter()
         if emitter:
             emitter.state_changed.emit(state_text)
 
     @staticmethod
-    def normalize_coordinate(value):
+    def normalize_coordinate(value: float | int | str) -> float:
         value = float(value)
         if value > 1.0:
             return value / 100.0
         return value
 
-    def record_state(self, state_name, action_text, result, next_state=None, event="action"):
-        self.state_history.append(
-            {
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "event": event,
-                "state": state_name,
-                "action": action_text,
-                "result": bool(result),
-                "next_state": next_state,
-            }
-        )
-        if len(self.state_history) > self.max_state_history:
-            del self.state_history[: len(self.state_history) - self.max_state_history]
+    def record_state(
+        self,
+        state_name: str,
+        action_text: str,
+        result: bool,
+        next_state: str | None = None,
+        event: str = "action",
+    ) -> None:
+        with self._lock:
+            self.state_history.append(
+                state_history_entry(
+                    timestamp=datetime.now().isoformat(timespec="seconds"),
+                    event=event,
+                    state=state_name,
+                    action=action_text,
+                    result=bool(result),
+                    next_state=next_state,
+                )
+            )
+            if len(self.state_history) > self.max_state_history:
+                del self.state_history[: len(self.state_history) - self.max_state_history]
 
-    def save_failure_diagnostic(self, state_name="unknown"):
+    def record_runtime_timing(self, stage: str, duration_ms: float, detail: str = "") -> None:
+        """Persist one bounded runtime timing sample for the current run."""
+        entry = runtime_timing_entry(
+            timestamp=datetime.now().isoformat(timespec="seconds"),
+            stage=stage,
+            duration_ms=duration_ms,
+            detail=detail,
+        )
+        with self._lock:
+            self.runtime_timing_history.append(entry)
+            if len(self.runtime_timing_history) > self.max_runtime_timing_history:
+                del self.runtime_timing_history[: len(self.runtime_timing_history) - self.max_runtime_timing_history]
+            self.extracted["runtime_timings"] = list(self.runtime_timing_history)
+        if self.session_logger:
+            self.session_logger.record_timing(stage, duration_ms, detail=detail)
+
+    def save_failure_diagnostic(self, state_name: str = "unknown") -> Path | None:
         from diagnostic_screenshot import save_diagnostic_screenshot
         from window_handler import WindowHandler
 
@@ -109,15 +151,17 @@ class Context:
         if screenshot is None:
             LOGGER.warning("Diagnostic capture skipped: screenshot unavailable.")
             return None
-        screenshot_path = save_diagnostic_screenshot(screenshot, label=f"diagnostic_{state_name}")
+        screenshot_path = cast(Path | None, save_diagnostic_screenshot(screenshot, label=f"diagnostic_{state_name}"))
         if screenshot_path:
             self.export_state_history(screenshot_path.with_suffix(".log"))
         return screenshot_path
 
-    def export_state_history(self, path):
+    def export_state_history(self, path: Path) -> Path | None:
         try:
             lines = ["OSROKBOT state history", ""]
-            for entry in self.state_history:
+            with self._lock:
+                history = list(self.state_history)
+            for entry in history:
                 lines.append(
                     "{timestamp} [{event}] state={state} result={result} next={next_state} action={action}".format(
                         timestamp=entry.get("timestamp", ""),
@@ -136,38 +180,43 @@ class Context:
         LOGGER.warning(f"State history saved: {path}")
         return path
 
-    def set_current_observation(self, screenshot, window_rect, detections=None):
-        self.current_observation = ObservationSnapshot(
-            screenshot=screenshot,
-            window_rect=window_rect,
-            detections=tuple(detections or ()),
-        )
-        return self.current_observation
-
-    def clear_current_observation(self):
-        self.current_observation = None
-
-    @staticmethod
-    def _serialize_detections(detections):
-        serialized = []
-        for index, detection in enumerate(detections or (), start=1):
-            raw = detection.to_dict() if hasattr(detection, "to_dict") else detection
-            if not isinstance(raw, dict):
-                continue
-            serialized.append(
-                {
-                    "target_id": str(raw.get("target_id") or f"det_{index}"),
-                    "label": str(raw.get("label", "")),
-                    "x": float(raw.get("x", 0.0)),
-                    "y": float(raw.get("y", 0.0)),
-                    "width": float(raw.get("width", 0.0)),
-                    "height": float(raw.get("height", 0.0)),
-                    "confidence": float(raw.get("confidence", 0.0)),
-                }
+    def set_current_observation(
+        self,
+        screenshot: Any,
+        window_rect: Any,
+        detections: Iterable[Any] | None = None,
+    ) -> ObservationSnapshot:
+        with self._lock:
+            self.current_observation = ObservationSnapshot(
+                screenshot=screenshot,
+                window_rect=window_rect,
+                detections=tuple(detections) if detections is not None else (),
             )
-        return serialized
+            return self.current_observation
 
-    def set_ui_anchor(self, name, screen_x, screen_y, window_rect, reference_normalized=None):
+    def clear_current_observation(self) -> None:
+        with self._lock:
+            self.current_observation = None
+
+    def get_current_observation(self) -> ObservationSnapshot | None:
+        with self._lock:
+            return self.current_observation
+
+    def clear_current_observation_if(self, observation: ObservationSnapshot | None) -> bool:
+        with self._lock:
+            if self.current_observation is observation:
+                self.current_observation = None
+                return True
+        return False
+
+    def set_ui_anchor(
+        self,
+        name: str,
+        screen_x: int,
+        screen_y: int,
+        window_rect: Any,
+        reference_normalized: tuple[float, float] | None = None,
+    ) -> None:
         normalized_x = (int(screen_x) - int(window_rect.left)) / max(1, int(window_rect.width))
         normalized_y = (int(screen_y) - int(window_rect.top)) / max(1, int(window_rect.height))
         reference = reference_normalized or (normalized_x, normalized_y)
@@ -183,12 +232,12 @@ class Context:
 
     def resolve_anchor_relative_point(
         self,
-        normalized_x,
-        normalized_y,
-        window_rect,
-        anchor_name=None,
-        reference_normalized=None,
-    ):
+        normalized_x: float | int | str,
+        normalized_y: float | int | str,
+        window_rect: Any,
+        anchor_name: str | None = None,
+        reference_normalized: tuple[float, float] | None = None,
+    ) -> tuple[int, int]:
         anchor_key = anchor_name or self.primary_ui_anchor
         anchor = self.ui_anchors.get(anchor_key)
         normalized_x = self.normalize_coordinate(normalized_x)
@@ -206,66 +255,69 @@ class Context:
         offset_y = (normalized_y - reference_y) * int(window_rect.height)
         return int(round(anchor_screen_x + offset_x)), int(round(anchor_screen_y + offset_y))
 
-    def set_pending_planner_decision(self, decision, screenshot_path=None, window_rect=None, detections=None):
-        decision_data = decision.to_dict() if hasattr(decision, "to_dict") else decision
-        rect_data = {
-            "left": getattr(window_rect, "left", 0),
-            "top": getattr(window_rect, "top", 0),
-            "width": getattr(window_rect, "width", 0),
-            "height": getattr(window_rect, "height", 0),
-        } if window_rect else {}
-        detection_data = self._serialize_detections(detections)
-        absolute_x = None
-        absolute_y = None
-        if rect_data and decision_data:
-            try:
-                absolute_x = int(round(rect_data["left"] + rect_data["width"] * float(decision_data.get("x", 0.0))))
-                absolute_y = int(round(rect_data["top"] + rect_data["height"] * float(decision_data.get("y", 0.0))))
-            except Exception:
-                absolute_x = None
-                absolute_y = None
-
-        self.extracted["planner_pending"] = {
+    def set_pending_planner_decision(
+        self,
+        decision: object,
+        screenshot_path: str | Path | None = None,
+        window_rect: Any | None = None,
+        detections: Iterable[object] | None = None,
+    ) -> PlannerPendingPayload:
+        decision_data = coerce_decision_payload(decision)
+        rect_data = serialize_window_rect(window_rect)
+        detection_data = serialize_detections(detections)
+        absolute_point = compute_absolute_point(decision_data, rect_data)
+        pending: PlannerPendingPayload = {
             "decision": decision_data,
             "screenshot_path": str(screenshot_path) if screenshot_path else "",
             "window_rect": rect_data,
             "detections": detection_data,
-            "absolute_x": absolute_x,
-            "absolute_y": absolute_y,
+            "absolute_x": absolute_point[0] if absolute_point else None,
+            "absolute_y": absolute_point[1] if absolute_point else None,
             "event": threading.Event(),
             "result": None,
             "corrected_point": None,
         }
+        with self._lock:
+            self.extracted["planner_pending"] = pending
         self.emit_state("Planner approval needed")
         emitter = self.get_signal_emitter()
         if emitter and hasattr(emitter, "planner_decision"):
-            payload = {
-                "decision": decision_data,
-                "screenshot_path": str(screenshot_path) if screenshot_path else "",
-                "window_rect": rect_data,
-                "detections": detection_data,
-                "absolute_x": absolute_x,
-                "absolute_y": absolute_y,
-            }
+            payload = planner_signal_payload(pending)
             emitter.planner_decision.emit(payload)
-        return self.extracted["planner_pending"]
+        return pending
 
-    def resolve_planner_decision(self, approved, corrected_point=None):
-        pending = self.extracted.get("planner_pending")
-        if not pending:
-            return False
-        pending["result"] = "approved" if approved else "rejected"
-        if corrected_point:
-            pending["corrected_point"] = corrected_point
-        event = pending.get("event")
+    def pending_planner_decision(self) -> PlannerPendingPayload | None:
+        with self._lock:
+            pending = self.extracted.get("planner_pending")
+        if not isinstance(pending, dict):
+            return None
+        return cast(PlannerPendingPayload, pending)
+
+    def resolve_planner_decision(
+        self,
+        approved: bool,
+        corrected_point: NormalizedPoint | None = None,
+    ) -> bool:
+        with self._lock:
+            pending = self.extracted.get("planner_pending")
+            if not pending:
+                return False
+            pending["result"] = "approved" if approved else "rejected"
+            if corrected_point:
+                pending["corrected_point"] = corrected_point
+            event = pending.get("event")
         if event:
             event.set()
         return True
 
-    def clear_pending_planner_decision(self):
-        return self.extracted.pop("planner_pending", None)
+    def clear_pending_planner_decision(self) -> PlannerPendingPayload | None:
+        with self._lock:
+            pending = self.extracted.pop("planner_pending", None)
+        if not isinstance(pending, dict):
+            return None
+        return cast(PlannerPendingPayload, pending)
 
-    def set_extracted_text(self, description, value):
+    def set_extracted_text(self, description: str, value: str) -> None:
         cleaned_value = value.replace(",", "").replace("\"", "")
         if description in {"Q", "A", "B", "C", "D"}:
             setattr(self, description, cleaned_value)

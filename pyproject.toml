@@ -4,6 +4,7 @@ line-length = 120
 extend-exclude = [
     "Media",
     "Media/Legacy",
+    "Classes/Actions/legacy",
     "data",
     "datasets",
     "diagnostics",
@@ -30,19 +31,24 @@ line-ending = "auto"
     "SIM105",  # Keep defensive release paths obvious in low-level input cleanup.
 ]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["Classes"]
-addopts = "-q"
-
 [tool.mypy]
 python_version = "3.13"
 strict = true
 mypy_path = ["Classes"]
 ignore_missing_imports = true
 explicit_package_bases = true
+follow_imports = "skip"
+files = [
+    "Classes/runtime_contracts.py",
+    "Classes/runtime_payloads.py",
+    "Classes/context.py",
+    "Classes/OS_ROKBOT.py",
+    "Classes/action_sets.py",
+    "Classes/ai_recovery_executor.py",
+]
 exclude = [
     "Media/",
+    "Classes/Actions/legacy/",
     "data/",
     "datasets/",
     "diagnostics/",
@@ -51,6 +57,6 @@ exclude = [
 
 [tool.vulture]
 paths = ["Classes", "verify_integrity.py", "watchdog.py", "cleanup_media.py"]
-exclude = ["Media/", "data/", "datasets/", "diagnostics/", "models/"]
+exclude = ["Media/", "Classes/Actions/legacy/", "data/", "datasets/", "diagnostics/", "models/"]
 min_confidence = 80
 sort_by_size = true

@@ -10,7 +10,7 @@ import watchdog
 def test_fresh_heartbeat_takes_no_restart_action(tmp_path, monkeypatch):
     heartbeat_path = tmp_path / "heartbeat.json"
     heartbeat_path.write_text(
-        '{"timestamp_epoch": %s, "bot_pid": 111, "game_pid": 222}' % time.time(),
+        f'{{"timestamp_epoch": {time.time()}, "bot_pid": 111, "game_pid": 222}}',
         encoding="utf-8",
     )
     monkeypatch.setattr(watchdog, "game_is_missing", lambda payload: False)
@@ -29,12 +29,14 @@ def test_stale_heartbeat_terminates_only_tracked_pids_and_restarts(tmp_path, mon
     ui_path = tmp_path / "UI.py"
     game_path.write_text("", encoding="utf-8")
     ui_path.write_text("", encoding="utf-8")
+    escaped_ui_path = str(ui_path).replace("\\", "\\\\")
+    escaped_repo_root = str(tmp_path).replace("\\", "\\\\")
     heartbeat_path.write_text(
         (
             '{"timestamp_epoch": 1, "bot_pid": 111, "game_pid": 222, '
-            '"python_executable": "python.exe", "ui_entrypoint": "%s", "repo_root": "%s"}'
-        )
-        % (str(ui_path).replace("\\", "\\\\"), str(tmp_path).replace("\\", "\\\\")),
+            f'"python_executable": "python.exe", "ui_entrypoint": "{escaped_ui_path}", '
+            f'"repo_root": "{escaped_repo_root}"}}'
+        ),
         encoding="utf-8",
     )
 
@@ -49,8 +51,8 @@ def test_stale_heartbeat_terminates_only_tracked_pids_and_restarts(tmp_path, mon
 
     assert watchdog.check_once(heartbeat_path, timeout_seconds=30, now=100) is True
 
-    assert ["taskkill", "/PID", "111", "/T", "/F"] in run_calls
-    assert ["taskkill", "/PID", "222", "/T", "/F"] in run_calls
+    assert [str(watchdog.TASKKILL_EXE), "/PID", "111", "/T", "/F"] in run_calls
+    assert [str(watchdog.TASKKILL_EXE), "/PID", "222", "/T", "/F"] in run_calls
     assert ([str(game_path)], str(tmp_path)) in popen_calls
     assert (["python.exe", str(ui_path)], str(tmp_path)) in popen_calls
 
@@ -69,6 +71,29 @@ def test_missing_rok_client_path_skips_game_relaunch(monkeypatch):
     monkeypatch.setattr(watchdog, "_configured_path", lambda key, default=None: None)
 
     assert watchdog.relaunch_game() is False
+
+
+@pytest.mark.integration
+def test_read_heartbeat_rejects_malformed_json(tmp_path):
+    heartbeat_path = tmp_path / "heartbeat.json"
+    heartbeat_path.write_text("{not-json", encoding="utf-8")
+
+    assert watchdog.read_heartbeat(heartbeat_path) is None
+
+
+@pytest.mark.integration
+def test_fresh_heartbeat_relaunches_missing_game(monkeypatch, tmp_path):
+    heartbeat_path = tmp_path / "heartbeat.json"
+    heartbeat_path.write_text(
+        f'{{"timestamp_epoch": {time.time()}, "bot_pid": 111, "game_pid": null}}',
+        encoding="utf-8",
+    )
+    relaunched = []
+    monkeypatch.setattr(watchdog, "game_is_missing", lambda payload: True)
+    monkeypatch.setattr(watchdog, "relaunch_game", lambda: relaunched.append("game") or True)
+
+    assert watchdog.check_once(heartbeat_path, timeout_seconds=30) is True
+    assert relaunched == ["game"]
 
 
 def test_restart_ui_uses_heartbeat_python_and_entrypoint(tmp_path, monkeypatch):

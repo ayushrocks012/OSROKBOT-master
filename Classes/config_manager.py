@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from logging_config import get_logger
+from security_utils import SENSITIVE_CONFIG_KEYS, atomic_write_text, update_env_file
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.json"
@@ -11,6 +12,7 @@ LOGGER = get_logger(__name__)
 
 
 class ConfigManager:
+    SENSITIVE_KEYS = SENSITIVE_CONFIG_KEYS
     SUPPORTED_KEYS = {
         "OPENAI_KEY",
         "OPENAI_API_KEY",
@@ -38,6 +40,7 @@ class ConfigManager:
         "PLANNER_CACHE_TTL_SECONDS",
         "PLANNER_STUCK_THRESHOLD",
         "PLANNER_MAX_MEMORY_ENTRIES",
+        "ROK_YOLO_MAX_BYTES",
         "MISSION_HISTORY",
     }
 
@@ -71,6 +74,10 @@ class ConfigManager:
                     self.values = {str(key): str(value) for key, value in raw.items() if value is not None}
             except Exception as exc:
                 LOGGER.warning("Unable to read config.json: %s", exc)
+        for key in self.SENSITIVE_KEYS:
+            if key in self.values and key not in self.env_values:
+                self.env_values[key] = self.values[key]
+            self.values.pop(key, None)
         return self
 
     def save(self):
@@ -80,7 +87,22 @@ class ConfigManager:
             for key, value in self.values.items()
             if key in self.SUPPORTED_KEYS and value not in {None, ""}
         }
-        self.config_path.write_text(json.dumps(allowed_values, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        public_values = {
+            key: value
+            for key, value in allowed_values.items()
+            if key not in self.SENSITIVE_KEYS
+        }
+        atomic_write_text(
+            self.config_path,
+            json.dumps(public_values, indent=2, sort_keys=True) + "\n",
+        )
+        secret_values = {
+            key: value
+            for key, value in self.env_values.items()
+            if key in self.SENSITIVE_KEYS
+        }
+        if secret_values or self.env_path.is_file():
+            update_env_file(self.env_path, secret_values)
         return self.config_path
 
     def get(self, key, default=None):
@@ -95,6 +117,13 @@ class ConfigManager:
             if key not in self.SUPPORTED_KEYS:
                 continue
             cleaned_value = "" if value is None else str(value).strip()
+            if key in self.SENSITIVE_KEYS:
+                self.values.pop(key, None)
+                if cleaned_value:
+                    self.env_values[key] = cleaned_value
+                else:
+                    self.env_values.pop(key, None)
+                continue
             if cleaned_value:
                 self.values[key] = cleaned_value
             else:

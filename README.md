@@ -31,6 +31,10 @@ UI mission
 - [Current Runtime](#current-runtime)
 - [Planner Contract](#planner-contract)
 - [Architecture Map](#architecture-map)
+- [Runtime Diagrams](#runtime-diagrams)
+- [Documentation Standard](#documentation-standard)
+- [Operational Runbooks](#operational-runbooks)
+- [Architecture Decision Records](#architecture-decision-records)
 - [Safety Model](#safety-model)
 - [Requirements](#requirements)
 - [Setup](#setup)
@@ -48,16 +52,15 @@ UI mission
 
 OSROKBOT executes one guarded planner step at a time.
 
-1. `Classes/UI.py` collects a plain-English mission and selected autonomy
-   level, then creates a per-run `Context`.
+1. `Classes/UI.py` collects a plain-English mission, builds the production
+   runtime dependencies, and creates a per-run `Context`.
 2. `Classes/action_sets.py` builds the supported `dynamic_planner()` state
-   machine.
+   machine from the startup-provided action factory.
 3. `Classes/OS_ROKBOT.py` runs the machine through an executor-backed loop,
    writes heartbeat data, checks foreground state, captures one shared
    observation per loop, and pauses on CAPTCHA-like detector labels.
-4. `Classes/Actions/dynamic_planner_action.py` reuses that shared observation
-   when available, gathers OCR/resource/stuck-screen context, asks `TaskGraph`
-   for the current focused sub-goal, then requests one planner decision.
+4. `Classes/Actions/dynamic_planner_action.py` orchestrates four helper
+   services: observation, approval, execution, and feedback.
 5. `Classes/vision_memory.py` tries to reuse a successful local visual match
    before spending an OpenAI call.
 6. `Classes/dynamic_planner.py` sends planner requests through a dedicated
@@ -67,9 +70,11 @@ OSROKBOT executes one guarded planner step at a time.
    applies the autonomy policy, records corrections or failures, and sends any
    hardware input through `Classes/input_controller.py`.
 
-The historical action classes and `StateMachine` infrastructure still exist,
-but new runtime behavior should enter through `ActionSets.dynamic_planner()`.
-Legacy root-level gameplay templates under `Media/` are deprecated.
+The active action package exposes only the base `Action` contract and
+`DynamicPlannerAction`. Historical gameplay-template actions are quarantined
+under `Classes/Actions/legacy/` for reference only; new runtime behavior must
+enter through `ActionSets.dynamic_planner()`. Legacy root-level gameplay
+templates under `Media/` are deprecated.
 
 ## Planner Contract
 
@@ -125,26 +130,144 @@ they do not use the target approval prompt.
 
 | Module | Responsibility |
 | --- | --- |
-| `Classes/UI.py` | PyQt overlay, mission input, settings, autonomy selector, approval controls, detector-box approval overlay, mission history, session logging, and per-run `Context` creation. |
-| `Classes/context.py` | Shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and signal access. |
+| `Classes/UI.py` | PyQt overlay, mission input, settings, autonomy selector, approval controls, detector-box approval overlay, mission history, session logging, background YOLO warmup, and per-run `Context` creation. |
+| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and signal access. |
 | `Classes/action_sets.py` | Supported workflow factory. `dynamic_planner()` is the current runtime entry point. |
 | `Classes/state_machine.py` | Deterministic action runner, preconditions, transition history, diagnostics, and tiered global recovery. |
-| `Classes/OS_ROKBOT.py` | Executor-backed run loop, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat writing, and emergency-stop startup. |
-| `Classes/Actions/dynamic_planner_action.py` | Shared observation reuse, OCR/resource context, task graph focus, approval flow, memory updates, correction export, and guarded execution. |
+| `Classes/runtime_contracts.py` | Shared Protocols and type aliases for state-machine actions, detector/OCR providers, and window-capture boundaries. |
+| `Classes/runtime_payloads.py` | Shared TypedDict payloads for heartbeat, planner approval, recovery handoff, state history, and resource context. |
+| `Classes/artifact_retention.py` | Shared retention policies for diagnostics, session logs, and recovery dataset exports. |
+| `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat lifecycle, state-machine cleanup, and emergency-stop startup. |
+| `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and guarded execution services. |
+| `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
+| `Classes/Actions/legacy/` | Deprecated template actions retained outside the supported runtime and excluded from static cleanup gates. |
 | `Classes/dynamic_planner.py` | Async OpenAI Responses transport, strict JSON schema validation, target resolution, retry handling, memory-first decision selection, and decision validation. |
 | `Classes/task_graph.py` | One-time mission decomposition into sub-goals, cached per mission, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
 | `Classes/ocr_service.py` | EasyOCR-first OCR with Tesseract text and region fallback. |
 | `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, and explicit client restart support. |
 | `Classes/screen_change_detector.py` | Perceptual-hash screen change checks and repeated-action warnings for the planner prompt. |
-| `Classes/vision_memory.py` | CLIP embeddings, FAISS or NumPy similarity search, success/failure memory, corrections, and trusted-label checks. |
+| `Classes/vision_memory.py` | CLIP embeddings, FAISS or NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
+| `Classes/recovery_memory.py` | Bounded atomic persistence for guarded AI recovery outcomes keyed by state/action/screen signatures. |
 | `Classes/input_controller.py` | The only allowed hardware input path. It owns Interception readiness, pause/stop checks, foreground checks, bounds validation, bounded humanization, mouse movement, clicks, drags, long presses, keys, scrolls, and waits. |
 | `Classes/window_handler.py` | Foreground enforcement, client-rect discovery, and named capture backend selection with Win32 PrintWindow/BitBlt as the current default. |
-| `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download from `ROK_YOLO_WEIGHTS_URL`. |
+| `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download from `ROK_YOLO_WEIGHTS_URL` with timeout, streaming, and size-cap enforcement. |
+| `Classes/security_utils.py` | Secret redaction, atomic text writes, and dotenv updates for sensitive local configuration. |
 | `Classes/detection_dataset.py` | Planner no-decision stubs and correction export for detector training data. |
 | `Classes/session_logger.py` | Local session summary and event logging. |
 | `Classes/emergency_stop.py` | F12 process-level emergency termination. |
 | `watchdog.py` | Conservative heartbeat monitor and tracked-process restart helper. |
+| `verify_docs.py` | Lightweight documentation artifact and linkage verification. |
+
+## Runtime Diagrams
+
+### Planner Workflow
+
+```mermaid
+flowchart TD
+    UI["UI mission"] --> Ctx["Context"]
+    Ctx --> SM["StateMachine plan_next"]
+    SM --> Act["DynamicPlannerAction"]
+    Act --> TG["TaskGraph focused goal"]
+    Act --> Obs["Screenshot plus YOLO plus OCR plus resource and stuck context"]
+    Obs --> VM["VisionMemory lookup"]
+    VM -->|safe memory hit| Gate["Validation and autonomy gate"]
+    VM -->|no safe match| DP["DynamicPlanner JSON decision"]
+    TG --> DP
+    DP --> Gate
+    Gate --> IC["InputController"]
+```
+
+### Run And Recovery States
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Running: start run
+    Running --> Approval: L1 pointer action
+    Approval --> Running: approve and execute
+    Approval --> Paused: operator review or fix
+    Running --> Paused: user pause or captcha
+    Paused --> Running: resume
+    Running --> Recovery: repeated failure threshold
+    Recovery --> Running: known state restored
+    Running --> Stopped: planner stop or stop event
+    Paused --> Stopped: stop event or F12
+    Recovery --> Stopped: recovery exhausted
+    Stopped --> [*]
+```
+
+When runtime flow, approval gating, or recovery behavior changes, update these
+diagrams in the same change.
+
+## Documentation Standard
+
+OSROKBOT uses Google-style docstrings for the supported planner-first runtime.
+
+- Add a module docstring to files that define orchestration, safety,
+  concurrency, or persistence boundaries.
+- Public classes should document ownership, collaborators, invariants, and
+  side-effect limits.
+- Non-trivial public methods should document `Args`, `Returns`, and `Raises`.
+  Add `Threading` or `Side Effects` when the method owns background work,
+  locks, subprocesses, or hardware input boundaries.
+- Keep documentation scoped to the supported runtime only. Deprecated modules
+  under `Classes/Actions/legacy/` can be referenced as history, not as active
+  architecture.
+- `Classes/dynamic_planner.py` and `Classes/state_machine.py` are the
+  canonical examples for planner and workflow documentation in this
+  repository.
+
+Example:
+
+```python
+class DynamicPlanner:
+    """Plan one side-effect-free automation step from current observation data.
+
+    Collaborators:
+        VisionMemory provides memory-first reuse before an OpenAI request.
+
+    Invariants:
+        - Never executes hardware input.
+        - Never returns raw model coordinates.
+        - Never mutates UI or game state.
+    """
+```
+
+Before handoff, use `docs/documentation-review-checklist.md` to confirm that
+the user guide, maintainer contract, capability index, diagrams, runbooks, and
+ADRs still match the changed behavior.
+
+## Operational Runbooks
+
+Operator runbooks live under `docs/runbooks/` and are part of the maintained
+documentation surface:
+
+- `docs/runbooks/watchdog-restart.md`: heartbeat monitoring and conservative
+  restart behavior.
+- `docs/runbooks/captcha-manual-recovery.md`: required human handling when
+  CAPTCHA detection pauses automation.
+- `docs/runbooks/emergency-stop.md`: F12 termination and recovery expectations.
+- `docs/runbooks/secret-provisioning.md`: local `.env` provisioning and
+  workstation-grade secret handling limits.
+- `docs/runbooks/failure-triage.md`: first-pass investigation for stalled or
+  degraded runs.
+
+Update the affected runbook in the same change whenever setup, restart,
+CAPTCHA, emergency-stop, secret handling, diagnostics, telemetry, or triage
+behavior changes.
+
+## Architecture Decision Records
+
+Accepted architecture decisions live under `docs/adr/`:
+
+- `docs/adr/0001-planner-first-runtime.md`: the supported planner-first runtime
+  and legacy action quarantine.
+- `docs/adr/0002-human-in-the-loop-safety.md`: autonomy levels, approval
+  behavior, and CAPTCHA pause policy.
+
+Add or amend an ADR when changing the production runtime path, safety model,
+input boundary, memory strategy, or operational contract.
 
 ## Safety Model
 
@@ -287,6 +410,18 @@ Core variables:
 | `WATCHDOG_TIMEOUT_SECONDS` | Optional | Heartbeat staleness threshold. Defaults to `30`. |
 | `WATCHDOG_GAME_RESTART_WAIT_SECONDS` | Optional | Delay after relaunching the game client. Defaults to `20`. |
 | `WATCHDOG_RESTART_ENABLED` | Optional | Set to `0` to make watchdog stale-heartbeat handling report-only. |
+| `ROK_YOLO_MAX_BYTES` | Optional | Maximum YOLO weight download size in bytes. Defaults to `314572800`. |
+
+`ConfigManager` stores sensitive values such as `OPENAI_KEY`,
+`OPENAI_API_KEY`, and `EMAIL_PASSWORD` in `.env`, not `config.json`.
+Application logs redact OpenAI-style keys and known secret assignments.
+YOLO weight downloads must use HTTPS, run with a timeout, stream to a same-dir
+temporary file, and fail if they exceed `ROK_YOLO_MAX_BYTES`.
+
+> [!NOTE]
+> `.env` is a workstation-grade local secret store for supervised operators.
+> On Windows it is not equivalent to an enterprise vault, DPAPI-backed
+> credential store, or centralized rotation and audit system.
 
 ## Running OSROKBOT
 
@@ -383,6 +518,23 @@ The watchdog is intentionally conservative:
 | `diagnostics/` | Failure, CAPTCHA, and recovery screenshots/logs. |
 | `models/` | Optional local YOLO weights. |
 
+Runtime artifact retention is bounded by default:
+
+- `data/session_logs/`: keep the newest 200 session groups for up to 30 days.
+- `diagnostics/`: keep the newest 200 diagnostic groups for up to 30 days.
+- `datasets/recovery/`: keep the newest 300 recovery-export groups for up to 30 days.
+
+These can be overridden with:
+`ROK_SESSION_LOG_MAX_FILES`, `ROK_SESSION_LOG_MAX_AGE_DAYS`,
+`ROK_DIAGNOSTIC_MAX_FILES`, `ROK_DIAGNOSTIC_MAX_AGE_DAYS`,
+`ROK_RECOVERY_DATASET_MAX_SAMPLES`, and `ROK_RECOVERY_DATASET_MAX_AGE_DAYS`.
+
+Session logs also include bounded `timing` events for the guarded runtime
+phases so performance regressions can be diagnosed from one run artifact.
+Current timing samples cover window capture, YOLO detection, OCR region/text
+reads, resource-context OCR, planner memory lookup, planner request latency,
+guarded input execution, and post-action waits.
+
 ## Media Policy
 
 Protected media directories:
@@ -418,6 +570,15 @@ nested under other `Media/` subdirectories.
 - Do not bypass `InputController.validate_bounds(...)` for pointer actions.
 - Keep `dynamic_planner.py` side-effect free.
 - Keep agentic input execution behind `DynamicPlannerAction`.
+- Do not import from `Actions.legacy` in production runtime code.
+- Keep runner-owned services injectable and close action/planner resources at
+  the end of each run.
+- Store secrets in `.env` or process environment only; do not persist them to
+  `config.json` or include them in logs.
+- Keep long-running setup/download work off the PyQt UI thread.
+- Use Google-style docstrings on active runtime modules, classes, and
+  non-trivial public methods; update the README Mermaid diagrams when runtime
+  or recovery flow changes.
 - Do not solve, bypass, or automate CAPTCHAs.
 - Do not add root-level gameplay templates under `Media/`.
 - Store generated screenshots, memory, recovery datasets, and logs under
@@ -432,17 +593,57 @@ Run these before handing off changes:
 
 ```powershell
 python verify_integrity.py
-python -m compileall Classes verify_integrity.py cleanup_media.py watchdog.py
+python verify_docs.py
+python -m compileall Classes verify_integrity.py verify_docs.py cleanup_media.py watchdog.py
 python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports ok')"
+python -m mypy
 python -m pytest --basetemp .pytest_tmp -o cache_dir=.pytest_cache
+```
+
+The Phase 1 mypy gate is intentionally scoped to the typed boundary/runtime
+modules declared in `pyproject.toml`: `runtime_contracts`, `runtime_payloads`,
+`context`, `OS_ROKBOT`, `action_sets`, and `ai_recovery_executor`.
+
+`pytest.ini` enforces `>=80%` coverage across the deterministic runtime
+modules that are stable enough for hard unit-test enforcement:
+`ai_fallback`, `ai_recovery_executor`, `config_manager`, `context`,
+`dynamic_planner`, `model_manager`, `OS_ROKBOT`, `security_utils`, and
+`state_machine`.
+
+The test suite uses explicit markers:
+
+- `integration`: safe seam tests for OS-facing modules such as watchdog,
+  window capture, OCR, detector adapters, and state monitoring. These run in
+  normal pytest and must not launch live automation.
+- `supervised`: opt-in workstation checks for hardware/UI acceptance. These
+  are skipped unless `OSROKBOT_RUN_SUPERVISED_TESTS=1` is set by an operator.
+
+Windows/UI/hardware-bound modules now have deterministic seam coverage, but
+they are still outside the hard fail-under gate when they require live OS
+resources, PyQt event behavior, or human-operated workflows.
+
+Run only the safe integration tier:
+
+```powershell
+python -m pytest -m integration --no-cov --basetemp .pytest_tmp -o cache_dir=.pytest_cache
+```
+
+Run opt-in supervised checks only on a prepared workstation:
+
+```powershell
+$env:OSROKBOT_RUN_SUPERVISED_TESTS='1'
+python -m pytest -m supervised --no-cov --basetemp .pytest_tmp -o cache_dir=.pytest_cache
 ```
 
 Useful static checks:
 
 ```powershell
-python -m ruff check Classes verify_integrity.py cleanup_media.py watchdog.py --select I,UP,RET,SIM,B,F,PTH
+python -m ruff check Classes verify_integrity.py verify_docs.py cleanup_media.py watchdog.py --select I,UP,RET,SIM,B,F,PTH
 python -m vulture Classes verify_integrity.py watchdog.py cleanup_media.py --min-confidence 80
 ```
+
+`pyproject.toml` excludes `Classes/Actions/legacy/` from Ruff, mypy, and
+Vulture so dead-code reports focus on the supported planner-first runtime.
 
 `verify_integrity.py` checks project structure, media references, required
 configuration, runtime imports, Interception availability, optional YOLO

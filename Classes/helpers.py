@@ -1,5 +1,6 @@
-import random
-import time
+import secrets
+
+SYS_RANDOM = secrets.SystemRandom()
 
 
 class UIMap:
@@ -19,6 +20,5 @@ class UIMap:
 class Helpers:
     @staticmethod
     def getRandomRss():
-        random.seed(time.time())
-        #return lambda: random.choice(["cornicon"])
-        return lambda: random.choice(["cornicon","logicon"])
+        # return lambda: SYS_RANDOM.choice(["cornicon"])
+        return lambda: SYS_RANDOM.choice(["cornicon", "logicon"])

@@ -27,6 +27,54 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Safety: planner output is schema validated, target-resolved, confidence
   checked, delay bounded, and routed through the guarded action layer.
 
+## Runtime Action Surface
+
+- Owner: `Classes/Actions/__init__.py`
+- Active actions: `Action` and `DynamicPlannerAction`.
+- Deprecated actions: old template-driven actions live under
+  `Classes/Actions/legacy/` and are retained for reference only.
+- Rule: new runtime work must use `ActionSets.dynamic_planner()` instead of
+  importing legacy action modules.
+
+## Typed Runtime Contracts
+
+- Owner: `Classes/runtime_contracts.py`
+- Purpose: keep the state-machine action contract, detector/OCR providers, and
+  window-capture boundary explicit without coupling active modules to concrete
+  implementations.
+- Runtime use: `StateMachine`, `ActionSets`, and `DynamicPlannerAction` use
+  these contracts to make active Phase 1 paths statically inspectable.
+
+## Typed Runtime Payloads
+
+- Owner: `Classes/runtime_payloads.py`
+- Purpose: keep heartbeat, planner approval, recovery handoff, resource
+  context, and state-history payload shapes explicit without spreading
+  untyped ad-hoc dictionaries through the active runtime.
+- Runtime use: `Context`, `OS_ROKBOT`, `DynamicPlannerAction`, and
+  `AIRecoveryExecutor` share these payload shapes for the active planner-first
+  path.
+
+## Planner Action Services
+
+- Owners: `Classes/Actions/dynamic_planner_action.py` and
+  `Classes/Actions/dynamic_planner_services.py`
+- Split: observation capture, human approval, guarded execution, and planner
+  feedback/memory updates are separate services composed by the action.
+- Startup wiring: `UI.py` provides the production detector/window/memory
+  dependencies through the `ActionSets` dynamic planner factory.
+- Purpose: reduce orchestration coupling and keep `DynamicPlannerAction`
+  focused on one planner-step flow.
+
+## Phase 1 Type Gate
+
+- Owner: `pyproject.toml`
+- Command: `python -m mypy`
+- Scope: `runtime_contracts`, `runtime_payloads`, `context`, `OS_ROKBOT`,
+  `action_sets`, and `ai_recovery_executor`.
+- Intent: keep the typed boundary/runtime handoff clean now, while heavier
+  orchestration modules are refactored before they join the strict gate.
+
 ## Task Graph Decomposition
 
 - Owner: `Classes/task_graph.py`
@@ -44,6 +92,8 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Configuration: `ROK_YOLO_WEIGHTS` or `ROK_YOLO_WEIGHTS_URL`
 - Behavior: loads local YOLO weights when available; otherwise uses a no-op
   detector that returns no labels.
+- Download safety: configured downloads must use HTTPS, stream with a timeout,
+  write through a temporary file, and stay below `ROK_YOLO_MAX_BYTES`.
 - Purpose: provide structured visible UI labels and target boxes to planner,
   memory, state monitor, and CAPTCHA detection.
 
@@ -55,6 +105,21 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
   then reuse that observation for CAPTCHA checks and planner execution.
 - Purpose: reduce duplicate capture and detector work without changing the
   supported synchronous runtime path.
+- Concurrency: planner pending decisions and shared observations are guarded
+  by `Context` locks because they are touched from both workflow and UI code.
+
+## Configuration Security
+
+- Owners: `Classes/config_manager.py`, `Classes/security_utils.py`, and
+  `Classes/logging_config.py`
+- Secret storage: `OPENAI_KEY`, `OPENAI_API_KEY`, and `EMAIL_PASSWORD` persist
+  through `.env` instead of `config.json`.
+- Logging: OpenAI-style keys and known secret assignments are redacted before
+  console or file handlers emit records.
+- Operator note: `.env` is workstation-grade local secret storage, not an
+  enterprise vault or central secret-rotation boundary.
+- Rule: new sensitive settings must be added to `SENSITIVE_CONFIG_KEYS` and
+  must not be written to `config.json`.
 
 ## Window Capture Pipeline
 
@@ -94,8 +159,18 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Storage: `data/vision_memory.json`
 - Search: FAISS when available, NumPy fallback otherwise.
 - Embeddings: CLIP via `sentence-transformers`.
+- Retention: bounded entry count, atomic JSON replacement, and equivalent
+  success merging to limit local memory growth.
 - Purpose: reuse successful local decisions before OpenAI calls and support L2
   trusted-label autonomy.
+
+## Recovery Memory
+
+- Owner: `Classes/recovery_memory.py`
+- Storage: `data/recovery_memory.json`
+- Retention: bounded entry count and atomic JSON replacement.
+- Purpose: remember guarded recovery outcomes by state/action/screen signature
+  without letting stale failure data grow indefinitely.
 
 ## Fix-Based Human Correction
 
@@ -143,6 +218,8 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Trigger: F12
 - Behavior: immediate process termination.
 - Purpose: stop hardware-level input even if the overlay is unavailable.
+- Runtime gate: `OS_ROKBOT.start(...)` refuses live automation if the emergency
+  stop cannot be armed.
 
 ## Session Logging
 
@@ -150,7 +227,19 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Runtime setup: `Classes/UI.py`
 - Storage: `data/session_logs/`
 - Purpose: local run summaries, planner decisions, approvals, corrections,
-  CAPTCHA events, and errors.
+  CAPTCHA events, errors, and bounded timing samples for capture, OCR,
+  resource-context, planner, and guarded input phases.
+
+## Artifact Retention
+
+- Owner: `Classes/artifact_retention.py`
+- Applies to: `data/session_logs/`, `diagnostics/`, and `datasets/recovery/`
+- Grouping: files with the same stem are retained or deleted together so
+  `.png`, `.log`, `.meta`, and `.point` sidecars stay consistent.
+- Environment overrides:
+  `ROK_SESSION_LOG_MAX_FILES`, `ROK_SESSION_LOG_MAX_AGE_DAYS`,
+  `ROK_DIAGNOSTIC_MAX_FILES`, `ROK_DIAGNOSTIC_MAX_AGE_DAYS`,
+  `ROK_RECOVERY_DATASET_MAX_SAMPLES`, and `ROK_RECOVERY_DATASET_MAX_AGE_DAYS`.
 
 ## Watchdog Heartbeat
 
@@ -176,6 +265,70 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
   required environment values, runtime imports, Interception availability,
   watchdog configuration, optional YOLO weight accessibility, and game-window
   health.
+
+## Coverage Gate
+
+- Owner: `pytest.ini`
+- Threshold: `>=80%`
+- Scope: deterministic planner/runtime modules only:
+  `ai_fallback`, `ai_recovery_executor`, `config_manager`, `context`,
+  `dynamic_planner`, `model_manager`, `OS_ROKBOT`, `security_utils`, and
+  `state_machine`.
+- Reason: these modules are stable enough for hard unit-test enforcement;
+  Windows/UI/hardware-bound modules remain regression tested but are outside
+  the hard fail-under gate.
+
+## Test Tiers
+
+- Owner: `pytest.ini`
+- Unit/default tier: runs all normal deterministic tests and the hard coverage
+  gate.
+- `integration` marker: safe seam tests for watchdog, window capture, OCR,
+  object detector adapters, state monitor, and other OS-facing boundaries.
+  These tests must not launch live automation.
+- `supervised` marker: opt-in workstation/hardware acceptance checks. These
+  stay skipped unless an operator sets `OSROKBOT_RUN_SUPERVISED_TESTS=1`.
+
+## Documentation Standard
+
+- Canonical style: Google-style docstrings.
+- Required on orchestration-heavy modules, public classes, and non-trivial
+  public methods in the supported runtime.
+- Capture ownership, collaborators, invariants, side effects, threading, and
+  error boundaries where relevant.
+- Keep the Mermaid workflow and recovery diagrams in `README.md` synchronized
+  with runtime changes.
+- `Classes/dynamic_planner.py` and `Classes/state_machine.py` are the
+  repository examples for planner and workflow documentation.
+
+## Operator Runbooks
+
+- Owner: `docs/runbooks/`
+- Index: `docs/runbooks/README.md`
+- Watchdog operations: `docs/runbooks/watchdog-restart.md`
+- CAPTCHA handling: `docs/runbooks/captcha-manual-recovery.md`
+- Emergency stop: `docs/runbooks/emergency-stop.md`
+- Secret provisioning: `docs/runbooks/secret-provisioning.md`
+- Failure triage: `docs/runbooks/failure-triage.md`
+- Purpose: give supervised operators repeatable steps for high-risk runtime
+  situations without changing the safety model.
+
+## Architecture Decision Records
+
+- Owner: `docs/adr/`
+- Planner-first runtime: `docs/adr/0001-planner-first-runtime.md`
+- Human-in-the-loop safety: `docs/adr/0002-human-in-the-loop-safety.md`
+- Purpose: record production architecture decisions that should not be
+  rediscovered through code archaeology.
+
+## Documentation Verification
+
+- Owner: `verify_docs.py`
+- Checklist: `docs/documentation-review-checklist.md`
+- Command: `python verify_docs.py`
+- Checks: required documentation artifacts exist, README Mermaid diagrams are
+  present, runbooks contain the required operator sections, ADRs declare an
+  accepted status, and maintained docs reference the runbooks and ADRs.
 
 ## Documentation Sync
 

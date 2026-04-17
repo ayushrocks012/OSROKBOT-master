@@ -1,71 +1,145 @@
+"""Deterministic workflow execution for guarded OSROKBOT runs.
+
+The state machine owns supported action registration, precondition checking,
+transition recording, and conservative recovery escalation. It remains
+synchronous and delegates side effects to Action-like objects, the runtime
+Context, and focused recovery helpers.
+
+Safety:
+    Invalid transitions halt the machine instead of guessing a next state.
+    Recovery escalates from UI cleanup to client restart only when known-state
+    checks fail repeatedly.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
 from logging_config import get_logger
+from runtime_contracts import ActionLike, Precondition, TransitionTarget
 
 LOGGER = get_logger(__name__)
 
 
-class StateMachine:
-    """Small deterministic state machine for automation workflows.
+@dataclass(frozen=True)
+class StateDefinition:
+    """Registered state and transition metadata."""
 
-    States are registered with `add_state(name, action, success, failure)`.
-    `action` must be an `Action`-compatible object exposing `perform(context)`.
-    `execute(context)` runs the current state once, then moves to the success
-    or failure target according to the action's boolean result. A missing
-    failure target intentionally retries the same state.
-    Optional preconditions can verify screen state before an action runs. A
-    precondition can be another Action-like object, a callable that accepts the
-    current Context, or a simple boolean. Failed preconditions transition to
-    `fallback_state` when provided, otherwise the normal failure target. After
-    repeated precondition failures for the same state, global recovery clears
-    modal UI, toggles city/map, then restarts the client when an unknown state
-    persists and an explicit restart hook or client path is configured.
+    action: ActionLike
+    next_state_on_success: TransitionTarget
+    next_state_on_failure: TransitionTarget
+    precondition: Precondition = None
+    fallback_state: TransitionTarget = None
+
+
+class StateMachine:
+    """Run one deterministic workflow step and own recovery escalation.
+
+    States are registered with `add_state(...)` and execute through Action-like
+    objects exposing `perform(context)`. `execute(context)` runs exactly one
+    state step, records diagnostics into `Context`, and routes failures through
+    precondition handling, guarded recovery, or global recovery as needed.
+
+    Collaborators:
+        Action-like state objects perform the actual work.
+        `Context` records state history, emits UI status, and stores
+        diagnostics.
+        `AIRecoveryExecutor` and `GameStateMonitor` are optional recovery
+        helpers, loaded only when needed.
+
+    Invariants:
+        - Invalid transitions halt the machine instead of guessing.
+        - Missing failure targets retry the current state by design.
+        - Recovery escalates from menu cleanup to view toggle to restart.
     """
 
-    def __init__(self):
-        self.states = {}
-        self.current_state = None
+    def __init__(self) -> None:
+        self.states: dict[str, StateDefinition] = {}
+        self.current_state: str | None = None
         self.halted = False
-        self.precondition_failures = {}
+        self.precondition_failures: dict[str, int] = {}
         self.precondition_recovery_threshold = 3
-        self.action_failures = {}
+        self.action_failures: dict[str, int] = {}
         self.ai_fallback_threshold = 3
-        self.recovery_executor = None
+        self.recovery_executor: Any | None = None
 
     def add_state(
         self,
-        name,
-        state,
-        next_state_on_success=None,
-        next_state_on_failure=None,
-        precondition=None,
-        fallback_state=None,
-    ):
+        name: str,
+        state: ActionLike,
+        next_state_on_success: TransitionTarget = None,
+        next_state_on_failure: TransitionTarget = None,
+        precondition: Precondition = None,
+        fallback_state: TransitionTarget = None,
+    ) -> None:
+        """Register one state and its transition policy.
+
+        Args:
+            name: State identifier used for execution and diagnostics.
+            state: Action-like object exposing `perform(context)`.
+            next_state_on_success: Next state or resolver used when the action
+                returns `True`.
+            next_state_on_failure: Next state or resolver used when the action
+                returns `False`. Defaults to the current state for retries.
+            precondition: Optional Action-like object, callable, or boolean
+                checked before the state action runs.
+            fallback_state: Optional transition used when the precondition
+                fails.
+        """
         if next_state_on_failure is None:
             next_state_on_failure = name
-        self.states[name] = (
-            state,
-            next_state_on_success,
-            next_state_on_failure,
-            precondition,
-            fallback_state,
+        self.states[name] = StateDefinition(
+            action=state,
+            next_state_on_success=next_state_on_success,
+            next_state_on_failure=next_state_on_failure,
+            precondition=precondition,
+            fallback_state=fallback_state,
         )
 
-    def set_initial_state(self, name):
+    def set_initial_state(self, name: str) -> None:
         if name not in self.states:
             raise ValueError(f"Unknown initial state: {name}")
         self.current_state = name
         self.halted = False
 
-    def _record_transition(self, context, state_name, status_text, result, next_state=None, event="action"):
+    def _record_transition(
+        self,
+        context: Any | None,
+        state_name: str,
+        status_text: str,
+        result: bool,
+        next_state: str | None = None,
+        event: str = "action",
+    ) -> None:
         if context and hasattr(context, "record_state"):
             context.record_state(state_name, status_text, result, next_state=next_state, event=event)
 
-    def _halt_invalid_transition(self, context, state_name, source, status_text, result, next_state=None, event="action"):
+    def _halt_invalid_transition(
+        self,
+        context: Any | None,
+        state_name: str,
+        source: str,
+        status_text: str,
+        result: bool,
+        next_state: str | None = None,
+        event: str = "action",
+    ) -> None:
         LOGGER.error("State resolution failed for %s during %s. Halting workflow.", state_name, source)
         self._record_transition(context, state_name, status_text, result, next_state=next_state, event=event)
         self.halted = True
         return
 
-    def _resolve_next_state(self, next_state, context, state_name, source, status_text, result, event="action"):
+    def _resolve_next_state(
+        self,
+        next_state: TransitionTarget,
+        context: Any | None,
+        state_name: str,
+        source: str,
+        status_text: str,
+        result: bool,
+        event: str = "action",
+    ) -> str | None:
         try:
             resolved_next_state = next_state() if callable(next_state) else next_state
         except Exception as exc:
@@ -83,71 +157,91 @@ class StateMachine:
             )
         return resolved_next_state
 
-    def execute(self, context=None):
+    def _current_definition(self) -> StateDefinition:
         if self.halted:
-            LOGGER.error("State machine is halted; refusing to execute.")
-            return False
+            raise RuntimeError("State machine is halted")
         if self.current_state is None:
             raise RuntimeError("Initial state is not set")
         if self.current_state not in self.states:
             raise RuntimeError(f"Unknown state: {self.current_state}")
+        return self.states[self.current_state]
 
-        (
-            state,
-            next_state_on_success,
-            next_state_on_failure,
-            precondition,
-            fallback_state,
-        ) = self.states[self.current_state]
+    def _handle_precondition_failure(
+        self,
+        context: Any | None,
+        state_name: str,
+        definition: StateDefinition,
+    ) -> bool:
+        failure_count = self.precondition_failures.get(state_name, 0) + 1
+        self.precondition_failures[state_name] = failure_count
 
-        if precondition and not self._precondition_passes(precondition, context):
-            precondition_state = self.current_state
-            failure_count = self.precondition_failures.get(precondition_state, 0) + 1
-            self.precondition_failures[precondition_state] = failure_count
-
-            if failure_count >= self.precondition_recovery_threshold:
-                if context and hasattr(context, "record_state"):
-                    context.record_state(
-                        precondition_state,
-                        "precondition",
-                        False,
-                        next_state=precondition_state,
-                        event="precondition",
-                    )
-                    context.save_failure_diagnostic(f"precondition_{precondition_state}")
-                self.precondition_failures[precondition_state] = 0
-                self.global_recovery(context)
-                return False
-
-            next_state = fallback_state or next_state_on_failure
-            resolved_next_state = self._resolve_next_state(
-                next_state,
-                context,
-                precondition_state,
-                "precondition",
-                "precondition",
-                False,
-                event="precondition",
-            )
-            if resolved_next_state is None:
-                return False
+        if failure_count >= self.precondition_recovery_threshold:
             if context and hasattr(context, "record_state"):
                 context.record_state(
-                    precondition_state,
+                    state_name,
                     "precondition",
                     False,
-                    next_state=resolved_next_state,
+                    next_state=state_name,
                     event="precondition",
                 )
-            self.current_state = resolved_next_state
+                context.save_failure_diagnostic(f"precondition_{state_name}")
+            self.precondition_failures[state_name] = 0
+            self.global_recovery(context)
             return False
 
-        self.precondition_failures[self.current_state] = 0
-        state_name = self.current_state
-        result = state.perform(context)
+        next_state = definition.fallback_state or definition.next_state_on_failure
+        resolved_next_state = self._resolve_next_state(
+            next_state,
+            context,
+            state_name,
+            "precondition",
+            "precondition",
+            False,
+            event="precondition",
+        )
+        if resolved_next_state is None:
+            return False
+        if context and hasattr(context, "record_state"):
+            context.record_state(
+                state_name,
+                "precondition",
+                False,
+                next_state=resolved_next_state,
+                event="precondition",
+            )
+        self.current_state = resolved_next_state
+        return False
 
-        next_state = next_state_on_success if result else next_state_on_failure
-        status_text = getattr(state, "status_text", state.__class__.__name__)
+    def _record_action_result(
+        self,
+        context: Any,
+        state_name: str,
+        definition: StateDefinition,
+        status_text: str,
+        result: bool,
+        next_state: str,
+    ) -> None:
+        pending_recovery = getattr(context, "extracted", {}).get("pending_ai_recovery")
+        context.record_state(state_name, status_text, result, next_state=next_state)
+        if pending_recovery:
+            self._verify_pending_recovery(context, state_name, next_state, result)
+
+        if result:
+            self.action_failures[state_name] = 0
+            return
+
+        screenshot_path = context.save_failure_diagnostic(state_name)
+        failure_count = self.action_failures.get(state_name, 0) + 1
+        self.action_failures[state_name] = failure_count
+        if not pending_recovery and self._should_run_guarded_recovery(definition.action, failure_count):
+            self.action_failures[state_name] = 0
+            if not self.global_recovery(context):
+                self._run_guarded_recovery(context, state_name, definition.action, screenshot_path)
+
+    def _perform_action(self, context: Any | None, state_name: str, definition: StateDefinition) -> bool:
+        result = definition.action.perform(context)
+        next_state = definition.next_state_on_success if result else definition.next_state_on_failure
+        status_text = getattr(definition.action, "status_text", definition.action.__class__.__name__)
         resolved_next_state = self._resolve_next_state(
             next_state,
             context,
@@ -159,31 +253,59 @@ class StateMachine:
         if resolved_next_state is None:
             return False
         if context and hasattr(context, "record_state"):
-            pending_recovery = getattr(context, "extracted", {}).get("pending_ai_recovery")
-            context.record_state(
-                state_name,
-                status_text,
-                result,
-                next_state=resolved_next_state,
-            )
-            if pending_recovery:
-                self._verify_pending_recovery(context, state_name, resolved_next_state, result)
-
-            if result:
-                self.action_failures[state_name] = 0
-            else:
-                screenshot_path = context.save_failure_diagnostic(state_name)
-                failure_count = self.action_failures.get(state_name, 0) + 1
-                self.action_failures[state_name] = failure_count
-                if not pending_recovery and self._should_run_guarded_recovery(state, failure_count):
-                    self.action_failures[state_name] = 0
-                    if not self.global_recovery(context):
-                        self._run_guarded_recovery(context, state_name, state, screenshot_path)
+            self._record_action_result(context, state_name, definition, status_text, result, resolved_next_state)
 
         self.current_state = resolved_next_state
         return result
 
-    def _should_run_guarded_recovery(self, state, failure_count):
+    def execute(self, context: Any | None = None) -> bool:
+        """Run exactly one state transition for the current workflow step.
+
+        Args:
+            context: Optional runtime context used for state history,
+                diagnostics, UI signals, and recovery helpers.
+
+        Returns:
+            bool: `True` when the state action succeeds. `False` when the
+            action fails, precondition handling reroutes execution, or the
+            machine is halted.
+
+        Raises:
+            RuntimeError: If the initial state is unset or current-state
+            metadata is invalid.
+        """
+        if self.halted:
+            LOGGER.error("State machine is halted; refusing to execute.")
+            return False
+
+        definition = self._current_definition()
+        state_name = self.current_state
+        if state_name is None:
+            raise RuntimeError("Initial state is not set")
+
+        if definition.precondition and not self._precondition_passes(definition.precondition, context):
+            return self._handle_precondition_failure(context, state_name, definition)
+
+        self.precondition_failures[state_name] = 0
+        return self._perform_action(context, state_name, definition)
+
+    def close(self) -> None:
+        """Release resources owned by registered actions."""
+        closed: set[int] = set()
+        for definition in self.states.values():
+            action = definition.action
+            if id(action) in closed:
+                continue
+            close = getattr(action, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception as exc:
+                LOGGER.warning("State action close failed for %s: %s", action.__class__.__name__, exc)
+            closed.add(id(action))
+
+    def _should_run_guarded_recovery(self, state: ActionLike, failure_count: int) -> bool:
         if failure_count < self.ai_fallback_threshold:
             return False
         image = getattr(state, "image", "")
@@ -286,7 +408,22 @@ class StateMachine:
         return False
 
     def global_recovery(self, context=None):
-        """Tiered recovery: close menus, toggle view, then restart if unknown."""
+        """Escalate recovery from UI cleanup to optional client restart.
+
+        Args:
+            context: Optional runtime context used for diagnostics, window
+                title selection, wait interruption, and UI status updates.
+
+        Returns:
+            bool: `True` when recovery restores a known CITY or MAP state.
+            `False` when all recovery tiers fail or are interrupted.
+
+        Side Effects:
+            Brings the game window to foreground, writes a diagnostic
+            screenshot, sends guarded `escape` or `space` input through
+            `InputController`, and may restart the client through
+            `GameStateMonitor`.
+        """
         from input_controller import InputController
         from state_monitor import GameState, GameStateMonitor
         from window_handler import WindowHandler

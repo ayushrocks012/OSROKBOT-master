@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
+
+# Watchdog launches fixed Windows utilities without shell=True.
+import subprocess  # nosec B404
 import sys
 import time
 from pathlib import Path
@@ -23,6 +25,10 @@ CLASSES_DIR = PROJECT_ROOT / "Classes"
 DEFAULT_HEARTBEAT_PATH = PROJECT_ROOT / "data" / "heartbeat.json"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_GAME_RESTART_WAIT_SECONDS = 20.0
+SUBPROCESS_TIMEOUT_SECONDS = 10.0
+SYSTEM32_DIR = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32"
+TASKLIST_EXE = SYSTEM32_DIR / "tasklist.exe"
+TASKKILL_EXE = SYSTEM32_DIR / "taskkill.exe"
 
 if str(CLASSES_DIR) not in sys.path:
     sys.path.insert(0, str(CLASSES_DIR))
@@ -88,7 +94,7 @@ def read_heartbeat(path: Path) -> dict[str, Any] | None:
     except FileNotFoundError:
         LOGGER.warning("Heartbeat not found yet: %s", path)
         return None
-    except Exception as exc:
+    except (json.JSONDecodeError, OSError) as exc:
         LOGGER.error("Unable to read heartbeat %s: %s", path, exc)
         return None
 
@@ -120,12 +126,13 @@ def safe_pid(value: Any) -> int | None:
 def is_pid_running(pid: int) -> bool:
     try:
         result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            [str(TASKLIST_EXE), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
             text=True,
             check=False,
-        )
-    except Exception:
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )  # nosec B603
+    except (OSError, subprocess.SubprocessError, ValueError):
         return False
     return f'"{pid}"' in result.stdout
 
@@ -138,8 +145,12 @@ def terminate_tracked_pid(pid_value: Any, label: str) -> bool:
 
     LOGGER.warning("Terminating tracked %s PID %s", label, pid)
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
-    except Exception as exc:
+        subprocess.run(
+            [str(TASKKILL_EXE), "/PID", str(pid), "/T", "/F"],
+            check=False,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+        )  # nosec B603
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
         LOGGER.error("Unable to terminate %s PID %s: %s", label, pid, exc)
         return False
     return True
@@ -163,7 +174,7 @@ def find_window_by_title(title: str | None) -> int | None:
 
     try:
         win32gui.EnumWindows(callback, None)
-    except Exception:
+    except (OSError, RuntimeError):
         return None
     return found[0] if found else None
 
@@ -188,8 +199,9 @@ def relaunch_game() -> bool:
 
     LOGGER.info("Launching Rise of Kingdoms from %s", client_path)
     try:
-        subprocess.Popen([str(client_path)], cwd=str(client_path.parent))
-    except Exception as exc:
+        # Explicit configured executable path, no shell.
+        subprocess.Popen([str(client_path)], cwd=str(client_path.parent))  # nosec B603
+    except (OSError, ValueError) as exc:
         LOGGER.error("Unable to relaunch game: %s", exc)
         return False
     return True
@@ -200,14 +212,21 @@ def restart_ui_from_heartbeat(payload: dict[str, Any]) -> bool:
     ui_entrypoint = Path(str(payload.get("ui_entrypoint") or PROJECT_ROOT / "Classes" / "UI.py"))
     repo_root = Path(str(payload.get("repo_root") or PROJECT_ROOT))
 
+    if not Path(python_executable).name:
+        LOGGER.error("Python executable in heartbeat is invalid; UI restart skipped: %r", python_executable)
+        return False
     if not ui_entrypoint.is_file():
         LOGGER.error("UI entrypoint is not accessible; UI restart skipped: %s", ui_entrypoint)
+        return False
+    if not repo_root.is_dir():
+        LOGGER.error("Repository root in heartbeat is not accessible; UI restart skipped: %s", repo_root)
         return False
 
     LOGGER.info("Restarting OSROKBOT UI with %s", python_executable)
     try:
-        subprocess.Popen([python_executable, str(ui_entrypoint)], cwd=str(repo_root))
-    except Exception as exc:
+        # Heartbeat records exact executable, no shell.
+        subprocess.Popen([python_executable, str(ui_entrypoint)], cwd=str(repo_root))  # nosec B603
+    except (OSError, ValueError) as exc:
         LOGGER.error("Unable to restart OSROKBOT UI: %s", exc)
         return False
     return True

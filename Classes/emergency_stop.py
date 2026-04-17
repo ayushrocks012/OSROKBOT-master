@@ -22,6 +22,8 @@ class EmergencyStop:
     _keyboard = None
     _exit_func = staticmethod(os._exit)
     _poll_delay = 0.05
+    _poll_thread: threading.Thread | None = None
+    _poll_error_logged = False
 
     @classmethod
     def start_once(cls):
@@ -44,8 +46,8 @@ class EmergencyStop:
             else:
                 cls._error = None
 
-            poll_thread = threading.Thread(target=cls._poll_loop, name="OSROKBOT-F12-Kill", daemon=True)
-            poll_thread.start()
+            cls._poll_thread = threading.Thread(target=cls._poll_loop, name="OSROKBOT-F12-Kill", daemon=True)
+            cls._poll_thread.start()
 
             cls._started = True
             LOGGER.warning("Emergency stop armed: press F12 to immediately terminate OSROKBOT.")
@@ -57,8 +59,10 @@ class EmergencyStop:
             try:
                 if cls._keyboard and cls._keyboard.is_pressed("f12"):
                     cls._kill_now()
-            except Exception:
-                pass
+            except Exception as exc:
+                if not cls._poll_error_logged:
+                    LOGGER.warning("Emergency F12 polling degraded: %s", exc)
+                    cls._poll_error_logged = True
             time.sleep(cls._poll_delay)
 
     @staticmethod

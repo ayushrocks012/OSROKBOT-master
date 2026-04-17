@@ -7,6 +7,8 @@ from PIL import Image
 
 LOGGER = get_logger(__name__)
 
+OCR_READ_EXCEPTIONS = (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError)
+
 
 @dataclass(frozen=True)
 class OCRRegion:
@@ -42,7 +44,7 @@ class OCRService:
 
             cls._easyocr_reader = easyocr.Reader(languages, gpu=False, verbose=False)
             return cls._easyocr_reader
-        except Exception as exc:
+        except OCR_READ_EXCEPTIONS as exc:
             cls._easyocr_error = exc
             LOGGER.warning(f"EasyOCR unavailable; using Tesseract fallback when possible: {exc}")
             return None
@@ -65,7 +67,7 @@ class OCRService:
 
         try:
             points = [(float(point[0]), float(point[1])) for point in box]
-        except Exception:
+        except (IndexError, TypeError, ValueError):
             return None
         if not points:
             return None
@@ -109,7 +111,7 @@ class OCRService:
 
             results = reader.readtext(np.asarray(image))
             return " ".join(str(item[1]) for item in results if len(item) >= 2).strip()
-        except Exception as exc:
+        except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"EasyOCR read failed: {exc}")
             return ""
 
@@ -132,7 +134,7 @@ class OCRService:
                 if region:
                     regions.append(region)
             return regions
-        except Exception as exc:
+        except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"EasyOCR region read failed: {exc}")
             return []
 
@@ -144,7 +146,7 @@ class OCRService:
             if tesseract_path:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
             return pytesseract.image_to_string(image, lang="eng").strip()
-        except Exception as exc:
+        except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"Tesseract fallback failed: {exc}")
             return ""
 
@@ -156,7 +158,7 @@ class OCRService:
             if tesseract_path:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
             data = pytesseract.image_to_data(image, lang="eng", output_type=pytesseract.Output.DICT)
-        except Exception as exc:
+        except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"Tesseract region fallback failed: {exc}")
             return []
 
@@ -168,7 +170,7 @@ class OCRService:
                 continue
             try:
                 confidence = float(data.get("conf", [])[index]) / 100.0
-            except Exception:
+            except (IndexError, TypeError, ValueError):
                 confidence = 0.0
             if confidence < 0:
                 continue
@@ -177,7 +179,7 @@ class OCRService:
                 top = float(data.get("top", [])[index])
                 width = float(data.get("width", [])[index])
                 height = float(data.get("height", [])[index])
-            except Exception:
+            except (IndexError, TypeError, ValueError):
                 continue
             region = self._region_from_rect(
                 cleaned_text,

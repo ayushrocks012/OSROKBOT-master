@@ -5,19 +5,21 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from config_manager import ConfigManager
-from context import Context
+from context import Context, ObservationSnapshot
 from diagnostic_screenshot import save_diagnostic_screenshot
 from emergency_stop import EmergencyStop
 from input_controller import InputController
 from logging_config import get_logger
 from object_detector import create_detector
+from runtime_contracts import ConfigProvider, DetectionProvider, EmergencyStopController, WindowCaptureProvider
+from runtime_payloads import HeartbeatPayload
 from signal_emitter import SignalEmitter
 from window_handler import WindowHandler
 
@@ -40,22 +42,35 @@ class OSROKBOT:
     YOLO/VLM recovery now handle visible prompts without gameplay media assets.
     """
 
-    def __init__(self, window_title: str, delay: float = 1) -> None:
+    def __init__(
+        self,
+        window_title: str,
+        delay: float = 1,
+        *,
+        config: ConfigProvider | None = None,
+        signal_emitter: SignalEmitter | None = None,
+        window_handler: WindowCaptureProvider | None = None,
+        input_controller: InputController | None = None,
+        detector: DetectionProvider | None = None,
+        emergency_stop: type[EmergencyStopController] = EmergencyStop,
+    ) -> None:
         self.window_title = window_title
         self.delay = delay
+        self.config = config or ConfigManager()
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
-        self.signal_emitter = SignalEmitter()
+        self.signal_emitter = signal_emitter or SignalEmitter()
         self.is_running = False
         self.all_threads_joined = True
         self._runner_executor: ThreadPoolExecutor | None = None
         self._runner_future: Future[None] | None = None
-        self.window_handler = WindowHandler()
-        self.input_controller = InputController(context=None)
-        self.detector: Any = create_detector()
+        self.window_handler = window_handler or WindowHandler()
+        self.input_controller = input_controller or InputController(context=None)
+        self.detector: DetectionProvider = detector or create_detector()
+        self.emergency_stop = emergency_stop
         self._heartbeat_lock = threading.Lock()
         self._last_heartbeat_at = 0.0
-        self._heartbeat_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Heartbeat")
+        self._heartbeat_executor: ThreadPoolExecutor | None = None
         self._heartbeat_future: Future[None] | None = None
         self._cached_game_pid: int | None = None
         self._cached_game_pid_window_title: str | None = None
@@ -100,7 +115,7 @@ class OSROKBOT:
 
     def _heartbeat_path(self) -> Path:
         return self._config_path(
-            ConfigManager().get("WATCHDOG_HEARTBEAT_PATH"),
+            self.config.get("WATCHDOG_HEARTBEAT_PATH"),
             PROJECT_ROOT / "data" / "heartbeat.json",
         )
 
@@ -135,11 +150,25 @@ class OSROKBOT:
             self._cached_game_pid_window_title = window_title
             self._cached_game_pid_hwnd = hwnd
             return self._cached_game_pid
-        except Exception:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             self._clear_game_pid_cache()
             return None
 
-    def _heartbeat_payload(self, context: Context | None, now: float) -> dict[str, Any]:
+    @staticmethod
+    def _record_runtime_timing(
+        context: Context | None,
+        stage: str,
+        started_at: float,
+        *,
+        detail: str = "",
+    ) -> None:
+        if context is None:
+            return
+        record_timing = getattr(context, "record_runtime_timing", None)
+        if callable(record_timing):
+            record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
+
+    def _heartbeat_payload(self, context: Context | None, now: float) -> HeartbeatPayload:
         active_context = context or Context(bot=self, window_title=self.window_title)
         window_title = getattr(active_context, "window_title", None) or self.window_title
         return {
@@ -156,10 +185,10 @@ class OSROKBOT:
         }
 
     @staticmethod
-    def _write_heartbeat_file(heartbeat_path: Path, payload: dict[str, Any]) -> None:
+    def _write_heartbeat_file(heartbeat_path: Path, payload: Mapping[str, Any]) -> None:
         heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = heartbeat_path.with_suffix(heartbeat_path.suffix + ".tmp")
-        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temp_path.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
         for attempt in range(3):
             try:
@@ -174,6 +203,26 @@ class OSROKBOT:
     def _shutdown_runner_executor(self) -> None:
         executor = self._runner_executor
         self._runner_executor = None
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+    def _ensure_heartbeat_executor(self) -> ThreadPoolExecutor:
+        if self._heartbeat_executor is None:
+            self._heartbeat_executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="OSROKBOT-Heartbeat",
+            )
+        return self._heartbeat_executor
+
+    def _shutdown_heartbeat_executor(self) -> None:
+        with self._heartbeat_lock:
+            executor = self._heartbeat_executor
+            future = self._heartbeat_future
+            self._heartbeat_executor = None
+            self._heartbeat_future = None
+
+        if future and not future.done():
+            future.cancel()
         if executor:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -192,10 +241,11 @@ class OSROKBOT:
             if not force and self._heartbeat_future and not self._heartbeat_future.done():
                 return True
 
+            executor = self._ensure_heartbeat_executor()
             payload = self._heartbeat_payload(context, now)
             heartbeat_path = self._heartbeat_path()
             self._last_heartbeat_at = now
-            self._heartbeat_future = self._heartbeat_executor.submit(
+            self._heartbeat_future = executor.submit(
                 self._write_heartbeat_file,
                 heartbeat_path,
                 payload,
@@ -203,26 +253,40 @@ class OSROKBOT:
             self._heartbeat_future.add_done_callback(self._log_future_exception)
         return True
 
-    def _observe_window(self, context: Context):
+    def _observe_window(self, context: Context) -> ObservationSnapshot | None:
+        capture_started_at = time.perf_counter()
         screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
+        self._record_runtime_timing(
+            context,
+            "window_capture",
+            capture_started_at,
+            detail=f"title={context.window_title}",
+        )
         if screenshot is None or window_rect is None:
             return None
 
         started_at = time.perf_counter()
         try:
             detections = tuple(self.detector.detect(screenshot))
-        except Exception as exc:
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             LOGGER.warning("Window observation detector skipped: %s", exc)
             detections = ()
         duration_ms = (time.perf_counter() - started_at) * 1000.0
+        self._record_runtime_timing(
+            context,
+            "yolo_detect",
+            started_at,
+            detail=f"detections={len(detections)}",
+        )
         LOGGER.debug("YOLO observation duration_ms=%.2f detections=%s", duration_ms, len(detections))
         return context.set_current_observation(screenshot, window_rect, detections=detections)
 
-    def _detect_captcha(self, context: Context, observation=None) -> bool:
+    def _detect_captcha(self, context: Context, observation: ObservationSnapshot | None = None) -> bool:
         if self.stop_event.is_set() or self.pause_event.is_set():
             return False
 
-        observation = observation or getattr(context, "current_observation", None) or self._observe_window(context)
+        cached_observation = context.get_current_observation() if hasattr(context, "get_current_observation") else getattr(context, "current_observation", None)
+        observation = observation or cached_observation or self._observe_window(context)
         if observation is None:
             return False
 
@@ -240,6 +304,16 @@ class OSROKBOT:
         self.pause_event.set()
         self.signal_emitter.pause_toggled.emit(True)
         return True
+
+    @staticmethod
+    def _close_state_machine(machine: Any) -> None:
+        close = getattr(machine, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception as exc:
+            LOGGER.warning("State machine cleanup failed: %s", exc)
 
     def run(self, state_machines: Sequence[Any], context: Context | None = None) -> None:
         context = context or Context(bot=self, window_title=self.window_title)
@@ -279,7 +353,9 @@ class OSROKBOT:
                     if step_result:
                         self.stop_event.wait(self.delay)
                 finally:
-                    if getattr(context, "current_observation", None) is observation:
+                    if hasattr(context, "clear_current_observation_if"):
+                        context.clear_current_observation_if(observation)
+                    elif getattr(context, "current_observation", None) is observation:
                         context.clear_current_observation()
 
         try:
@@ -296,6 +372,8 @@ class OSROKBOT:
                         future.result()
                     futures = [future for future in futures if not future.done()]
         finally:
+            for machine in state_machines:
+                self._close_state_machine(machine)
             self.stop_event.set()
             self.all_threads_joined = True
             self.is_running = False
@@ -322,8 +400,15 @@ class OSROKBOT:
         if not self._hardware_input_ready(context):
             self.is_running = False
             return False
-        EmergencyStop.start_once()
+        if not self.emergency_stop.start_once():
+            LOGGER.error("Emergency stop is unavailable; refusing to start live automation.")
+            self._emit_state(context, "Emergency stop unavailable")
+            self.is_running = False
+            return False
 
+        self.stop_event.clear()
+        self.pause_event.clear()
+        self._ensure_heartbeat_executor()
         self.is_running = True
         self._runner_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Runner")
         self._runner_future = self._runner_executor.submit(self.run, steps, context)
@@ -334,10 +419,7 @@ class OSROKBOT:
         self.stop_event.set()
         self.is_running = False
         self._shutdown_runner_executor()
-
-        # Prevent zombie threads by killing the heartbeat executor
-        if getattr(self, "_heartbeat_executor", None):
-            self._heartbeat_executor.shutdown(wait=False, cancel_futures=True)
+        self._shutdown_heartbeat_executor()
 
     def toggle_pause(self) -> None:
         if self.pause_event.is_set():

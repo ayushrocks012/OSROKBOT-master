@@ -52,10 +52,31 @@ QPushButton#continueButton:hover {
 }
 """
 
-_OK = "✅"
-_WARN = "⚠️"
-_FAIL = "❌"
-_SPINNER = "🔄"
+_OK = "OK"
+_WARN = "WARN"
+_FAIL = "FAIL"
+_SPINNER = "..."
+
+
+class _YoloDownloadWorker(QtCore.QObject):
+    finished = QtCore.pyqtSignal(bool, str)
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        try:
+            path = ModelManager(self.config).ensure_yolo_weights()
+        except Exception as exc:
+            LOGGER.warning("YOLO download failed: %s", exc)
+            self.finished.emit(False, str(exc))
+            return
+        if path:
+            self.finished.emit(True, str(path))
+        else:
+            self.finished.emit(False, "Not available")
 
 
 class HealthCheckDialog(QtWidgets.QDialog):
@@ -69,7 +90,9 @@ class HealthCheckDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.config = ConfigManager()
         self.window_title = window_title
-        self.setWindowTitle("OSROKBOT — Health Check")
+        self._yolo_download_thread = None
+        self._yolo_download_worker = None
+        self.setWindowTitle("OSROKBOT - Health Check")
         self.setMinimumWidth(520)
         self.setMinimumHeight(380)
         self.setStyleSheet(_STYLE)
@@ -79,7 +102,7 @@ class HealthCheckDialog(QtWidgets.QDialog):
         layout.setSpacing(12)
 
         # Header.
-        header = QtWidgets.QLabel("🔍 Pre-flight Health Check")
+        header = QtWidgets.QLabel("Pre-flight Health Check")
         header.setStyleSheet("font-size: 16px; font-weight: bold; color: #4a90e2;")
         layout.addWidget(header)
 
@@ -113,7 +136,7 @@ class HealthCheckDialog(QtWidgets.QDialog):
         # --- Check 2: Interception Driver ---
         self._interception_row, self._interception_status = self._add_check_row(
             "Interception Driver", required=True,
-            tooltip="Install the Oblita Interception driver as Administrator and reboot.\nSee README § Setup."
+            tooltip="Install the Oblita Interception driver as Administrator and reboot.\nSee README Setup."
         )
 
         # --- Check 3: Game Window ---
@@ -142,10 +165,10 @@ class HealthCheckDialog(QtWidgets.QDialog):
         # Buttons.
         btn_layout = QtWidgets.QHBoxLayout()
         btn_layout.addStretch()
-        recheck_btn = QtWidgets.QPushButton("🔄 Re-check")
+        recheck_btn = QtWidgets.QPushButton("Re-check")
         recheck_btn.clicked.connect(self._run_checks)
         btn_layout.addWidget(recheck_btn)
-        continue_btn = QtWidgets.QPushButton("Continue →")
+        continue_btn = QtWidgets.QPushButton("Continue")
         continue_btn.setObjectName("continueButton")
         continue_btn.clicked.connect(self.accept)
         btn_layout.addWidget(continue_btn)
@@ -232,19 +255,29 @@ class HealthCheckDialog(QtWidgets.QDialog):
             self._run_checks()
 
     def _download_yolo(self):
+        if self._yolo_download_thread and self._yolo_download_thread.isRunning():
+            return
         self._yolo_download_btn.setText("Downloading...")
         self._yolo_download_btn.setEnabled(False)
-        QtWidgets.QApplication.processEvents()
-        try:
-            path = ModelManager(self.config).ensure_yolo_weights()
-            if path:
-                self._yolo_download_btn.setText("Downloaded ✅")
-            else:
-                self._yolo_download_btn.setText("Not available")
-        except Exception as exc:
-            self._yolo_download_btn.setText(f"Failed: {exc}")
-            LOGGER.warning("YOLO download failed: %s", exc)
+
+        self._yolo_download_thread = QtCore.QThread(self)
+        self._yolo_download_worker = _YoloDownloadWorker(self.config)
+        self._yolo_download_worker.moveToThread(self._yolo_download_thread)
+        self._yolo_download_thread.started.connect(self._yolo_download_worker.run)
+        self._yolo_download_worker.finished.connect(self._on_yolo_download_finished)
+        self._yolo_download_worker.finished.connect(self._yolo_download_thread.quit)
+        self._yolo_download_worker.finished.connect(self._yolo_download_worker.deleteLater)
+        self._yolo_download_thread.finished.connect(self._yolo_download_thread.deleteLater)
+        self._yolo_download_thread.start()
+
+    def _on_yolo_download_finished(self, success, message):
+        if success:
+            self._yolo_download_btn.setText("Downloaded")
+        else:
+            self._yolo_download_btn.setText(f"Failed: {message}")
         self._yolo_download_btn.setEnabled(True)
+        self._yolo_download_thread = None
+        self._yolo_download_worker = None
         self._run_checks()
 
     @staticmethod
@@ -263,7 +296,3 @@ class HealthCheckDialog(QtWidgets.QDialog):
         except Exception:
             return True
         return False
-
-# Validated Phase 2 Polish Update
-
-# Validated Phase 2 Polish Update v2

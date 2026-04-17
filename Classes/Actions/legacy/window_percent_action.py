@@ -1,3 +1,5 @@
+"""Deprecated coordinate-base actions retained outside the supported runtime."""
+
 from Actions.action import Action
 from window_handler import WindowHandler
 

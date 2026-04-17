@@ -1,10 +1,12 @@
+"""Deprecated template-driven ChatGPT action retained for reference."""
+
 import csv
 from pathlib import Path
 
 from Actions.action import Action
-from Actions.check_color_action import CheckColorAction
-from Actions.manual_click_action import ManualClickAction
-from Actions.manual_move_action import ManualMoveAction
+from Actions.legacy.check_color_action import CheckColorAction
+from Actions.legacy.manual_click_action import ManualClickAction
+from Actions.legacy.manual_move_action import ManualMoveAction
 from ai_fallback import AIFallback
 from input_controller import DelayPolicy
 from logging_config import get_logger

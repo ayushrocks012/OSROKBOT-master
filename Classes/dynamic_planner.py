@@ -1,3 +1,20 @@
+"""Planner-side contracts for one guarded OSROKBOT decision.
+
+This module owns the side-effect-free planning boundary between current
+perception and input execution. It normalizes detector and OCR targets,
+validates strict model JSON, and routes OpenAI Responses API calls through a
+dedicated async transport so the runtime-facing planner API remains
+synchronous.
+
+Threading:
+    `AsyncPlannerTransport` owns a background event loop on a daemon thread and
+    must be closed during runtime teardown.
+
+Side Effects:
+    The planner may read local visual memory and call the OpenAI API. It must
+    not send hardware input, mutate game state, or write correction data.
+"""
+
 import asyncio
 import inspect
 import json
@@ -25,7 +42,8 @@ from openai import (
     PermissionDeniedError,
     RateLimitError,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from runtime_contracts import PlannerTransport
 from vision_memory import VisionMemory
 
 LOGGER = get_logger(__name__)
@@ -43,7 +61,7 @@ RETRY_BASE_DELAY_SECONDS = 1.0
 def _safe_float(value, default=math.nan):
     try:
         return float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
@@ -52,6 +70,18 @@ def _clamp_delay(value):
     if not math.isfinite(delay):
         return 1.0
     return max(0.0, min(MAX_PLANNER_DELAY_SECONDS, delay))
+
+
+def _record_runtime_timing(
+    context: Any,
+    stage: str,
+    started_at: float,
+    *,
+    detail: str = "",
+) -> None:
+    record_timing = getattr(context, "record_runtime_timing", None)
+    if callable(record_timing):
+        record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
 
 
 @dataclass(frozen=True)
@@ -279,7 +309,12 @@ class PlannerDecision(BaseModel):
 
 
 class AsyncPlannerTransport:
-    """Dedicated async transport for planner Responses API calls."""
+    """Run planner network I/O on a dedicated asyncio loop.
+
+    This transport keeps `DynamicPlanner` synchronous for the rest of the
+    runtime while isolating OpenAI Responses API calls, retry backoff, and
+    async-client shutdown on a dedicated daemon thread.
+    """
 
     def __init__(
         self,
@@ -309,7 +344,7 @@ class AsyncPlannerTransport:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             self._loop = loop
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             self._startup_error = exc
             self._ready.set()
             return
@@ -362,6 +397,22 @@ class AsyncPlannerTransport:
         return not should_cancel()
 
     def request(self, request_payload: dict[str, Any], should_cancel: Callable[[], bool]) -> Any | None:
+        """Submit one planner request and retry transient failures.
+
+        Args:
+            request_payload: OpenAI Responses API payload for a single planner
+                decision request.
+            should_cancel: Callback that aborts the request while the runtime is
+                pausing or stopping.
+
+        Returns:
+            Any | None: Raw Responses API object when a request completes, or
+            `None` when cancellation wins before a response arrives.
+
+        Raises:
+            Exception: Re-raises the last non-transient API or transport error
+            after retries are exhausted.
+        """
         for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
             if should_cancel():
                 return None
@@ -378,11 +429,12 @@ class AsyncPlannerTransport:
         return None
 
     def close(self) -> None:
+        """Stop the background loop and release the async OpenAI client."""
         if self._closed:
             return
         self._closed = True
         if self._loop is not None:
-            with suppress(Exception):
+            with suppress(FutureTimeoutError, RuntimeError):
                 asyncio.run_coroutine_threadsafe(self._close_client(), self._loop).result(timeout=1.0)
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread.is_alive():
@@ -390,34 +442,51 @@ class AsyncPlannerTransport:
 
 
 class DynamicPlanner:
-    """Vision-language planner for one guarded OSROKBOT step.
+    """Plan one side-effect-free automation step from current observation data.
 
-    `DynamicPlanner` is intentionally side-effect free. It never moves the
-    mouse and never changes game state. It reads the current screenshot,
-    optional detector labels, OCR text, and mission goal, then returns a
-    validated `PlannerDecision`. `DynamicPlannerAction` is responsible for
-    HITL approval, bounds checks, memory writes, and Interception input.
+    `DynamicPlanner` sits between perception and execution. It can reuse local
+    successful memory, ask the OpenAI Responses API for one strict JSON
+    decision, resolve local target IDs into normalized coordinates, and reject
+    unsafe or unsupported actions before the runtime sees them.
+
+    Collaborators:
+        `VisionMemory` provides memory-first reuse.
+        `AsyncPlannerTransport` isolates network I/O on a background event
+        loop.
+        `DynamicPlannerAction` remains responsible for approvals, memory
+        writes, and hardware input.
+
+    Invariants:
+        - Never executes hardware input.
+        - Never returns raw model coordinates from the model.
+        - Never mutates UI or game state.
     """
 
     SCHEMA = PlannerLLMDecision.model_json_schema()
 
-    def __init__(self, config=None, memory=None):
+    def __init__(self, config=None, memory=None, transport: PlannerTransport | None = None, transport_factory=None):
         """Initialize the planner using ConfigManager and optional memory.
 
         Args:
             config: Optional ConfigManager-like object for API keys/model name.
             memory: Optional VisionMemory instance used before OpenAI calls.
+            transport: Optional prebuilt planner transport for tests or custom
+                enterprise transports.
+            transport_factory: Optional factory used to create the default
+                async OpenAI transport.
+
+        Raises:
+            RuntimeError: If the default async planner transport cannot start.
         """
         self.config = config or ConfigManager()
         api_key = self.config.get("OPENAI_KEY") or self.config.get("OPENAI_API_KEY")
         self.client = OpenAI(api_key=api_key) if api_key else None
         self.model = self.config.get("OPENAI_VISION_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
         self.memory = memory or VisionMemory()
-        self._transport = (
-            AsyncPlannerTransport(api_key=api_key, is_transient_error=self._is_transient_openai_error)
-            if api_key
-            else None
-        )
+        factory = transport_factory or AsyncPlannerTransport
+        self._transport: PlannerTransport | None = transport
+        if self._transport is None and api_key:
+            self._transport = factory(api_key=api_key, is_transient_error=self._is_transient_openai_error)
 
     @staticmethod
     def _visible_labels(detections):
@@ -483,6 +552,18 @@ class DynamicPlanner:
 
     @staticmethod
     def resolve_target_decision(decision, targets):
+        """Resolve planner target IDs into current normalized coordinates.
+
+        Args:
+            decision: Candidate planner decision using local `target_id`
+                references.
+            targets: Current detector and OCR targets from this observation.
+
+        Returns:
+            PlannerDecision | None: A coordinate-resolved decision, or `None`
+            when the target references are missing or invalid for the current
+            screen.
+        """
         if not isinstance(decision, PlannerDecision):
             return None
         if decision.action_type not in {"click", "drag", "long_press"}:
@@ -649,6 +730,7 @@ class DynamicPlanner:
         return self._transport.request(request_payload, lambda: self._request_interrupted(context))
 
     def close(self):
+        """Release the planner transport owned by this planner instance."""
         if self._transport:
             self._transport.close()
             self._transport = None
@@ -745,6 +827,7 @@ class DynamicPlanner:
             screen_changed=screen_changed,
         )
 
+        started_at = time.perf_counter()
         try:
             request_payload = {
                 "model": self.model,
@@ -769,11 +852,41 @@ class DynamicPlanner:
             }
             response = self._request_response_with_retries(context, request_payload)
             if response is None:
+                _record_runtime_timing(context, "planner_request", started_at, detail="cancelled")
                 return None
             raw = safe_json_loads(response.output_text)
             llm_decision = PlannerLLMDecision.model_validate(raw)
-            return self.resolve_target_decision(PlannerDecision.from_llm_decision(llm_decision, source="ai"), targets)
-        except Exception as exc:
+            decision = self.resolve_target_decision(
+                PlannerDecision.from_llm_decision(llm_decision, source="ai"),
+                targets,
+            )
+            _record_runtime_timing(
+                context,
+                "planner_request",
+                started_at,
+                detail=f"action={decision.action_type}" if decision else "action=unresolved",
+            )
+            return decision
+        except (
+            APIConnectionError,
+            APIStatusError,
+            APITimeoutError,
+            AuthenticationError,
+            BadRequestError,
+            InternalServerError,
+            PermissionDeniedError,
+            RateLimitError,
+            RuntimeError,
+            TypeError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            _record_runtime_timing(
+                context,
+                "planner_request",
+                started_at,
+                detail=f"error={type(exc).__name__}",
+            )
             LOGGER.error(f"Dynamic planner request failed: {exc}")
             return None
 
@@ -799,7 +912,25 @@ class DynamicPlanner:
         """
         labels = self._visible_labels(detections)
         targets = self.build_targets(detections, ocr_regions)
-        memory_entry = self.memory.find(screenshot_path, labels)
+        memory_started_at = time.perf_counter()
+        try:
+            memory_entry = self.memory.find(screenshot_path, labels)
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            _record_runtime_timing(
+                context,
+                "planner_memory_lookup",
+                memory_started_at,
+                detail=f"error={type(exc).__name__}",
+            )
+            LOGGER.warning("Dynamic planner memory lookup failed: %s", exc)
+            memory_entry = None
+        else:
+            _record_runtime_timing(
+                context,
+                "planner_memory_lookup",
+                memory_started_at,
+                detail="hit" if memory_entry else "miss",
+            )
         if memory_entry:
             decision = self.decision_from_memory(memory_entry, targets)
             if self.validate_decision(decision):

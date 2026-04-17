@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from shutil import copyfile
 
+from artifact_retention import ArtifactRetentionManager, policy_from_environment
 from logging_config import get_logger
 
 LOGGER = get_logger(__name__)
@@ -9,11 +10,22 @@ LOGGER = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "datasets" / "recovery"
+DEFAULT_DATASET_RETENTION = policy_from_environment(
+    max_groups_env="ROK_RECOVERY_DATASET_MAX_SAMPLES",
+    max_age_days_env="ROK_RECOVERY_DATASET_MAX_AGE_DAYS",
+    default_max_groups=300,
+    default_max_age_days=30.0,
+)
 
 
 class DetectionDataset:
-    def __init__(self, output_dir=DEFAULT_DATASET_DIR):
+    def __init__(
+        self,
+        output_dir=DEFAULT_DATASET_DIR,
+        retention_manager: ArtifactRetentionManager | None = None,
+    ):
         self.output_dir = Path(output_dir)
+        self.retention_manager = retention_manager or ArtifactRetentionManager()
 
     @staticmethod
     def _safe_label(value):
@@ -53,6 +65,7 @@ class DetectionDataset:
             LOGGER.error(f"Unable to export detection dataset stub: {exc}")
             return None
 
+        self.retention_manager.prune_directory(self.output_dir, DEFAULT_DATASET_RETENTION)
         LOGGER.warning(f"Detection dataset stub exported: {image_path}")
         return image_path
 

@@ -39,13 +39,72 @@ def test_yolo_download_failure_returns_none_without_configuring_weights(monkeypa
     config = FakeConfig({"ROK_YOLO_WEIGHTS_URL": "https://example.test/rok-ui.pt"})
     manager = ModelManager(config=config, models_dir=Path.cwd())
 
-    def fail_urlopen(_request):
+    def fail_urlopen(_request, timeout=None):
         raise OSError("offline")
 
     monkeypatch.setattr(model_manager, "urlopen", fail_urlopen)
 
     assert manager.ensure_yolo_weights() is None
     assert "ROK_YOLO_WEIGHTS" not in config.values
+
+
+def test_yolo_download_rejects_oversized_content_length(monkeypatch, tmp_path):
+    config = FakeConfig(
+        {
+            "ROK_YOLO_WEIGHTS_URL": "https://example.test/rok-ui.pt",
+            "ROK_YOLO_MAX_BYTES": "10",
+        }
+    )
+    manager = ModelManager(config=config, models_dir=tmp_path)
+
+    class FakeResponse:
+        headers = {"Content-Length": "11"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            return b""
+
+    monkeypatch.setattr(model_manager, "urlopen", lambda _request, timeout=None: FakeResponse())
+
+    assert manager.ensure_yolo_weights() is None
+    assert not (tmp_path / "rok-ui.pt").exists()
+    assert "ROK_YOLO_WEIGHTS" not in config.values
+
+
+def test_yolo_download_streams_with_timeout(monkeypatch, tmp_path):
+    config = FakeConfig({"ROK_YOLO_WEIGHTS_URL": "https://example.test/rok-ui.pt"})
+    manager = ModelManager(config=config, models_dir=tmp_path)
+    timeouts = []
+
+    class FakeResponse:
+        headers = {}
+
+        def __init__(self):
+            self.chunks = [b"abc", b"def", b""]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            return self.chunks.pop(0)
+
+    def fake_urlopen(_request, timeout=None):
+        timeouts.append(timeout)
+        return FakeResponse()
+
+    monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
+
+    assert manager.ensure_yolo_weights() == tmp_path / "rok-ui.pt"
+    assert (tmp_path / "rok-ui.pt").read_bytes() == b"abcdef"
+    assert timeouts == [model_manager.DOWNLOAD_TIMEOUT_SECONDS]
 
 
 def test_create_detector_does_not_download_weights(monkeypatch):

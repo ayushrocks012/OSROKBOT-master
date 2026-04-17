@@ -4,6 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from security_utils import redact_secret
 from termcolor import colored
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +27,18 @@ class ColoredFormatter(logging.Formatter):
         return colored(message, color) if color else message
 
 
+class RedactingFilter(logging.Filter):
+    """Remove local secret values from all OSROKBOT log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        rendered = record.getMessage()
+        redacted = redact_secret(rendered)
+        if redacted != rendered:
+            record.msg = redacted
+            record.args = ()
+        return True
+
+
 def configure_logging(log_path: Path | str = DEFAULT_LOG_PATH) -> logging.Logger:
     logger = logging.getLogger(LOGGER_NAME)
     if logger.handlers:
@@ -35,6 +48,7 @@ def configure_logging(log_path: Path | str = DEFAULT_LOG_PATH) -> logging.Logger
     logger.propagate = False
 
     console_handler = logging.StreamHandler()
+    console_handler.addFilter(RedactingFilter())
     console_handler.setFormatter(ColoredFormatter("%(levelname)s %(name)s: %(message)s"))
     logger.addHandler(console_handler)
 
@@ -49,6 +63,7 @@ def configure_logging(log_path: Path | str = DEFAULT_LOG_PATH) -> logging.Logger
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(threadName)s: %(message)s")
     )
+    file_handler.addFilter(RedactingFilter())
     logger.addHandler(file_handler)
 
     return logger

@@ -1,3 +1,5 @@
+"""Deprecated email notification action retained outside the supported runtime."""
+
 import smtplib
 import time
 from email.mime.multipart import MIMEMultipart

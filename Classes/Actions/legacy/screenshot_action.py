@@ -1,7 +1,9 @@
+"""Deprecated screenshot action retained outside the supported runtime."""
+
 from pathlib import Path
 
 from Actions.action import Action
-from Actions.window_percent_action import WindowPercentAction
+from Actions.legacy.window_percent_action import WindowPercentAction
 from window_handler import WindowHandler
 
 

@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -10,17 +11,20 @@ LOGGER = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MEMORY_PATH = PROJECT_ROOT / "data" / "recovery_memory.json"
+DEFAULT_MAX_ENTRIES = 500
 
 
 class RecoveryMemory:
-    def __init__(self, path=DEFAULT_MEMORY_PATH, hash_tolerance=4):
+    def __init__(self, path=DEFAULT_MEMORY_PATH, hash_tolerance=4, max_entries=DEFAULT_MAX_ENTRIES):
         self.path = Path(path)
         self.hash_tolerance = int(hash_tolerance)
+        self.max_entries = int(max_entries)
         self.entries = {}
+        self._lock = threading.RLock()
 
     @classmethod
-    def load(cls, path=DEFAULT_MEMORY_PATH):
-        memory = cls(path)
+    def load(cls, path=DEFAULT_MEMORY_PATH, max_entries=DEFAULT_MAX_ENTRIES):
+        memory = cls(path, max_entries=max_entries)
         if not memory.path.is_file():
             return memory
 
@@ -30,11 +34,15 @@ class RecoveryMemory:
             LOGGER.warning(f"Recovery memory ignored: {exc}")
             return memory
 
-        entries = raw.get("entries", raw if isinstance(raw, list) else [])
-        for entry in entries:
-            signature = entry.get("signature")
-            if signature:
-                memory.entries[signature] = entry
+        entries = raw.get("entries", []) if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+        with memory._lock:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                signature = entry.get("signature")
+                if signature:
+                    memory.entries[signature] = entry
+            memory._evict_if_needed()
         return memory
 
     @staticmethod
@@ -44,7 +52,7 @@ class RecoveryMemory:
         except Exception:
             return "no_screenshot"
 
-        pixels = list(image.getdata())
+        pixels = list(image.get_flattened_data()) if hasattr(image, "get_flattened_data") else list(image.getdata())
         average = sum(pixels) / max(1, len(pixels))
         bits = "".join("1" if pixel >= average else "0" for pixel in pixels)
         return f"{int(bits, 2):016x}"
@@ -102,7 +110,9 @@ class RecoveryMemory:
             return 999
 
     def _compatible_entries(self, stable_signature, screenshot_hash):
-        for entry in self.entries.values():
+        with self._lock:
+            entries = list(self.entries.values())
+        for entry in entries:
             if entry.get("signature") != stable_signature:
                 continue
             if entry.get("failure_count", 0) > entry.get("success_count", 0) + 2:
@@ -133,7 +143,8 @@ class RecoveryMemory:
         if candidates:
             return candidates[0][1]
 
-        entry = self.entries.get(stable_signature)
+        with self._lock:
+            entry = self.entries.get(stable_signature)
         if not entry:
             return None
         if entry.get("failure_count", 0) > entry.get("success_count", 0) + 2:
@@ -143,12 +154,30 @@ class RecoveryMemory:
         return entry
 
     def save(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": 1,
-            "entries": sorted(self.entries.values(), key=lambda entry: entry.get("last_used", "")),
-        }
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with self._lock:
+            self._evict_if_needed()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 2,
+                "entries": sorted(self.entries.values(), key=lambda entry: entry.get("last_used", "")),
+            }
+            temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+            temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temp_path.replace(self.path)
+
+    def _evict_if_needed(self):
+        if len(self.entries) <= self.max_entries:
+            return
+        scored = sorted(
+            self.entries.values(),
+            key=lambda entry: (
+                int(entry.get("success_count", 0)) - int(entry.get("failure_count", 0)),
+                entry.get("last_used", ""),
+            ),
+            reverse=True,
+        )
+        retained = scored[: self.max_entries]
+        self.entries = {entry["signature"]: entry for entry in retained if entry.get("signature")}
 
     def record_success(
         self,
@@ -164,54 +193,56 @@ class RecoveryMemory:
         visible_labels=None,
     ):
         now = datetime.now().isoformat(timespec="seconds")
-        stable_signature = signature
-        entry = self.entries.get(signature) or {
-            "signature": stable_signature,
-            "state_name": state_name,
-            "action_class": action_class,
-            "action_image": action_image,
-            "screenshot_hash": screenshot_hash or "",
-            "visible_labels": visible_labels or [],
-            "label": label,
-            "normalized_point": normalized_point,
-            "confidence": float(confidence),
-            "success_count": 0,
-            "failure_count": 0,
-            "source": source,
-        }
-        entry["success_count"] = int(entry.get("success_count", 0)) + 1
-        entry["last_used"] = now
-        entry["label"] = label
-        entry["normalized_point"] = normalized_point
-        entry["confidence"] = float(confidence)
-        entry["source"] = source
-        if screenshot_hash:
-            entry["screenshot_hash"] = screenshot_hash
-        if action_class:
-            entry["action_class"] = action_class
-        if visible_labels is not None:
-            entry["visible_labels"] = visible_labels
-        self.entries[stable_signature] = entry
-        self.save()
+        with self._lock:
+            stable_signature = signature
+            entry = self.entries.get(signature) or {
+                "signature": stable_signature,
+                "state_name": state_name,
+                "action_class": action_class,
+                "action_image": action_image,
+                "screenshot_hash": screenshot_hash or "",
+                "visible_labels": visible_labels or [],
+                "label": label,
+                "normalized_point": normalized_point,
+                "confidence": float(confidence),
+                "success_count": 0,
+                "failure_count": 0,
+                "source": source,
+            }
+            entry["success_count"] = int(entry.get("success_count", 0)) + 1
+            entry["last_used"] = now
+            entry["label"] = label
+            entry["normalized_point"] = normalized_point
+            entry["confidence"] = float(confidence)
+            entry["source"] = source
+            if screenshot_hash:
+                entry["screenshot_hash"] = screenshot_hash
+            if action_class:
+                entry["action_class"] = action_class
+            if visible_labels is not None:
+                entry["visible_labels"] = visible_labels
+            self.entries[stable_signature] = entry
+            self.save()
         LOGGER.info(f"Recovery memory success recorded: {label}")
         return entry
 
     def record_failure(self, signature):
         now = datetime.now().isoformat(timespec="seconds")
-        entry = self.entries.get(signature) or {
-            "signature": signature,
-            "state_name": "",
-            "action_image": "",
-            "label": "",
-            "normalized_point": None,
-            "confidence": 0.0,
-            "success_count": 0,
-            "failure_count": 0,
-            "source": "unknown",
-        }
-        entry["failure_count"] = int(entry.get("failure_count", 0)) + 1
-        entry["last_used"] = now
-        self.entries[signature] = entry
-        self.save()
+        with self._lock:
+            entry = self.entries.get(signature) or {
+                "signature": signature,
+                "state_name": "",
+                "action_image": "",
+                "label": "",
+                "normalized_point": None,
+                "confidence": 0.0,
+                "success_count": 0,
+                "failure_count": 0,
+                "source": "unknown",
+            }
+            entry["failure_count"] = int(entry.get("failure_count", 0)) + 1
+            entry["last_used"] = now
+            self.entries[signature] = entry
+            self.save()
         LOGGER.warning("Recovery memory failure recorded.")
         return entry

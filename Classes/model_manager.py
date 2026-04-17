@@ -11,6 +11,9 @@ LOGGER = get_logger(__name__)
 
 
 MODELS_DIR = PROJECT_ROOT / "models"
+DOWNLOAD_TIMEOUT_SECONDS = 30
+DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+DEFAULT_MAX_YOLO_BYTES = 300 * 1024 * 1024
 
 
 def _resolve_configured_path(value):
@@ -34,7 +37,39 @@ class ModelManager:
         filename = Path(parsed.path).name or "rok_yolo_weights.pt"
         if not filename.lower().endswith(".pt"):
             filename = f"{filename}.pt"
-        return self.models_dir / filename
+        target_path = (self.models_dir / filename).resolve()
+        models_root = self.models_dir.resolve()
+        if not target_path.is_relative_to(models_root):
+            LOGGER.error("YOLO weights URL resolved outside models directory.")
+            return None
+        return target_path
+
+    def _max_download_bytes(self):
+        try:
+            configured = int(self.config.get("ROK_YOLO_MAX_BYTES", DEFAULT_MAX_YOLO_BYTES))
+        except (TypeError, ValueError):
+            configured = DEFAULT_MAX_YOLO_BYTES
+        return max(1, configured)
+
+    def _download_to_temp(self, url, temp_path):
+        max_bytes = self._max_download_bytes()
+        req = Request(url, headers={"User-Agent": "OSROKBOT/1.0"})
+        with urlopen(req, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, temp_path.open("wb") as out_file:  # nosec B310
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > max_bytes:
+                raise ValueError(f"YOLO weights download exceeds configured size cap: {content_length} bytes")
+
+            total = 0
+            while True:
+                chunk = response.read(DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(f"YOLO weights download exceeded configured size cap: {max_bytes} bytes")
+                out_file.write(chunk)
+        if temp_path.stat().st_size <= 0:
+            raise ValueError("YOLO weights download produced an empty file")
 
     def find_yolo_weights(self):
         configured_path = self.config.get("ROK_YOLO_WEIGHTS")
@@ -79,9 +114,7 @@ class ModelManager:
 
         try:
             LOGGER.info(f"Downloading YOLO weights: {url}")
-            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urlopen(req) as response, temp_path.open("wb") as out_file:  # nosec B310
-                out_file.write(response.read())
+            self._download_to_temp(url, temp_path)
             temp_path.replace(final_path)
         except Exception as exc:
             if temp_path.exists():

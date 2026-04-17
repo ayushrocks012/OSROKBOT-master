@@ -10,12 +10,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy, policy_from_environment
 from logging_config import get_logger
 
 LOGGER = get_logger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SESSIONS_DIR = PROJECT_ROOT / "data" / "sessions"
+DEFAULT_SESSIONS_DIR = PROJECT_ROOT / "data" / "session_logs"
+DEFAULT_SESSION_RETENTION = policy_from_environment(
+    max_groups_env="ROK_SESSION_LOG_MAX_FILES",
+    max_age_days_env="ROK_SESSION_LOG_MAX_AGE_DAYS",
+    default_max_groups=200,
+    default_max_age_days=30.0,
+)
 
 
 @dataclass
@@ -30,9 +37,11 @@ class SessionEvent:
     target_id: str = ""
     outcome: str = ""  # success, failure, approved, rejected, corrected
     detail: str = ""
+    stage: str = ""
+    duration_ms: float | None = None
 
     def to_dict(self):
-        return {
+        payload = {
             "timestamp": self.timestamp,
             "elapsed_seconds": round(self.elapsed_seconds, 1),
             "event_type": self.event_type,
@@ -42,6 +51,11 @@ class SessionEvent:
             "outcome": self.outcome,
             "detail": self.detail,
         }
+        if self.stage:
+            payload["stage"] = self.stage
+        if self.duration_ms is not None:
+            payload["duration_ms"] = round(self.duration_ms, 2)
+        return payload
 
 
 class SessionLogger:
@@ -57,10 +71,19 @@ class SessionLogger:
         summary = logger.summary()
     """
 
-    def __init__(self, mission="", autonomy_level=1, output_dir=DEFAULT_SESSIONS_DIR):
+    def __init__(
+        self,
+        mission="",
+        autonomy_level=1,
+        output_dir=DEFAULT_SESSIONS_DIR,
+        retention_manager: ArtifactRetentionManager | None = None,
+        retention_policy: ArtifactRetentionPolicy | None = None,
+    ):
         self.mission = str(mission)
         self.autonomy_level = int(autonomy_level)
         self.output_dir = Path(output_dir)
+        self.retention_manager = retention_manager or ArtifactRetentionManager()
+        self.retention_policy = retention_policy or DEFAULT_SESSION_RETENTION
         self.events: list[SessionEvent] = []
         self._start_time = time.monotonic()
         self._start_datetime = datetime.now()
@@ -75,6 +98,7 @@ class SessionLogger:
         self.api_call_count = 0
         self.error_count = 0
         self.captcha_count = 0
+        self.timing_count = 0
 
     def _elapsed(self):
         return time.monotonic() - self._start_time
@@ -162,6 +186,19 @@ class SessionLogger:
             detail=detail,
         ))
 
+    def record_timing(self, stage, duration_ms, detail=""):
+        """Record one runtime timing measurement."""
+        self.timing_count += 1
+        self.events.append(SessionEvent(
+            timestamp=self._now_iso(),
+            elapsed_seconds=self._elapsed(),
+            event_type="timing",
+            outcome="observed",
+            detail=str(detail),
+            stage=str(stage),
+            duration_ms=max(0.0, float(duration_ms)),
+        ))
+
     def duration_seconds(self):
         """Return total elapsed seconds since session start."""
         return self._elapsed()
@@ -194,6 +231,7 @@ class SessionLogger:
             "api_calls": self.api_call_count,
             "errors": self.error_count,
             "captchas": self.captcha_count,
+            "timings": self.timing_count,
         }
 
     def timeline(self):
@@ -219,6 +257,7 @@ class SessionLogger:
                 json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )
+            self.retention_manager.prune_directory(self.output_dir, self.retention_policy)
             LOGGER.info("Session log saved: %s", path)
             return path
         except Exception as exc:

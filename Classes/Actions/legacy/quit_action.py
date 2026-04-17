@@ -1,3 +1,5 @@
+"""Deprecated bot quit action retained outside the supported runtime."""
+
 from Actions.action import Action
 
 

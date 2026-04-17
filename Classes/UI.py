@@ -1,24 +1,31 @@
 import json
 import os
 import sys
+import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pygetwindow as gw
 from action_sets import ActionSets
+from Actions.dynamic_planner_action import DynamicPlannerAction
 from click_overlay import ClickOverlay
 from config_manager import ConfigManager
 from context import Context
+from detection_dataset import DetectionDataset
 from emergency_stop import EmergencyStop
 from health_check import HealthCheckDialog
 from input_controller import InputController
 from logging_config import get_logger
 from model_manager import ModelManager, yolo_download_required
 from object_detector import create_detector
+from ocr_service import OCRService
 from OS_ROKBOT import OSROKBOT
 from PyQt5 import QtCore, QtGui, QtWidgets
+from screen_change_detector import ScreenChangeDetector
 from session_logger import SessionLogger
+from task_graph import TaskGraph
+from vision_memory import VisionMemory
 from window_handler import WindowHandler
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -169,12 +176,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 "PLANNER_GOAL": self.planner_goal_input.text(),
             }
         )
-        weights_path = ModelManager(self.config).ensure_yolo_weights()
-        if weights_path:
-            self.yolo_weights_input.setText(str(weights_path))
-            self.status_label.setText(f"Saved. YOLO weights ready: {weights_path.name}")
-        else:
-            self.status_label.setText("Saved. YOLO weights are optional and not configured.")
+        self.status_label.setText("Saved. YOLO weights will be checked in the background.")
 
 
 # ── Session dashboard dialog ─────────────────────────────────────────────────
@@ -275,12 +277,26 @@ class UI(QtWidgets.QWidget):
         super().__init__()
         os.chdir(PROJECT_ROOT)
 
-        self.OS_ROKBOT = OSROKBOT(window_title, delay)
+        self._window_handler = WindowHandler()
+        self._input_controller = InputController(context=None)
+        self._detector = create_detector()
+        self._vision_memory = VisionMemory()
+        self._detection_dataset = DetectionDataset()
+        self.OS_ROKBOT = OSROKBOT(
+            window_title,
+            delay,
+            window_handler=self._window_handler,
+            input_controller=self._input_controller,
+            detector=self._detector,
+        )
         self.OS_ROKBOT.signal_emitter.pause_toggled.connect(self.on_pause_toggled)
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.currentState)
         self.OS_ROKBOT.signal_emitter.planner_decision.connect(self.on_planner_decision)
         self.OS_ROKBOT.signal_emitter.yolo_weights_ready.connect(self.on_yolo_weights_ready)
-        self.action_sets = ActionSets(OS_ROKBOT=self.OS_ROKBOT)
+        self.action_sets = ActionSets(
+            OS_ROKBOT=self.OS_ROKBOT,
+            dynamic_planner_factory=self._create_dynamic_planner_action,
+        )
         self._background_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-UI")
         self.current_context = None
         self._planner_correction_armed = False
@@ -288,6 +304,11 @@ class UI(QtWidgets.QWidget):
         self.target_title = window_title
         self.yolo_ready = True
         self._yolo_warmup_future = None
+        self._last_window_lookup_at = 0.0
+        self._window_lookup_interval = 0.25
+        self._cached_target_window = None
+        self._cached_active_window = None
+        self._last_stays_on_top = None
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.update_position)
         self.timer.start(50)
@@ -571,6 +592,19 @@ class UI(QtWidgets.QWidget):
         self.play_button.setEnabled(available)
         self.play_button.setToolTip(tooltip)
 
+    def _create_dynamic_planner_action(self):
+        """Build one planner action with startup-owned shared dependencies."""
+
+        return DynamicPlannerAction(
+            window_handler=self._window_handler,
+            detector=self._detector,
+            ocr=OCRService(),
+            memory=self._vision_memory,
+            dataset=self._detection_dataset,
+            change_detector=ScreenChangeDetector(),
+            task_graph=TaskGraph(),
+        )
+
     def _begin_yolo_warmup(self):
         if self._yolo_warmup_future and not self._yolo_warmup_future.done():
             return
@@ -604,7 +638,8 @@ class UI(QtWidgets.QWidget):
         self._yolo_warmup_future = None
         self.yolo_ready = bool(success)
         if success:
-            self.OS_ROKBOT.detector = create_detector()
+            self._detector = create_detector()
+            self.OS_ROKBOT.detector = self._detector
             self._set_yolo_start_available(True, "Start (F5)")
             if not self.OS_ROKBOT.is_running:
                 self.status_label.setText(" Ready")
@@ -776,16 +811,32 @@ class UI(QtWidgets.QWidget):
             )
 
     def update_position(self):
-        target_windows = gw.getWindowsWithTitle(self.target_title)
-        active_window = gw.getActiveWindow()
+        now = time.monotonic()
+        if now - self._last_window_lookup_at >= self._window_lookup_interval:
+            self._last_window_lookup_at = now
+            try:
+                target_windows = gw.getWindowsWithTitle(self.target_title)
+                self._cached_target_window = target_windows[0] if target_windows else None
+                self._cached_active_window = gw.getActiveWindow()
+            except Exception as exc:
+                LOGGER.debug("UI window lookup skipped: %s", exc)
+                self._cached_target_window = None
+                self._cached_active_window = None
 
-        if target_windows and (target_windows[0].title == self.target_title or target_windows[0].title == "OSROKBOT"):
-            target_window = target_windows[0]
+        target_window = self._cached_target_window
+        active_window = self._cached_active_window
+        if target_window and (target_window.title == self.target_title or target_window.title == "OSROKBOT"):
             self.move(target_window.left + 5, target_window.top + int(target_window.height / 1.85))
-            if active_window and (active_window.title == self.target_title or active_window.title == "OSROKBOT" or active_window.title == "python3"):
-                self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
-            else:
-                self.setWindowFlags(self.windowFlags() & ~QtCore.Qt.WindowStaysOnTopHint)
+            should_stay_on_top = bool(
+                active_window
+                and active_window.title in {self.target_title, "OSROKBOT", "python3"}
+            )
+            if should_stay_on_top != self._last_stays_on_top:
+                self._last_stays_on_top = should_stay_on_top
+                if should_stay_on_top:
+                    self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+                else:
+                    self.setWindowFlags(self.windowFlags() & ~QtCore.Qt.WindowStaysOnTopHint)
             if not self.isVisible():
                 self.show()
 
@@ -816,7 +867,7 @@ class UI(QtWidgets.QWidget):
             return
         if self.OS_ROKBOT.is_paused():
             self.toggle_pause()
-        WindowHandler().activate_window('Rise of Kingdoms')
+        self._window_handler.activate_window('Rise of Kingdoms')
         mission = self.mission_input.currentText().strip() or "Safely continue the selected Rise of Kingdoms task."
         ConfigManager().set_many({"PLANNER_GOAL": mission})
         self._save_mission_to_history(mission)
@@ -884,7 +935,7 @@ class UI(QtWidgets.QWidget):
     def _pending_planner_context(self):
         if not self.current_context:
             return None
-        if not self.current_context.extracted.get("planner_pending"):
+        if not self.current_context.pending_planner_decision():
             self.status_label.setText("No planner action pending")
             self.status_label.setToolTip(ERROR_GUIDANCE.get("No planner action pending", ""))
             return None
@@ -898,7 +949,7 @@ class UI(QtWidgets.QWidget):
             self.status_label.setToolTip("")
             self._click_overlay.dismiss()
             if self._session_logger:
-                pending = context.extracted.get("planner_pending", {})
+                pending = context.pending_planner_decision() or {}
                 label = pending.get("decision", {}).get("label", "")
                 self._session_logger.record_approval(label)
 
@@ -910,7 +961,7 @@ class UI(QtWidgets.QWidget):
             self.status_label.setToolTip("")
             self._click_overlay.dismiss()
             if self._session_logger:
-                pending = context.extracted.get("planner_pending", {})
+                pending = context.pending_planner_decision() or {}
                 label = pending.get("decision", {}).get("label", "")
                 self._session_logger.record_rejection(label)
 
@@ -930,7 +981,7 @@ class UI(QtWidgets.QWidget):
         context = self._pending_planner_context()
         if not context:
             return
-        pending = context.extracted.get("planner_pending", {})
+        pending = context.pending_planner_decision() or {}
         rect = pending.get("window_rect", {})
         width = max(1, int(rect.get("width", 1)))
         height = max(1, int(rect.get("height", 1)))
@@ -953,6 +1004,8 @@ class UI(QtWidgets.QWidget):
         self._click_overlay.dismiss()
         if self._tray:
             self._tray.hide()
+        if self._yolo_warmup_future and not self._yolo_warmup_future.done():
+            self._yolo_warmup_future.cancel()
         self._background_executor.shutdown(wait=False, cancel_futures=True)
         event.accept()
 

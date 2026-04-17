@@ -1,12 +1,13 @@
 import json
 import threading
 import time
-
-import pytest
+from concurrent.futures import Future
+from types import SimpleNamespace
 
 import OS_ROKBOT as os_rokbot
-from OS_ROKBOT import OSROKBOT, EmergencyStop
+import pytest
 from context import Context
+from OS_ROKBOT import OSROKBOT, EmergencyStop
 
 
 def _wait_for(predicate, timeout=2.0):
@@ -21,6 +22,13 @@ def _wait_for(predicate, timeout=2.0):
 def _allow_start(monkeypatch, bot):
     monkeypatch.setattr(bot, "_hardware_input_ready", lambda context=None: True)
     monkeypatch.setattr(EmergencyStop, "start_once", staticmethod(lambda: True))
+
+
+def _replace_pause_emitter(bot, emitted_values):
+    bot.signal_emitter = SimpleNamespace(
+        state_changed=SimpleNamespace(emit=lambda _value: None),
+        pause_toggled=SimpleNamespace(emit=lambda value: emitted_values.append(value)),
+    )
 
 
 def test_write_heartbeat_file_writes_json_atomically(tmp_path):
@@ -157,6 +165,38 @@ def test_stop_shuts_down_runner_executor_without_queueing_second_run(monkeypatch
     assert _wait_for(lambda: bot.all_threads_joined is True)
 
 
+def test_stop_recreates_heartbeat_executor_for_later_runs(monkeypatch):
+    bot = OSROKBOT("Test Window", delay=0)
+    first_executor = bot._ensure_heartbeat_executor()
+
+    bot.stop()
+
+    assert bot._heartbeat_executor is None
+
+    writes = []
+    monkeypatch.setattr(OSROKBOT, "_write_heartbeat_file", staticmethod(lambda path, payload: writes.append((path, payload))))
+    context = Context(bot=bot, window_title="Test Window")
+
+    assert bot.write_heartbeat(context, force=True) is True
+    assert bot._heartbeat_executor is not None
+    assert bot._heartbeat_executor is not first_executor
+    bot._heartbeat_future.result(timeout=2)
+    assert len(writes) == 1
+
+
+def test_start_refuses_when_emergency_stop_unavailable(monkeypatch):
+    class UnavailableEmergencyStop:
+        @classmethod
+        def start_once(cls):
+            return False
+
+    bot = OSROKBOT("Test Window", delay=0, emergency_stop=UnavailableEmergencyStop)
+    monkeypatch.setattr(bot, "_hardware_input_ready", lambda context=None: True)
+
+    assert bot.start(["first"]) is False
+    assert bot.is_running is False
+
+
 def test_run_reuses_single_observation_for_captcha_and_execute(monkeypatch):
     class FakeWindowRect:
         left = 0
@@ -206,3 +246,80 @@ def test_run_reuses_single_observation_for_captcha_and_execute(monkeypatch):
     assert observed["observation"].screenshot == "screen"
     assert len(observed["observation"].detections) == 1
     assert context.current_observation is None
+    assert [entry["stage"] for entry in context.runtime_timing_history] == [
+        "window_capture",
+        "yolo_detect",
+    ]
+
+
+def test_ensure_foreground_pauses_when_window_cannot_be_activated(monkeypatch):
+    emitted = []
+    pause_states = []
+    bot = OSROKBOT("Test Window", delay=0)
+    bot.window_handler = type("Handler", (), {"ensure_foreground": lambda self, _title, wait_seconds=0.5: False})()
+    _replace_pause_emitter(bot, pause_states)
+    context = Context(bot=bot, window_title="Test Window")
+    monkeypatch.setattr(context, "emit_state", lambda text: emitted.append(text))
+
+    assert bot._ensure_foreground(context) is False
+    assert bot.pause_event.is_set()
+    assert emitted == ["Game not foreground - paused"]
+    assert pause_states == [True]
+
+
+def test_detect_captcha_pauses_and_exports_diagnostics(monkeypatch, tmp_path):
+    screenshot_path = tmp_path / "captcha.png"
+    screenshot_path.write_bytes(b"png")
+    pause_states = []
+    bot = OSROKBOT("Test Window", delay=0)
+    observation = type(
+        "Observation",
+        (),
+        {
+            "screenshot": "screen",
+            "detections": (type("Detection", (), {"label": "captcha"})(),),
+        },
+    )()
+    context = Context(bot=bot, window_title="Test Window")
+    exported = []
+    emitted = []
+    _replace_pause_emitter(bot, pause_states)
+    monkeypatch.setattr(context, "emit_state", lambda text: emitted.append(text))
+    monkeypatch.setattr(context, "export_state_history", lambda path: exported.append(path))
+    monkeypatch.setattr(os_rokbot, "save_diagnostic_screenshot", lambda screenshot, label="": screenshot_path)
+
+    assert bot._detect_captcha(context, observation=observation) is True
+    assert bot.pause_event.is_set()
+    assert emitted == ["Captcha detected - paused"]
+    assert exported == [screenshot_path.with_suffix(".log")]
+    assert pause_states == [True]
+
+
+def test_runner_done_cleans_executor_after_background_failure():
+    bot = OSROKBOT("Test Window", delay=0)
+    future = Future()
+    future.set_exception(RuntimeError("boom"))
+    bot._runner_future = future
+    bot._runner_executor = type("Executor", (), {"shutdown": lambda self, wait=False, cancel_futures=True: None})()
+    bot.is_running = True
+    bot.all_threads_joined = False
+
+    bot._runner_done(future)
+
+    assert bot._runner_future is None
+    assert bot._runner_executor is None
+    assert bot.stop_event.is_set()
+    assert bot.is_running is False
+    assert bot.all_threads_joined is True
+
+
+def test_toggle_pause_flips_pause_event_and_emits_signal(monkeypatch):
+    bot = OSROKBOT("Test Window", delay=0)
+    emitted = []
+    _replace_pause_emitter(bot, emitted)
+
+    bot.toggle_pause()
+    bot.toggle_pause()
+
+    assert emitted == [True, False]
+    assert bot.is_paused() is False

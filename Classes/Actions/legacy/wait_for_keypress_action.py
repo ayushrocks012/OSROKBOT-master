@@ -1,3 +1,5 @@
+"""Deprecated blocking keypress action retained outside the supported runtime."""
+
 import keyboard
 from Actions.action import Action
 from logging_config import get_logger

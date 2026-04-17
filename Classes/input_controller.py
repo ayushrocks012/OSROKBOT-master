@@ -450,6 +450,7 @@ class InputController:
         return True
 
     def click(self, x: float, y: float, window_rect: WindowRect | None = None, remember_position: bool = True, context: Any | None = None) -> bool:
+        _ = remember_position  # Compatibility parameter; pointer restoration is intentionally disabled.
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -490,6 +491,7 @@ class InputController:
         context: Any | None = None,
         hold_seconds: float | None = None,
     ) -> bool:
+        _ = remember_position  # Compatibility parameter; pointer restoration is intentionally disabled.
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -573,6 +575,7 @@ class InputController:
                     InputController._pause_for_foreground_failure(active_context)
 
     def move_to(self, x: float, y: float, window_rect: WindowRect | None = None, remember_position: bool = False, context: Any | None = None) -> bool:
+        _ = remember_position  # Compatibility parameter; pointer restoration is intentionally disabled.
         active_context = self._context(context)
         if not self.check_interlock(active_context):
             return False

@@ -10,6 +10,14 @@ from logging_config import get_logger
 from PIL import Image
 
 LOGGER = get_logger(__name__)
+WINDOW_HANDLER_EXCEPTIONS = (
+    AttributeError,
+    ctypes.ArgumentError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 try:
     import win32con
@@ -128,7 +136,7 @@ class _Win32WindowCaptureBackend(_WindowCaptureBackend):
                         win32con.SRCCOPY | capture_blt,
                     )
                     rendered = True
-                except Exception as exc:
+                except WINDOW_HANDLER_EXCEPTIONS as exc:
                     LOGGER.error(f"BitBlt fallback failed: {exc}")
                     rendered = False
             if not rendered:
@@ -236,7 +244,7 @@ class WindowHandler:
                 title,
                 duration_ms,
             )
-        except Exception as exc:
+        except WINDOW_HANDLER_EXCEPTIONS as exc:
             LOGGER.error(f"Window capture failed for '{title}': {exc}")
             return None, None
 
@@ -251,7 +259,7 @@ class WindowHandler:
         self._restore_no_activate(win._hWnd)
         try:
             return self._get_client_rect(win)
-        except Exception as exc:
+        except WINDOW_HANDLER_EXCEPTIONS as exc:
             LOGGER.error(f"Unable to read client area for '{title}': {exc}")
             return None
 
@@ -275,7 +283,7 @@ class WindowHandler:
             win.resizeTo(new_width, new_height)
             LOGGER.info(f"Adjusted '{title}' to 16:9 window size: {new_width}x{new_height}")
             return True
-        except Exception as exc:
+        except WINDOW_HANDLER_EXCEPTIONS as exc:
             LOGGER.error(f"Failed to enforce 16:9 aspect ratio for '{title}': {exc}")
             return False
 
@@ -284,9 +292,9 @@ class WindowHandler:
             win = self.get_window(title)
             if win:
                 self._restore_no_activate(win._hWnd)
-        except Exception as e:
-            if "Error code from Windows: 0" not in str(e):
-                LOGGER.error(f"Failed to prepare window '{title}': {e}")
+        except WINDOW_HANDLER_EXCEPTIONS as exc:
+            if "Error code from Windows: 0" not in str(exc):
+                LOGGER.error(f"Failed to prepare window '{title}': {exc}")
         return
 
     def ensure_foreground(self, title: str = "Rise of Kingdoms", wait_seconds: float = 0.5) -> bool:
@@ -311,7 +319,7 @@ class WindowHandler:
             try:
                 win32gui.BringWindowToTop(hwnd)
                 win32gui.SetForegroundWindow(hwnd)
-            except Exception as exc:
+            except WINDOW_HANDLER_EXCEPTIONS as exc:
                 LOGGER.warning(f"Unable to foreground '{title}': {exc}")
 
             if wait_seconds and wait_seconds > 0:
@@ -322,6 +330,6 @@ class WindowHandler:
 
             LOGGER.error(f"Target game window is not foreground: {title}")
             return False
-        except Exception as exc:
+        except WINDOW_HANDLER_EXCEPTIONS as exc:
             LOGGER.error(f"Foreground check failed for '{title}': {exc}")
             return False

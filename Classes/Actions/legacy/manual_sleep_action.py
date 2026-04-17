@@ -1,3 +1,5 @@
+"""Deprecated sleep action retained outside the supported runtime."""
+
 from Actions.action import Action, ActionMetadata
 from input_controller import DelayPolicy
 
