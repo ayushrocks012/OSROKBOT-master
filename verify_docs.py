@@ -22,6 +22,7 @@ REQUIRED_FILES = [
     "docs/runbooks/emergency-stop.md",
     "docs/runbooks/secret-provisioning.md",
     "docs/runbooks/failure-triage.md",
+    "docs/runbooks/run-handoff.md",
     "docs/adr/0001-planner-first-runtime.md",
     "docs/adr/0002-human-in-the-loop-safety.md",
 ]
@@ -39,6 +40,7 @@ REQUIRED_DOC_REFERENCES = [
     "docs/runbooks/emergency-stop.md",
     "docs/runbooks/secret-provisioning.md",
     "docs/runbooks/failure-triage.md",
+    "docs/runbooks/run-handoff.md",
     "docs/adr/0001-planner-first-runtime.md",
     "docs/adr/0002-human-in-the-loop-safety.md",
     "docs/documentation-review-checklist.md",

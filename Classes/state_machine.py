@@ -115,6 +115,12 @@ class StateMachine:
         if context and hasattr(context, "record_state"):
             context.record_state(state_name, status_text, result, next_state=next_state, event=event)
 
+    @staticmethod
+    def _record_session_error(context: Any | None, detail: str, *, stage: str, label: str = "") -> None:
+        session_logger = getattr(context, "session_logger", None) if context is not None else None
+        if session_logger and hasattr(session_logger, "record_error"):
+            session_logger.record_error(detail, stage=stage, label=label)
+
     def _halt_invalid_transition(
         self,
         context: Any | None,
@@ -126,6 +132,12 @@ class StateMachine:
         event: str = "action",
     ) -> None:
         LOGGER.error("State resolution failed for %s during %s. Halting workflow.", state_name, source)
+        self._record_session_error(
+            context,
+            f"State resolution failed for {state_name} during {source}.",
+            stage="state_machine",
+            label=state_name,
+        )
         self._record_transition(context, state_name, status_text, result, next_state=next_state, event=event)
         self.halted = True
         return
@@ -438,8 +450,16 @@ class StateMachine:
         WindowHandler().ensure_foreground(window_title, wait_seconds=0.5)
         monitor.save_diagnostic_screenshot(f"recovery_{self.current_state or 'unknown'}")
 
-        return (
+        recovered = (
             self._recovery_close_menus(monitor, controller, context, GameState)
             or self._recovery_toggle_view(monitor, controller, context, GameState)
             or self._recovery_restart_game(monitor, controller, context, GameState)
         )
+        if not recovered:
+            self._record_session_error(
+                context,
+                f"Global recovery failed for state {self.current_state or 'unknown'}.",
+                stage="global_recovery",
+                label=self.current_state or "unknown",
+            )
+        return recovered

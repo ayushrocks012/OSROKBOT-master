@@ -9,13 +9,17 @@ unexpectedly.
 ## Immediate Actions
 
 1. Stop or pause the run before inspecting artifacts.
-2. Review the latest `.txt` report under `data/session_logs/`, then open the
-   matching `.json` file when event-level detail is needed.
-3. Check `timing` events for slow window capture, YOLO, OCR, planner request,
+2. Review `data/handoff/latest_run.txt` first, then open
+   `data/handoff/latest_run.json` for structured fields such as `top_errors`,
+   `key_events`, `artifacts`, and `next_actions`.
+3. Follow the artifact paths from `latest_run.json` to the matching per-run
+   `.json`, `.log`, `.err`, and runtime `.ndjson` files under
+   `data/session_logs/`.
+4. Check `timing` events for slow window capture, YOLO, OCR, planner request,
    or guarded input phases.
-4. Inspect `diagnostics/` for failure or CAPTCHA screenshots.
-5. Check whether `data/planner_latest.png` matches the expected game window.
-6. Confirm `ROK_WINDOW_TITLE`, `ROK_YOLO_WEIGHTS`, `OCR_ENGINE`,
+5. Inspect `diagnostics/` for failure or CAPTCHA screenshots.
+6. Check whether `data/planner_latest.png` matches the expected game window.
+7. Confirm `ROK_WINDOW_TITLE`, `ROK_YOLO_WEIGHTS`, `OCR_ENGINE`,
    `TESSERACT_PATH`, `TESSERACT_TIMEOUT_SECONDS`,
    `PLANNER_L1_REVIEW_MIN_CONFIDENCE`, and `OPENAI_KEY` or `OPENAI_API_KEY`
    are configured.
@@ -43,6 +47,6 @@ unexpectedly.
 ## Escalation
 
 Open an engineering task when the same failure occurs across two supervised
-runs with reproducible screenshots and session logs. Include the mission,
-autonomy level, latest session log, diagnostic screenshot, and whether the game
-window was foreground.
+runs with reproducible screenshots and handoff artifacts. Include the mission,
+autonomy level, `data/handoff/latest_run.json`, the matching per-run session
+group, diagnostic screenshot, and whether the game window was foreground.

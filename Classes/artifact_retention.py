@@ -9,14 +9,17 @@ together.
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from logging_config import get_logger
 
 LOGGER = get_logger(__name__)
+_EMBEDDED_TIMESTAMP_RE = re.compile(r"(\d{8}_\d{6}(?:_\d{6})?)$")
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,21 @@ class ArtifactRetentionManager:
     def __init__(self, now: Callable[[], float] | None = None) -> None:
         self._now = now or time.time
 
+    @staticmethod
+    def _sort_token_for_group(group_name: str) -> str:
+        """Return a normalized embedded timestamp token when one is present."""
+
+        match = _EMBEDDED_TIMESTAMP_RE.search(str(group_name))
+        if not match:
+            return ""
+        raw_token = match.group(1)
+        for fmt in ("%Y%m%d_%H%M%S_%f", "%Y%m%d_%H%M%S"):
+            try:
+                return datetime.strptime(raw_token, fmt).strftime("%Y%m%d%H%M%S%f")
+            except ValueError:
+                continue
+        return ""
+
     def prune_directory(
         self,
         directory: str | Path,
@@ -77,13 +95,17 @@ class ArtifactRetentionManager:
         key_for_path = group_key or (lambda path: path.stem)
         grouped_files: dict[str, list[Path]] = {}
         group_mtime: dict[str, float] = {}
+        group_sort_time_ns: dict[str, int] = {}
         for path in target_directory.iterdir():
             if not path.is_file():
                 continue
             key = key_for_path(path)
             grouped_files.setdefault(key, []).append(path)
-            modified_at = path.stat().st_mtime
+            stat_result = path.stat()
+            modified_at = stat_result.st_mtime
+            modified_at_ns = getattr(stat_result, "st_mtime_ns", int(modified_at * 1_000_000_000))
             group_mtime[key] = max(group_mtime.get(key, 0.0), modified_at)
+            group_sort_time_ns[key] = max(group_sort_time_ns.get(key, 0), modified_at_ns)
 
         if not grouped_files:
             return []
@@ -92,7 +114,15 @@ class ArtifactRetentionManager:
         if policy.max_age_days is not None:
             cutoff = self._now() - policy.max_age_days * 86400.0
 
-        sorted_groups = sorted(grouped_files, key=lambda key: group_mtime[key], reverse=True)
+        sorted_groups = sorted(
+            grouped_files,
+            key=lambda key: (
+                self._sort_token_for_group(key),
+                group_sort_time_ns[key],
+                group_mtime[key],
+            ),
+            reverse=True,
+        )
         retained_count = 0
         removed_files: list[Path] = []
         for key in sorted_groups:

@@ -1113,6 +1113,13 @@ class DynamicPlanner:
                 started_at,
                 detail=f"error={type(exc).__name__}",
             )
+            session_logger = getattr(context, "session_logger", None)
+            if session_logger and hasattr(session_logger, "record_error"):
+                session_logger.record_error(
+                    f"Dynamic planner request failed: {exc}",
+                    stage="planner_request",
+                    action_type="planner_request",
+                )
             LOGGER.error(f"Dynamic planner request failed: {exc}")
             return None
 

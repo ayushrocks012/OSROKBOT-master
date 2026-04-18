@@ -1,46 +1,50 @@
-"""Per-run session logging and summary generation.
+"""Per-run runtime session logging and handoff generation.
 
-Records events (actions, approvals, errors) during an automation run and
-generates a structured JSON summary in ``data/sessions/`` when the run stops.
+This module is the runtime-facing wrapper over the shared run-handoff contract.
+It records planner/runtime events as they happen, keeps a grouped history set
+under ``data/session_logs/``, and refreshes ``data/handoff/latest_run.*`` so a
+new agent can understand the last run without extra operator context.
 """
 
-import json
-import time
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from __future__ import annotations
 
-from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy, policy_from_environment
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy
 from logging_config import get_logger
+from run_handoff import (
+    DEFAULT_SESSION_LOGS_DIR,
+    DEFAULT_SESSION_RETENTION,
+    RunRecordSession,
+)
 
 LOGGER = get_logger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SESSIONS_DIR = PROJECT_ROOT / "data" / "session_logs"
-DEFAULT_SESSION_RETENTION = policy_from_environment(
-    max_groups_env="ROK_SESSION_LOG_MAX_FILES",
-    max_age_days_env="ROK_SESSION_LOG_MAX_AGE_DAYS",
-    default_max_groups=200,
-    default_max_age_days=30.0,
-)
 
 
 @dataclass
 class SessionEvent:
-    """One recorded event during an automation session."""
+    """Compatibility wrapper for older call sites and tests."""
 
     timestamp: str
     elapsed_seconds: float
-    event_type: str  # action, approval, rejection, correction, error, captcha, info
+    event_type: str
     action_type: str = ""
     label: str = ""
     target_id: str = ""
-    outcome: str = ""  # success, failure, approved, rejected, corrected
+    outcome: str = ""
     detail: str = ""
     stage: str = ""
     duration_ms: float | None = None
+    severity: str = "INFO"
+    source: str = ""
+    state_text: str = ""
+    decision: dict[str, Any] | None = None
+    status: str = ""
+    end_reason: str = ""
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         payload = {
             "timestamp": self.timestamp,
             "elapsed_seconds": round(self.elapsed_seconds, 1),
@@ -50,297 +54,235 @@ class SessionEvent:
             "target_id": self.target_id,
             "outcome": self.outcome,
             "detail": self.detail,
+            "severity": self.severity,
+            "source": self.source,
         }
         if self.stage:
             payload["stage"] = self.stage
         if self.duration_ms is not None:
             payload["duration_ms"] = round(self.duration_ms, 2)
+        if self.state_text:
+            payload["state_text"] = self.state_text
+        if self.decision is not None:
+            payload["decision"] = self.decision
+        if self.status:
+            payload["status"] = self.status
+        if self.end_reason:
+            payload["end_reason"] = self.end_reason
         return payload
 
 
 class SessionLogger:
-    """Records and summarizes a single automation session.
+    """Record and finalize one runtime automation session.
 
-    Usage::
-
-        logger = SessionLogger(mission="Farm resources")
-        logger.record_action("click", "gather_button", "det_3", "success")
-        logger.record_approval("gather_button")
-        # ... at end of run ...
-        logger.finalize()
-        summary = logger.summary()
+    Args:
+        mission: Operator-selected mission text for the run.
+        autonomy_level: Current autonomy level selected in the UI.
+        output_dir: Directory used for grouped per-run history files.
+        retention_manager: Optional grouped-retention helper.
+        retention_policy: Optional history retention policy override.
     """
 
     def __init__(
         self,
-        mission="",
-        autonomy_level=1,
-        output_dir=DEFAULT_SESSIONS_DIR,
+        mission: str = "",
+        autonomy_level: int = 1,
+        output_dir: Path = DEFAULT_SESSION_LOGS_DIR,
+        handoff_dir: Path | None = None,
         retention_manager: ArtifactRetentionManager | None = None,
         retention_policy: ArtifactRetentionPolicy | None = None,
-    ):
+    ) -> None:
         self.mission = str(mission)
         self.autonomy_level = int(autonomy_level)
-        self.output_dir = Path(output_dir)
-        self.retention_manager = retention_manager or ArtifactRetentionManager()
-        self.retention_policy = retention_policy or DEFAULT_SESSION_RETENTION
-        self.events: list[SessionEvent] = []
-        self._start_time = time.monotonic()
-        self._start_datetime = datetime.now()
-        self._end_datetime = None
+        self._session = RunRecordSession(
+            run_kind="runtime_session",
+            command_or_mission=self.mission,
+            output_dir=Path(output_dir),
+            handoff_dir=handoff_dir,
+            retention_manager=retention_manager,
+            retention_policy=retention_policy or DEFAULT_SESSION_RETENTION,
+            metadata={
+                "mission": self.mission,
+                "autonomy_level": self.autonomy_level,
+            },
+        )
 
-        # Counters.
-        self.action_count = 0
-        self.approval_count = 0
-        self.rejection_count = 0
-        self.correction_count = 0
-        self.memory_hit_count = 0
-        self.api_call_count = 0
-        self.planner_rejection_count = 0
-        self.error_count = 0
-        self.captcha_count = 0
-        self.timing_count = 0
+    @property
+    def run_id(self) -> str:
+        """Return the stable run identifier for this session."""
 
-    def _elapsed(self):
-        return time.monotonic() - self._start_time
+        return self._session.run_id
 
-    def _now_iso(self):
-        return datetime.now().isoformat(timespec="seconds")
+    @property
+    def paths(self):
+        """Expose grouped output paths for callers that need them."""
 
-    def record_action(self, action_type, label="", target_id="", outcome="success", source="ai"):
-        """Record a planner action execution."""
-        self.action_count += 1
-        if source == "memory":
-            self.memory_hit_count += 1
-        else:
-            self.api_call_count += 1
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="action",
+        return self._session.paths
+
+    def _record(self, event_type: str, *, detail: str = "", severity: str = "INFO", **fields: Any) -> None:
+        self._session.record_event(event_type, detail=detail, severity=severity, **fields)
+
+    def update_metadata(self, **updates: Any) -> None:
+        """Merge metadata that should appear in the final handoff payload."""
+
+        self._session.update_metadata(**updates)
+
+    def record_action(
+        self,
+        action_type: str,
+        label: str = "",
+        target_id: str = "",
+        outcome: str = "success",
+        source: str = "ai",
+    ) -> None:
+        """Record one guarded planner action execution."""
+
+        self._record(
+            "action",
             action_type=action_type,
             label=label,
             target_id=target_id,
             outcome=outcome,
-        ))
+            source=source,
+        )
 
-    def record_approval(self, label=""):
-        """Record a user approval."""
-        self.approval_count += 1
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="approval",
-            label=label,
-            outcome="approved",
-        ))
+    def record_approval(self, label: str = "") -> None:
+        """Record a user approval event."""
 
-    def record_rejection(self, label=""):
-        """Record a user rejection."""
-        self.rejection_count += 1
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="rejection",
-            label=label,
-            outcome="rejected",
-        ))
+        self._record("approval", label=label, outcome="approved")
 
-    def record_correction(self, label=""):
-        """Record a user correction (Fix)."""
-        self.correction_count += 1
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="correction",
-            label=label,
-            outcome="corrected",
-        ))
+    def record_rejection(self, label: str = "", detail: str = "") -> None:
+        """Record a user rejection event."""
 
-    def record_error(self, detail=""):
-        """Record an error."""
-        self.error_count += 1
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="error",
-            outcome="error",
+        self._record("rejection", label=label, outcome="rejected", detail=detail, severity="WARNING")
+
+    def record_correction(self, label: str = "") -> None:
+        """Record a manual correction event."""
+
+        self._record("correction", label=label, outcome="corrected")
+
+    def record_error(
+        self,
+        detail: str = "",
+        *,
+        stage: str = "",
+        action_type: str = "",
+        label: str = "",
+        target_id: str = "",
+        outcome: str = "error",
+    ) -> None:
+        """Record a runtime error at the real failing boundary."""
+
+        self._record(
+            "error",
             detail=detail,
-        ))
+            severity="ERROR",
+            stage=stage,
+            action_type=action_type,
+            label=label,
+            target_id=target_id,
+            outcome=outcome,
+        )
 
-    def record_planner_rejection(self, reason="", action_type="", label="", target_id="", confidence=""):
+    def record_warning(self, detail: str, *, stage: str = "", label: str = "") -> None:
+        """Record a warning that should show up in the handoff payload."""
+
+        self._record("warning", detail=detail, severity="WARNING", stage=stage, label=label)
+
+    def record_planner_rejection(
+        self,
+        reason: str = "",
+        action_type: str = "",
+        label: str = "",
+        target_id: str = "",
+        confidence: Any = "",
+    ) -> None:
         """Record a planner proposal rejected before guarded input."""
-        self.planner_rejection_count += 1
+
         detail = f"reason={reason}"
-        if confidence != "":
+        if confidence is not None and confidence != "":
             detail = f"{detail} confidence={confidence}"
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="planner_rejection",
+        self._record(
+            "planner_rejection",
+            detail=detail,
+            severity="WARNING",
             action_type=action_type,
             label=label,
             target_id=target_id,
             outcome="rejected",
-            detail=detail,
-        ))
+        )
 
-    def record_captcha(self):
-        """Record a CAPTCHA detection."""
-        self.captcha_count += 1
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="captcha",
-            outcome="paused",
-        ))
+    def record_captcha(self) -> None:
+        """Record a CAPTCHA pause event."""
 
-    def record_info(self, detail):
-        """Record a general info event."""
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="info",
-            detail=detail,
-        ))
+        self._record("captcha", detail="CAPTCHA detected; waiting for manual review.", severity="WARNING", outcome="paused")
 
-    def record_timing(self, stage, duration_ms, detail=""):
-        """Record one runtime timing measurement."""
-        self.timing_count += 1
-        self.events.append(SessionEvent(
-            timestamp=self._now_iso(),
-            elapsed_seconds=self._elapsed(),
-            event_type="timing",
-            outcome="observed",
+    def record_info(self, detail: str) -> None:
+        """Record an informational runtime note."""
+
+        self._record("info", detail=detail)
+
+    def record_state(self, state_text: str) -> None:
+        """Record the latest operator-facing runtime state."""
+
+        self._record("state", detail=state_text, state_text=state_text)
+
+    def record_decision(self, decision: dict[str, Any]) -> None:
+        """Record the latest planner decision summary."""
+
+        self._record(
+            "decision",
+            detail=str(decision.get("reason", "") or decision.get("label", "") or decision.get("action_type", "")),
+            action_type=str(decision.get("action_type", "") or ""),
+            label=str(decision.get("label", "") or ""),
+            target_id=str(decision.get("target_id", "") or ""),
+            decision=decision,
+        )
+
+    def record_timing(self, stage: str, duration_ms: float, detail: str = "") -> None:
+        """Record one bounded runtime timing measurement."""
+
+        self._record(
+            "timing",
             detail=str(detail),
             stage=str(stage),
             duration_ms=max(0.0, float(duration_ms)),
-        ))
+            outcome="observed",
+        )
 
-    def duration_seconds(self):
-        """Return total elapsed seconds since session start."""
-        return self._elapsed()
+    def mark_terminal(self, status: str, end_reason: str, detail: str = "") -> None:
+        """Record exactly one terminal event for the session."""
 
-    def duration_text(self):
-        """Return human-readable duration string."""
-        seconds = int(self._elapsed())
-        hours, remainder = divmod(seconds, 3600)
-        minutes, secs = divmod(remainder, 60)
-        if hours:
-            return f"{hours}h {minutes}m {secs}s"
-        if minutes:
-            return f"{minutes}m {secs}s"
-        return f"{secs}s"
+        self._session.mark_terminal(status, end_reason, detail=detail)
 
-    def summary(self):
-        """Return a summary dict of the session."""
-        return {
-            "mission": self.mission,
-            "autonomy_level": self.autonomy_level,
-            "started": self._start_datetime.isoformat(timespec="seconds"),
-            "ended": (self._end_datetime or datetime.now()).isoformat(timespec="seconds"),
-            "duration_seconds": round(self._elapsed(), 1),
-            "duration_text": self.duration_text(),
-            "total_actions": self.action_count,
-            "approvals": self.approval_count,
-            "rejections": self.rejection_count,
-            "corrections": self.correction_count,
-            "memory_hits": self.memory_hit_count,
-            "api_calls": self.api_call_count,
-            "planner_rejections": self.planner_rejection_count,
-            "errors": self.error_count,
-            "captchas": self.captcha_count,
-            "timings": self.timing_count,
-        }
+    def duration_seconds(self) -> float:
+        """Return elapsed session seconds."""
 
-    def timeline(self):
-        """Return events as a list of dicts for display."""
-        return [event.to_dict() for event in self.events]
+        return self._session.elapsed_seconds()
 
-    def text_report(self):
-        """Return a compact human-readable session report."""
-        summary = self.summary()
-        lines = [
-            "OSROKBOT Session Report",
-            "",
-            f"Mission: {summary['mission']}",
-            f"Started: {summary['started']}",
-            f"Ended: {summary['ended']}",
-            f"Duration: {summary['duration_text']}",
-            f"Autonomy: L{summary['autonomy_level']}",
-            "",
-            "Counts:",
-            f"- Actions: {summary['total_actions']}",
-            f"- Approvals: {summary['approvals']}",
-            f"- Corrections: {summary['corrections']}",
-            f"- Planner rejections: {summary['planner_rejections']}",
-            f"- API calls: {summary['api_calls']}",
-            f"- Errors: {summary['errors']}",
-            "",
-        ]
+    def duration_text(self) -> str:
+        """Return a human-readable duration string."""
 
-        timings = [event for event in self.events if event.event_type == "timing" and event.duration_ms is not None]
-        if timings:
-            lines.append("Timing Averages:")
-            stages = sorted({event.stage for event in timings if event.stage})
-            for stage in stages:
-                values = [float(event.duration_ms or 0.0) for event in timings if event.stage == stage]
-                if not values:
-                    continue
-                lines.append(
-                    f"- {stage}: avg={sum(values) / len(values):.1f}ms max={max(values):.1f}ms count={len(values)}"
-                )
-            lines.append("")
+        return str(self.summary().get("duration_text", "0s"))
 
-        key_events = [
-            event
-            for event in self.events
-            if event.event_type in {"action", "approval", "rejection", "correction", "planner_rejection", "error", "captcha"}
-        ]
-        if key_events:
-            lines.append("Key Events:")
-            for event in key_events[-20:]:
-                bits = [f"{event.timestamp}", event.event_type]
-                if event.action_type:
-                    bits.append(event.action_type)
-                if event.label:
-                    bits.append(event.label)
-                if event.target_id:
-                    bits.append(event.target_id)
-                if event.outcome:
-                    bits.append(event.outcome)
-                if event.detail:
-                    bits.append(event.detail)
-                lines.append("- " + " | ".join(bits))
-            lines.append("")
+    def summary(self) -> dict[str, Any]:
+        """Return the current summary payload."""
 
-        lines.append("Full JSON: same filename with .json")
-        lines.append("Full runtime log: data/logs/osrokbot.log")
-        return "\n".join(lines) + "\n"
+        return self._session.summary()
 
-    def finalize(self):
-        """Finalize the session and save the summary to disk.
+    def timeline(self) -> list[dict[str, Any]]:
+        """Return the current event stream as plain dictionaries."""
 
-        Returns:
-            Path | None: Path to the saved session file.
-        """
-        self._end_datetime = datetime.now()
-        try:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            filename = self._start_datetime.strftime("session_%Y%m%d_%H%M%S.json")
-            path = self.output_dir / filename
-            payload = {
-                "summary": self.summary(),
-                "events": self.timeline(),
-            }
-            path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            path.with_suffix(".txt").write_text(self.text_report(), encoding="utf-8")
-            self.retention_manager.prune_directory(self.output_dir, self.retention_policy)
-            LOGGER.info("Session log saved: %s", path)
-            return path
-        except Exception as exc:
-            LOGGER.error("Failed to save session log: %s", exc)
-            return None
+        return self._session.timeline()
+
+    def text_report(self) -> str:
+        """Return the fixed-section latest-run handoff text."""
+
+        return self._session.text_report()
+
+    def finalize(self, *, status: str | None = None, end_reason: str | None = None, detail: str = "") -> Path:
+        """Finalize the runtime session exactly once and return the JSON path."""
+
+        path = self._session.finalize(status=status, end_reason=end_reason, detail=detail)
+        LOGGER.info("Session log saved: %s", path)
+        return path

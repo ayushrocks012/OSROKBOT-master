@@ -37,6 +37,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/runtime_contracts.py` | Shared typed Protocols and aliases for active state/action, detector/OCR, and window-capture boundaries. |
 | `Classes/runtime_payloads.py` | Shared TypedDict payloads for heartbeat, planner approval, recovery handoff, state history, and resource context. |
 | `Classes/artifact_retention.py` | Shared retention policies for diagnostics, session logs, and recovery dataset exports. |
+| `Classes/run_handoff.py` | Canonical run-record builder, latest-run handoff refresh, incomplete-run reconciliation, and centralized test-artifact cleanup helpers. |
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat scheduling, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
@@ -52,6 +53,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/window_handler.py` | Foreground enforcement, client-rect discovery, and named window capture backends. |
 | `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download with timeout, streaming, and size-cap enforcement. |
 | `Classes/security_utils.py` | Secret redaction, atomic text writes, and dotenv updates for sensitive local configuration. |
+| `Classes/session_logger.py` | Runtime-session wrapper over the shared run-handoff contract. |
+| `Classes/maintainer_run.py` | Canonical maintainer command runner for documented PowerShell workflows, stdout/stderr capture, and centralized pytest artifact layout. |
 | `Classes/emergency_stop.py` | F12 emergency termination. |
 | `watchdog.py` | Heartbeat monitoring and conservative tracked-process restart behavior. |
 | `verify_docs.py` | Lightweight check that required runbooks, ADRs, diagrams, and maintained documentation links exist. |
@@ -75,9 +78,11 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Do not log API keys, passwords, tokens, or full secret assignment values.
 - Keep long-running downloads and warmups off the PyQt UI thread.
 - Keep generated diagnostics, session logs, and recovery exports bounded with the shared artifact retention policies.
-- Keep runtime timing telemetry for capture, detector, OCR, planner, and input phases flowing into the current JSON session log and compact text report when modifying those paths.
+- Keep `data/handoff/latest_run.json` and `data/handoff/latest_run.txt` as the canonical AI/operator entrypoint when modifying runtime or maintainer logging behavior.
+- Keep runtime timing telemetry for capture, detector, OCR, planner, and input phases flowing into the current grouped session artifacts and latest-run handoff when modifying those paths.
 - When code changes behavior, architecture, configuration, runtime data paths, safety rules, or operator workflow, update the affected documentation in the same change. At minimum, review `README.md`, `AGENTS.md`, `SKILLS.md`, and `MEDIA_MAP.md`.
 - Update operator runbooks under `docs/runbooks/` when watchdog, CAPTCHA, emergency-stop, secret provisioning, telemetry, or failure-triage behavior changes.
+- Keep documented maintainer verification commands routed through `tools/run_maintainer_command.ps1` so stdout/stderr capture, latest-run refresh, and centralized pytest artifact cleanup stay consistent.
 - Add or amend ADRs under `docs/adr/` when changing the planner-first runtime path, HITL safety model, input boundary, or other architecture-level contracts.
 - Do not launch live automation in tests unless explicitly requested.
 - Use `integration` for safe OS/service seam tests and `supervised` for opt-in operator/hardware acceptance tests.
@@ -184,12 +189,12 @@ subdirectories.
 Run these before handing work back:
 
 ```powershell
-python verify_integrity.py
-python verify_docs.py
+.\tools\run_maintainer_command.ps1 verify-integrity
+.\tools\run_maintainer_command.ps1 verify-docs
 python -m compileall Classes verify_integrity.py verify_docs.py cleanup_media.py watchdog.py
 python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports ok')"
-python -m mypy
-python -m pytest --basetemp .pytest_tmp -o cache_dir=.pytest_cache
+.\tools\run_maintainer_command.ps1 mypy
+.\tools\run_maintainer_command.ps1 pytest
 ```
 
 The Phase 1 mypy gate is intentionally scoped to the typed boundary/runtime
@@ -205,6 +210,12 @@ modules listed in `pyproject.toml`: `runtime_contracts`, `runtime_payloads`,
 `pytest.ini` also defines strict test markers. `integration` tests are safe
 OS/service seam tests that run by default. `supervised` tests are skipped
 unless an operator explicitly sets `OSROKBOT_RUN_SUPERVISED_TESTS=1`.
+
+The maintainer wrapper centralizes pytest temp/cache output under
+`.artifacts/test_runs/<run_id>/`, copies the latest run handoff into that
+folder, and provides `cleanup-test-artifacts` for legacy `.pytest_tmp*`,
+`.pytest_cache*`, `pytest-cache-files-*`, and `data/smoke_config_tests`
+cleanup after migration.
 
 Before handoff, also confirm that any code changes are reflected in the
 relevant Markdown docs and examples. Do not leave `README.md`, `AGENTS.md`,

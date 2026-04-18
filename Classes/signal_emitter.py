@@ -6,3 +6,4 @@ class SignalEmitter(QObject):
     state_changed = pyqtSignal(str)
     planner_decision = pyqtSignal(dict)
     yolo_weights_ready = pyqtSignal(bool, str)
+    run_finished = pyqtSignal(dict)

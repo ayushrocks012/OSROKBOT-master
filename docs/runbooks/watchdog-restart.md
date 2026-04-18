@@ -8,10 +8,11 @@ window, or an inability to relaunch the game client.
 ## Immediate Actions
 
 1. Confirm `data/heartbeat.json` exists and has a recent `timestamp_epoch`.
-2. Run one check from the project root:
+2. Run one check from the project root with the maintainer wrapper so the
+   watchdog outcome lands in the latest-run handoff:
 
 ```powershell
-python watchdog.py --once
+.\tools\run_maintainer_command.ps1 watchdog-once
 ```
 
 3. If the watchdog reports `ROK_CLIENT_PATH is not configured`, decide whether
@@ -31,7 +32,7 @@ python watchdog.py --once
 
 ## Escalation
 
-Stop the run and inspect `data/session_logs/` if restarts repeat more than once
-in a session. Repeated restarts usually indicate a foreground/capture issue,
-an unhandled exception in the runner, or a machine sleep/power-management
-problem.
+Stop the run and inspect `data/handoff/latest_run.json` plus the matching
+`data/session_logs/` group if restarts repeat more than once in a session.
+Repeated restarts usually indicate a foreground/capture issue, an unhandled
+exception in the runner, or a machine sleep/power-management problem.

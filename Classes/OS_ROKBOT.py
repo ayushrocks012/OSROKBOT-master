@@ -75,12 +75,54 @@ class OSROKBOT:
         self._cached_game_pid: int | None = None
         self._cached_game_pid_window_title: str | None = None
         self._cached_game_pid_hwnd: int | None = None
+        self._active_context: Context | None = None
 
     def _emit_state(self, context: Context | None, state_text: str) -> None:
         if context:
             context.emit_state(state_text)
         elif self.signal_emitter:
             self.signal_emitter.state_changed.emit(state_text)
+
+    @staticmethod
+    def _session_logger(context: Context | None) -> Any | None:
+        return getattr(context, "session_logger", None) if context is not None else None
+
+    def _record_session_error(
+        self,
+        context: Context | None,
+        detail: str,
+        *,
+        stage: str,
+        action_type: str = "",
+        label: str = "",
+        target_id: str = "",
+    ) -> None:
+        session_logger = self._session_logger(context)
+        if session_logger and hasattr(session_logger, "record_error"):
+            session_logger.record_error(
+                detail,
+                stage=stage,
+                action_type=action_type,
+                label=label,
+                target_id=target_id,
+            )
+
+    def _record_session_warning(
+        self,
+        context: Context | None,
+        detail: str,
+        *,
+        stage: str,
+        label: str = "",
+    ) -> None:
+        session_logger = self._session_logger(context)
+        if session_logger and hasattr(session_logger, "record_warning"):
+            session_logger.record_warning(detail, stage=stage, label=label)
+
+    def _mark_terminal(self, context: Context | None, status: str, end_reason: str, detail: str = "") -> None:
+        session_logger = self._session_logger(context)
+        if session_logger and hasattr(session_logger, "mark_terminal"):
+            session_logger.mark_terminal(status, end_reason, detail=detail)
 
     def _hardware_input_ready(self, context: Context | None = None) -> bool:
         if InputController.is_backend_available():
@@ -90,6 +132,12 @@ class OSROKBOT:
         if message:
             LOGGER.error(message)
         LOGGER.warning("Install the Oblita Interception driver as Administrator, reboot, then run OSROKBOT again.")
+        self._record_session_error(
+            context,
+            message or "Interception hardware input is unavailable.",
+            stage="startup",
+        )
+        self._mark_terminal(context, "failed", "interception_unavailable", detail=message or "Interception unavailable")
         self._emit_state(context, "Interception unavailable")
         return False
 
@@ -101,6 +149,11 @@ class OSROKBOT:
             return True
 
         LOGGER.error("Game is not foreground; pausing automation before hardware input.")
+        self._record_session_warning(
+            context,
+            "Game is not foreground; pausing automation before hardware input.",
+            stage="foreground_guard",
+        )
         self._emit_state(context, "Game not foreground - paused")
         self.pause_event.set()
         self.signal_emitter.pause_toggled.emit(True)
@@ -297,8 +350,13 @@ class OSROKBOT:
             return False
 
         LOGGER.error("Captcha detected: pausing automation for manual review.")
+        session_logger = self._session_logger(context)
+        if session_logger and hasattr(session_logger, "record_captcha"):
+            session_logger.record_captcha()
         context.emit_state("Captcha detected - paused")
         screenshot_path = save_diagnostic_screenshot(screenshot, label="captcha_detected")
+        if session_logger and screenshot_path and hasattr(session_logger, "update_metadata"):
+            session_logger.update_metadata(diagnostics_path=str(screenshot_path.parent))
         if screenshot_path and hasattr(context, "export_state_history"):
             context.export_state_history(screenshot_path.with_suffix(".log"))
         self.pause_event.set()
@@ -320,6 +378,7 @@ class OSROKBOT:
         context.bot = context.bot or self
         context.signal_emitter = context.signal_emitter or self.signal_emitter
         context.window_title = context.window_title or self.window_title
+        self._active_context = context
 
         self.stop_event.clear()
         self.all_threads_joined = False
@@ -380,19 +439,46 @@ class OSROKBOT:
 
     def _runner_done(self, future: Future[None]) -> None:
         failed = False
+        context = self._active_context
         try:
             future.result()
         except Exception as exc:
             failed = True
             LOGGER.error("OSROKBOT runner stopped after an unhandled error: %s", exc)
+            self._record_session_error(context, f"Unhandled runner error: {exc}", stage="runner")
+            self._mark_terminal(context, "failed", "runner_unhandled_exception", detail=str(exc))
         if future is not self._runner_future:
             return
+        if not failed and context is not None:
+            session_logger = self._session_logger(context)
+            if session_logger and hasattr(session_logger, "summary"):
+                status = str(session_logger.summary().get("status", "partial") or "partial")
+                if status == "partial":
+                    self._mark_terminal(
+                        context,
+                        "interrupted",
+                        "runner_stopped_without_terminal_reason",
+                        detail="Runner stopped without a recorded terminal reason.",
+                    )
         if failed:
             self.stop_event.set()
+        if self.signal_emitter and hasattr(self.signal_emitter, "run_finished"):
+            session_logger = self._session_logger(context)
+            summary = session_logger.summary() if session_logger and hasattr(session_logger, "summary") else {}
+            self.signal_emitter.run_finished.emit(
+                {
+                    "status": str(summary.get("status", "failed" if failed else "interrupted")),
+                    "end_reason": str(
+                        summary.get("end_reason", "runner_unhandled_exception" if failed else "runner_stopped_without_terminal_reason")
+                    ),
+                    "detail": str(summary.get("final_state", "") or ""),
+                }
+            )
         self._runner_future = None
         self.is_running = False
         self._shutdown_runner_executor()
         self.all_threads_joined = True
+        self._active_context = None
 
     def start(self, steps: Sequence[Any], context: Context | None = None) -> bool:
         if self.is_running or not self.all_threads_joined:
@@ -402,6 +488,8 @@ class OSROKBOT:
             return False
         if not self.emergency_stop.start_once():
             LOGGER.error("Emergency stop is unavailable; refusing to start live automation.")
+            self._record_session_error(context, "Emergency stop is unavailable.", stage="startup")
+            self._mark_terminal(context, "failed", "emergency_stop_unavailable", detail="Emergency stop is unavailable.")
             self._emit_state(context, "Emergency stop unavailable")
             self.is_running = False
             return False
@@ -410,6 +498,7 @@ class OSROKBOT:
         self.pause_event.clear()
         self._ensure_heartbeat_executor()
         self.is_running = True
+        self._active_context = context
         self._runner_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Runner")
         self._runner_future = self._runner_executor.submit(self.run, steps, context)
         self._runner_future.add_done_callback(self._runner_done)

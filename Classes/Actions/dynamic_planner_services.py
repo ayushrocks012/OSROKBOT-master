@@ -418,6 +418,9 @@ class PlannerExecutionService:
             _record_runtime_timing(context, "planner_wait", started_at, detail=f"result={result}")
             return result
         if decision.action_type == "stop":
+            session_logger = getattr(context, "session_logger", None)
+            if session_logger and hasattr(session_logger, "mark_terminal"):
+                session_logger.mark_terminal("success", "planner_stop", detail="Planner chose a stop action.")
             if getattr(context, "bot", None):
                 context.bot.stop()
             _record_runtime_timing(context, "planner_stop", started_at, detail="result=True")
@@ -438,6 +441,17 @@ class PlannerExecutionService:
             started_at,
             detail=f"action={decision.action_type} result={result}",
         )
+        if not result:
+            session_logger = getattr(context, "session_logger", None)
+            if session_logger and hasattr(session_logger, "record_error"):
+                session_logger.record_error(
+                    f"Guarded input failed for {decision.action_type}.",
+                    stage="input_execute",
+                    action_type=decision.action_type,
+                    label=decision.label,
+                    target_id=decision.target_id,
+                    outcome="failure",
+                )
         return result
 
     def wait_after_execution(self, delay_seconds: float, context: Any) -> bool:
@@ -491,6 +505,9 @@ class PlannerFeedbackService:
 
         if not self.task_graph.is_complete():
             return False
+        session_logger = getattr(context, "session_logger", None)
+        if session_logger and hasattr(session_logger, "mark_terminal"):
+            session_logger.mark_terminal("success", "mission_complete", detail="Task graph reported mission completion.")
         context.emit_state("Mission complete")
         LOGGER.info("TaskGraph reports all sub-goals completed.")
         if getattr(context, "bot", None):
@@ -511,6 +528,9 @@ class PlannerFeedbackService:
             label=decision.label,
         )
         context.extracted["planner_last_decision"] = decision.to_dict()
+        session_logger = getattr(context, "session_logger", None)
+        if session_logger and hasattr(session_logger, "record_decision"):
+            session_logger.record_decision(decision.to_dict())
         context.emit_state(f"Planner: {decision.action_type}\n{decision.label}")
 
     def record_no_decision(self, screenshot_path: Path, detections: list[DetectionLike]) -> None:

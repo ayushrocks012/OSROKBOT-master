@@ -20,7 +20,7 @@ LOGGER = get_logger(__name__)
 def save_diagnostic_screenshot(screenshot, label: str = "diagnostic", diagnostics_dir: Path = DEFAULT_DIAGNOSTICS_DIR) -> Path | None:
     """Persist a screenshot for debugging without invoking legacy image matching."""
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     safe_label = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in label).strip("_")
     path = diagnostics_dir / f"{safe_label or 'diagnostic'}_{timestamp}.png"
     try:

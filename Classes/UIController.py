@@ -26,6 +26,7 @@ from object_detector import create_detector
 from ocr_service import OCRService
 from OS_ROKBOT import OSROKBOT
 from PyQt5 import QtCore, QtWidgets
+from run_handoff import reconcile_latest_runtime_run
 from screen_change_detector import ScreenChangeDetector
 from session_logger import SessionLogger
 from task_graph import TaskGraph
@@ -150,6 +151,7 @@ class UIController(QtCore.QObject):
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.handle_runtime_state_changed)
         self.OS_ROKBOT.signal_emitter.planner_decision.connect(self.handle_planner_decision)
         self.OS_ROKBOT.signal_emitter.yolo_weights_ready.connect(self.handle_yolo_weights_ready)
+        self.OS_ROKBOT.signal_emitter.run_finished.connect(self.handle_run_finished)
 
         self.action_sets = ActionSets(
             OS_ROKBOT=self.OS_ROKBOT,
@@ -162,6 +164,7 @@ class UIController(QtCore.QObject):
         self._pending_payload: dict[str, Any] | None = None
         self._fix_capture_active = False
         self._session_active = False
+        self._session_finalized = False
         self._finalized_summary: dict[str, Any] | None = None
         self._finalized_timeline: list[dict[str, Any]] | None = None
         self._last_runtime_state = "Ready"
@@ -178,6 +181,7 @@ class UIController(QtCore.QObject):
         self._refresh_timer.timeout.connect(self._emit_snapshot)
         self._refresh_timer.start(1000)
 
+        reconcile_latest_runtime_run()
         self._emit_snapshot()
         self.begin_yolo_warmup()
 
@@ -382,6 +386,7 @@ class UIController(QtCore.QObject):
         self._current_context = context
         self._pending_payload = None
         self._fix_capture_active = False
+        self._session_finalized = False
 
         if self.OS_ROKBOT.start([action_group], context):
             self._session_logger.record_info(f"Session started: {mission}")
@@ -393,7 +398,32 @@ class UIController(QtCore.QObject):
         else:
             self._set_status("Unable to start automation", "danger", "OSROKBOT refused to start the run.")
             self._current_context = None
+            self._session_active = True
+            self._finalize_session(status="failed", end_reason="start_refused", detail="OSROKBOT refused to start the run.")
         self._emit_snapshot()
+
+    def _finalize_session(self, *, status: str | None = None, end_reason: str | None = None, detail: str = "") -> None:
+        if not self._session_logger or self._session_finalized:
+            return
+        path = self._session_logger.finalize(status=status, end_reason=end_reason, detail=detail)
+        self._finalized_summary = self._session_logger.summary()
+        self._finalized_timeline = self._session_logger.timeline()
+        self._session_active = False
+        self._session_finalized = True
+        if path:
+            self.notification_requested.emit(
+                "OSROKBOT - Session Saved",
+                f"Session log saved to {Path(path).name}",
+                QtWidgets.QSystemTrayIcon.Information,
+            )
+
+    def _record_runtime_state(self, state_text: str) -> None:
+        if self._session_logger and self._session_active:
+            self._session_logger.record_state(state_text)
+
+    def _mark_session_terminal(self, status: str, end_reason: str, detail: str = "") -> None:
+        if self._session_logger and self._session_active and not self._session_finalized:
+            self._session_logger.mark_terminal(status, end_reason, detail=detail)
 
     def _active_context(self) -> Context | None:
         if not self._current_context:
@@ -522,33 +552,31 @@ class UIController(QtCore.QObject):
             self._set_status("Approval still pending", "accent", "Review the agent intent card or press Fix again.")
         self._emit_snapshot()
 
-    def stop_automation(self) -> None:
+    def stop_automation(
+        self,
+        *,
+        status: str = "interrupted",
+        end_reason: str = "operator_stop",
+        detail: str = "Operator requested stop.",
+    ) -> None:
         """Stop the current automation run and finalize the active session log."""
 
         if self._current_context and self._current_context.pending_planner_decision():
             self._current_context.resolve_planner_decision(False)
 
+        self._mark_session_terminal(status, end_reason, detail=detail)
         self.OS_ROKBOT.stop()
         self._pending_payload = None
         self._fix_capture_active = False
         self.planner_overlay_cleared.emit()
         self.fix_overlay_cleared.emit()
-
-        if self._session_logger and self._session_active:
-            self._session_logger.record_info("Session stopped.")
-            self._finalized_summary = self._session_logger.summary()
-            self._finalized_timeline = self._session_logger.timeline()
-            path = self._session_logger.finalize()
-            if path:
-                self.notification_requested.emit(
-                    "OSROKBOT - Session Saved",
-                    f"Session log saved to {Path(path).name}",
-                    QtWidgets.QSystemTrayIcon.Information,
-                )
-        self._session_active = False
-        self._current_context = None
-        self._last_runtime_state = "Ready"
-        self._set_status("Ready", "info", "")
+        if not self.OS_ROKBOT.is_running:
+            self._finalize_session(status=status, end_reason=end_reason, detail=detail)
+            self._current_context = None
+            self._last_runtime_state = "Ready"
+            self._set_status("Ready", "info", "")
+        else:
+            self._set_status("Stopping", "warning", detail)
         self._emit_snapshot()
 
     def toggle_pause(self) -> None:
@@ -578,6 +606,7 @@ class UIController(QtCore.QObject):
         text = str(state_text or "").strip() or "Ready"
         previous_state = self._last_runtime_state
         self._last_runtime_state = text
+        self._record_runtime_state(text)
         lowered = text.lower()
 
         if "ai recovering" in lowered:
@@ -588,8 +617,6 @@ class UIController(QtCore.QObject):
             self._set_status("Using trusted memory", "success", "")
         elif "captcha detected" in lowered:
             self._set_status("Captcha detected - paused", "warning", ERROR_GUIDANCE["Captcha detected"])
-            if self._session_logger and "captcha detected" not in previous_state.lower():
-                self._session_logger.record_captcha()
             if "captcha detected" not in previous_state.lower():
                 self.notification_requested.emit(
                     "OSROKBOT - CAPTCHA",
@@ -600,12 +627,14 @@ class UIController(QtCore.QObject):
             self._set_status("Game not foreground - paused", "warning", ERROR_GUIDANCE["Game not foreground"])
         elif "interception unavailable" in lowered:
             self._set_status("Interception unavailable", "danger", ERROR_GUIDANCE["Interception unavailable"])
+            self._mark_session_terminal("failed", "interception_unavailable", ERROR_GUIDANCE["Interception unavailable"])
         elif "planner approval needed" in lowered:
             self._set_status("Agent awaiting approval", "accent", "")
         elif "planner trusted" in lowered:
             self._set_status("Trusted action auto-approved", "success", "")
         elif "mission complete" in lowered:
             self._set_status("Mission complete", "success", "")
+            self._mark_session_terminal("success", "mission_complete", "The task graph reported mission completion.")
             if "mission complete" not in previous_state.lower():
                 self.notification_requested.emit(
                     "OSROKBOT - Complete",
@@ -634,6 +663,28 @@ class UIController(QtCore.QObject):
             "warning" if overlay_payload.get("fix_required") else "accent",
             "Low-confidence pointer targets must be corrected before OK." if overlay_payload.get("fix_required") else "",
         )
+        self._emit_snapshot()
+
+    @QtCore.pyqtSlot(dict)
+    def handle_run_finished(self, payload: dict[str, Any]) -> None:
+        """Finalize the active session after the runner exits."""
+
+        status = str(payload.get("status", "interrupted") or "interrupted")
+        end_reason = str(payload.get("end_reason", "runner_stopped_without_terminal_reason") or "runner_stopped_without_terminal_reason")
+        detail = str(payload.get("detail", "") or "")
+        self._finalize_session(status=status, end_reason=end_reason, detail=detail)
+        self._current_context = None
+        self._pending_payload = None
+        self._fix_capture_active = False
+        self.planner_overlay_cleared.emit()
+        self.fix_overlay_cleared.emit()
+        if status == "failed":
+            self._set_status("Run failed", "danger", end_reason)
+        elif status == "success":
+            self._set_status("Ready", "info", "")
+        else:
+            self._set_status("Ready", "info", "")
+        self._last_runtime_state = "Ready"
         self._emit_snapshot()
 
     def _overlay_payload_from_pending(self, pending: dict[str, Any]) -> dict[str, Any]:
@@ -745,10 +796,14 @@ class UIController(QtCore.QObject):
             "rejection": "NO",
             "correction": "FIX",
             "error": "ERR",
+            "warning": "WARN",
             "captcha": "CAP",
             "planner_rejection": "DROP",
             "info": "INFO",
             "timing": "TIME",
+            "state": "STATE",
+            "decision": "PLAN",
+            "terminal": "END",
         }
         lines: list[str] = []
         timeline = self._session_logger.timeline() if self._session_active or self._finalized_timeline is None else self._finalized_timeline
@@ -803,7 +858,8 @@ class UIController(QtCore.QObject):
     def shutdown(self) -> None:
         """Stop automation and release controller-owned background resources."""
 
-        self.stop_automation()
+        self.stop_automation(status="interrupted", end_reason="ui_shutdown", detail="UI shutdown requested.")
+        self._finalize_session(status="interrupted", end_reason="ui_shutdown", detail="UI shutdown requested.")
         if self._yolo_warmup_future and not self._yolo_warmup_future.done():
             self._yolo_warmup_future.cancel()
         self._refresh_timer.stop()

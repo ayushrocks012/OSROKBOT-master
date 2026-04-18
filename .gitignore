@@ -20,6 +20,9 @@ pytest-cache-files-*/
 idk.png
 testprocessed.png
 diagnostics/
+data/session_logs/
+data/handoff/
+.artifacts/
 data/recovery_memory.json
 data/vision_memory.json
 data/planner_latest.png

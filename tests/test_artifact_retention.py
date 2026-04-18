@@ -3,6 +3,7 @@ from pathlib import Path
 
 import detection_dataset as detection_dataset_module
 import diagnostic_screenshot as diagnostic_screenshot_module
+import run_handoff as run_handoff_module
 from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy
 from detection_dataset import DetectionDataset
 from diagnostic_screenshot import save_diagnostic_screenshot
@@ -37,37 +38,72 @@ def test_artifact_retention_prunes_oldest_group_by_stem(tmp_path):
     assert newer_png.exists()
 
 
-def test_session_logger_finalize_prunes_oldest_logs(tmp_path):
+def test_artifact_retention_prefers_embedded_timestamp_when_mtimes_match(tmp_path):
+    older = tmp_path / "artifact_20240101_010101_000001.png"
+    newer = tmp_path / "artifact_20240101_010101_000002.png"
+    older.write_text("older", encoding="utf-8")
+    newer.write_text("newer", encoding="utf-8")
+
+    import os
+
+    shared_mtime = 1_700_000_000
+    os.utime(older, (shared_mtime, shared_mtime))
+    os.utime(newer, (shared_mtime, shared_mtime))
+
+    removed = ArtifactRetentionManager().prune_directory(tmp_path, ArtifactRetentionPolicy(max_groups=1))
+
+    assert older in removed
+    assert not older.exists()
+    assert newer.exists()
+
+
+def _handoff_dir(tmp_path):
+    return tmp_path / "handoff"
+
+
+def test_session_logger_finalize_prunes_oldest_logs(monkeypatch, tmp_path):
+    handoff_dir = _handoff_dir(tmp_path)
+    monkeypatch.setattr(run_handoff_module, "DEFAULT_LATEST_RUN_JSON", handoff_dir / "latest_run.json")
+    monkeypatch.setattr(run_handoff_module, "DEFAULT_LATEST_RUN_TEXT", handoff_dir / "latest_run.txt")
     retention_manager = ArtifactRetentionManager()
     retention_policy = ArtifactRetentionPolicy(max_groups=1)
     first = SessionLogger(
         mission="first",
         output_dir=tmp_path,
+        handoff_dir=handoff_dir,
         retention_manager=retention_manager,
         retention_policy=retention_policy,
     )
-    first._start_datetime = datetime(2024, 1, 1, 0, 0, 0)
+    first._session.started_at_dt = datetime(2024, 1, 1, 0, 0, 0)
+    first._session.started_at = "2024-01-01T00:00:00"
     first_path = first.finalize()
 
     second = SessionLogger(
         mission="second",
         output_dir=tmp_path,
+        handoff_dir=handoff_dir,
         retention_manager=retention_manager,
         retention_policy=retention_policy,
     )
-    second._start_datetime = datetime(2024, 1, 1, 0, 0, 1)
+    second._session.started_at_dt = datetime(2024, 1, 1, 0, 0, 1)
+    second._session.started_at = "2024-01-01T00:00:01"
     second_path = second.finalize()
 
     assert first_path is not None
     assert second_path is not None
     assert not first_path.exists()
     assert not first_path.with_suffix(".txt").exists()
+    assert not first_path.with_suffix(".ndjson").exists()
     assert second_path.exists()
     assert second_path.with_suffix(".txt").exists()
+    assert (handoff_dir / "latest_run.json").exists()
 
 
-def test_session_logger_writes_text_report(tmp_path):
-    logger = SessionLogger(mission="farm", output_dir=tmp_path)
+def test_session_logger_writes_text_report(monkeypatch, tmp_path):
+    handoff_dir = _handoff_dir(tmp_path)
+    monkeypatch.setattr(run_handoff_module, "DEFAULT_LATEST_RUN_JSON", handoff_dir / "latest_run.json")
+    monkeypatch.setattr(run_handoff_module, "DEFAULT_LATEST_RUN_TEXT", handoff_dir / "latest_run.txt")
+    logger = SessionLogger(mission="farm", output_dir=tmp_path, handoff_dir=handoff_dir)
     logger.record_planner_rejection(
         reason="confidence_below_threshold:0.460<0.700",
         action_type="click",
@@ -79,9 +115,12 @@ def test_session_logger_writes_text_report(tmp_path):
 
     assert path is not None
     report = path.with_suffix(".txt").read_text(encoding="utf-8")
-    assert "OSROKBOT Session Report" in report
-    assert "Planner rejections: 1" in report
+    assert "What Ran" in report
+    assert "Outcome" in report
+    assert "Errors / Warnings" in report
     assert "Resource node" in report
+    latest_payload = (handoff_dir / "latest_run.json").read_text(encoding="utf-8")
+    assert '"planner_rejections": 1' in latest_payload
 
 
 def test_detection_dataset_retention_prunes_oldest_export_group(monkeypatch, tmp_path):

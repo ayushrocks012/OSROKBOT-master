@@ -139,6 +139,7 @@ they do not use the target approval prompt.
 | `Classes/runtime_contracts.py` | Shared Protocols and type aliases for state-machine actions, detector/OCR providers, and window-capture boundaries. |
 | `Classes/runtime_payloads.py` | Shared TypedDict payloads for heartbeat, planner approval, recovery handoff, state history, and resource context. |
 | `Classes/artifact_retention.py` | Shared retention policies for diagnostics, session logs, and recovery dataset exports. |
+| `Classes/run_handoff.py` | Canonical per-run artifact builder for runtime sessions and maintainer commands, latest-run handoff refresh, incomplete-run reconciliation, and test-artifact cleanup helpers. |
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat lifecycle, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and guarded execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
@@ -156,7 +157,8 @@ they do not use the target approval prompt.
 | `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download from `ROK_YOLO_WEIGHTS_URL` with timeout, streaming, and size-cap enforcement. |
 | `Classes/security_utils.py` | Secret redaction, atomic text writes, and dotenv updates for sensitive local configuration. |
 | `Classes/detection_dataset.py` | Planner no-decision stubs and correction export for detector training data. |
-| `Classes/session_logger.py` | Local session summary and event logging. |
+| `Classes/session_logger.py` | Runtime session wrapper over the shared run-handoff contract. |
+| `Classes/maintainer_run.py` | Maintainer command wrapper that captures stdout/stderr, emits deterministic milestone lines, and keeps pytest artifacts under one ignored root. |
 | `Classes/emergency_stop.py` | F12 process-level emergency termination. |
 | `watchdog.py` | Conservative heartbeat monitor and tracked-process restart helper. |
 | `verify_docs.py` | Lightweight documentation artifact and linkage verification. |
@@ -255,6 +257,8 @@ documentation surface:
   workstation-grade secret handling limits.
 - `docs/runbooks/failure-triage.md`: first-pass investigation for stalled or
   degraded runs.
+- `docs/runbooks/run-handoff.md`: how operators and AI agents should read the
+  canonical latest-run handoff files.
 
 Update the affected runbook in the same change whenever setup, restart,
 CAPTCHA, emergency-stop, secret handling, diagnostics, telemetry, or triage
@@ -497,7 +501,13 @@ Run the watchdog in a second PowerShell window:
 python watchdog.py
 ```
 
-Run one check and exit:
+Run one check and capture a canonical maintainer handoff:
+
+```powershell
+.\tools\run_maintainer_command.ps1 watchdog-once
+```
+
+Run the raw one-shot command without the wrapper:
 
 ```powershell
 python watchdog.py --once
@@ -521,29 +531,56 @@ The watchdog is intentionally conservative:
 | `.env` | Local secrets and machine-specific paths. Ignored by Git. |
 | `data/vision_memory.json` | Local planner successes, failures, and corrections. |
 | `data/heartbeat.json` | Watchdog heartbeat. |
-| `data/session_logs/` | Per-run JSON logs plus compact `.txt` reports for quick triage. |
+| `data/handoff/latest_run.json` | Canonical AI entrypoint for the most recent runtime or maintainer run. |
+| `data/handoff/latest_run.txt` | Fixed-section plain-English companion to `latest_run.json`. |
+| `data/session_logs/` | Per-run grouped history artifacts: `.json`, `.txt`, `.log`, `.err`, and runtime `.ndjson`. |
 | `data/logs/osrokbot.log` | Full rotating runtime log, including entries that are no longer printed to PowerShell by default. |
 | `data/planner_latest.png` | Most recent planner screenshot. |
+| `.artifacts/test_runs/` | Centralized pytest temp, cache, and latest-run copies for maintainer test runs. |
 | `datasets/` | Exported correction/training data. |
 | `diagnostics/` | Failure, CAPTCHA, and recovery screenshots/logs. |
 | `models/` | Optional local YOLO weights. |
+
+Start every investigation with `data/handoff/latest_run.json` or
+`data/handoff/latest_run.txt`. Those files point to the matching per-run
+history group, diagnostics, heartbeat, planner screenshot, and next actions.
 
 Runtime artifact retention is bounded by default:
 
 - `data/session_logs/`: keep the newest 200 session groups for up to 30 days.
 - `diagnostics/`: keep the newest 200 diagnostic groups for up to 30 days.
 - `datasets/recovery/`: keep the newest 300 recovery-export groups for up to 30 days.
+- `.artifacts/test_runs/` successful runs: keep the newest 10 groups for up to
+  7 days.
+- `.artifacts/test_runs/` failed runs: keep the newest 20 groups for up to
+  30 days.
 
 These can be overridden with:
 `ROK_SESSION_LOG_MAX_FILES`, `ROK_SESSION_LOG_MAX_AGE_DAYS`,
 `ROK_DIAGNOSTIC_MAX_FILES`, `ROK_DIAGNOSTIC_MAX_AGE_DAYS`,
-`ROK_RECOVERY_DATASET_MAX_SAMPLES`, and `ROK_RECOVERY_DATASET_MAX_AGE_DAYS`.
+`ROK_RECOVERY_DATASET_MAX_SAMPLES`, `ROK_RECOVERY_DATASET_MAX_AGE_DAYS`,
+`ROK_TEST_RUN_SUCCESS_MAX_FILES`, `ROK_TEST_RUN_SUCCESS_MAX_AGE_DAYS`,
+`ROK_TEST_RUN_FAILURE_MAX_FILES`, and `ROK_TEST_RUN_FAILURE_MAX_AGE_DAYS`.
 
 Session logs also include bounded `timing` events for the guarded runtime
 phases so performance regressions can be diagnosed from one run artifact.
 Current timing samples cover window capture, YOLO detection, OCR region/text
 reads, resource-context OCR, planner memory lookup, planner request latency,
 guarded input execution, and post-action waits.
+
+For documented maintainer commands, prefer the wrapper:
+
+```powershell
+.\tools\run_maintainer_command.ps1 verify-integrity
+.\tools\run_maintainer_command.ps1 verify-docs
+.\tools\run_maintainer_command.ps1 mypy
+.\tools\run_maintainer_command.ps1 pytest
+.\tools\run_maintainer_command.ps1 cleanup-test-artifacts
+```
+
+The wrapper emits deterministic `RUN START`, `RUN EVENT`, `RUN ERROR`, and
+`RUN END` milestone lines, writes the same grouped history files as runtime
+sessions, and keeps pytest temp/cache output under `.artifacts/test_runs/`.
 
 ## Media Policy
 
@@ -602,13 +639,17 @@ nested under other `Media/` subdirectories.
 Run these before handing off changes:
 
 ```powershell
-python verify_integrity.py
-python verify_docs.py
+.\tools\run_maintainer_command.ps1 verify-integrity
+.\tools\run_maintainer_command.ps1 verify-docs
 python -m compileall Classes verify_integrity.py verify_docs.py cleanup_media.py watchdog.py
 python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports ok')"
-python -m mypy
-python -m pytest --basetemp .pytest_tmp -o cache_dir=.pytest_cache
+.\tools\run_maintainer_command.ps1 mypy
+.\tools\run_maintainer_command.ps1 pytest
 ```
+
+The maintainer wrapper updates `data/handoff/latest_run.*`, writes the grouped
+history files under `data/session_logs/`, and centralizes pytest temp/cache
+paths under `.artifacts/test_runs/<run_id>/`.
 
 The Phase 1 mypy gate is intentionally scoped to the typed boundary/runtime
 modules declared in `pyproject.toml`: `runtime_contracts`, `runtime_payloads`,
@@ -635,14 +676,14 @@ resources, PyQt event behavior, or human-operated workflows.
 Run only the safe integration tier:
 
 ```powershell
-python -m pytest -m integration --no-cov --basetemp .pytest_tmp -o cache_dir=.pytest_cache
+.\tools\run_maintainer_command.ps1 pytest -m integration --no-cov
 ```
 
 Run opt-in supervised checks only on a prepared workstation:
 
 ```powershell
 $env:OSROKBOT_RUN_SUPERVISED_TESTS='1'
-python -m pytest -m supervised --no-cov --basetemp .pytest_tmp -o cache_dir=.pytest_cache
+.\tools\run_maintainer_command.ps1 pytest -m supervised --no-cov
 ```
 
 Useful static checks:

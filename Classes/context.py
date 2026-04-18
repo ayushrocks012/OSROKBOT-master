@@ -153,6 +153,8 @@ class Context:
             return None
         screenshot_path = cast(Path | None, save_diagnostic_screenshot(screenshot, label=f"diagnostic_{state_name}"))
         if screenshot_path:
+            if self.session_logger and hasattr(self.session_logger, "update_metadata"):
+                self.session_logger.update_metadata(diagnostics_path=str(screenshot_path.parent))
             self.export_state_history(screenshot_path.with_suffix(".log"))
         return screenshot_path
 

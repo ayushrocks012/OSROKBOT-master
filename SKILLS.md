@@ -234,24 +234,41 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 
 ## Session Logging
 
-- Owner: `Classes/session_logger.py`
+- Owner: `Classes/session_logger.py`, `Classes/run_handoff.py`
 - Runtime setup: `Classes/UI.py`
-- Storage: `data/session_logs/`
-- Purpose: local JSON run summaries plus compact `.txt` reports covering
-  planner decisions, approvals, corrections, planner rejections, CAPTCHA
-  events, errors, and bounded timing samples for capture, OCR,
-  resource-context, planner, and guarded input phases.
+- AI entrypoint: `data/handoff/latest_run.json`, `data/handoff/latest_run.txt`
+- History storage: `data/session_logs/`
+- Per-run files: `.json`, `.txt`, `.log`, `.err`, and runtime `.ndjson`
+- Purpose: one canonical run handoff that points to what ran, why it ended,
+  what failed, what to inspect next, and the matching runtime/test artifacts.
+- Runtime coverage: planner decisions, approvals, corrections, planner
+  rejections, CAPTCHA pauses, warnings, errors, final status, and bounded
+  timing samples for capture, OCR, resource-context, planner, and guarded
+  input phases.
+
+## Maintainer Command Wrapper
+
+- Owner: `Classes/maintainer_run.py`
+- PowerShell entrypoint: `tools/run_maintainer_command.ps1`
+- Supported presets: `verify-integrity`, `verify-docs`, `mypy`, `pytest`,
+  `watchdog-once`, `ui`, and `cleanup-test-artifacts`
+- Console milestones: `RUN START`, `RUN EVENT`, `RUN ERROR`, `RUN END`
+- Purpose: keep documented maintainer commands on the same run-handoff
+  contract as runtime sessions.
 
 ## Artifact Retention
 
-- Owner: `Classes/artifact_retention.py`
-- Applies to: `data/session_logs/`, `diagnostics/`, and `datasets/recovery/`
+- Owner: `Classes/artifact_retention.py`, `Classes/run_handoff.py`
+- Applies to: `data/session_logs/`, `diagnostics/`, `datasets/recovery/`, and
+  `.artifacts/test_runs/`
 - Grouping: files with the same stem are retained or deleted together so
   `.png`, `.log`, `.meta`, and `.point` sidecars stay consistent.
 - Environment overrides:
   `ROK_SESSION_LOG_MAX_FILES`, `ROK_SESSION_LOG_MAX_AGE_DAYS`,
   `ROK_DIAGNOSTIC_MAX_FILES`, `ROK_DIAGNOSTIC_MAX_AGE_DAYS`,
-  `ROK_RECOVERY_DATASET_MAX_SAMPLES`, and `ROK_RECOVERY_DATASET_MAX_AGE_DAYS`.
+  `ROK_RECOVERY_DATASET_MAX_SAMPLES`, `ROK_RECOVERY_DATASET_MAX_AGE_DAYS`,
+  `ROK_TEST_RUN_SUCCESS_MAX_FILES`, `ROK_TEST_RUN_SUCCESS_MAX_AGE_DAYS`,
+  `ROK_TEST_RUN_FAILURE_MAX_FILES`, and `ROK_TEST_RUN_FAILURE_MAX_AGE_DAYS`.
 
 ## Watchdog Heartbeat
 
@@ -300,6 +317,8 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
   These tests must not launch live automation.
 - `supervised` marker: opt-in workstation/hardware acceptance checks. These
   stay skipped unless an operator sets `OSROKBOT_RUN_SUPERVISED_TESTS=1`.
+- Recommended command path: `.\tools\run_maintainer_command.ps1 pytest ...`
+  so pytest temp/cache output stays under `.artifacts/test_runs/<run_id>/`.
 
 ## Documentation Standard
 
@@ -322,6 +341,7 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Emergency stop: `docs/runbooks/emergency-stop.md`
 - Secret provisioning: `docs/runbooks/secret-provisioning.md`
 - Failure triage: `docs/runbooks/failure-triage.md`
+- Run handoff: `docs/runbooks/run-handoff.md`
 - Purpose: give supervised operators repeatable steps for high-risk runtime
   situations without changing the safety model.
 
