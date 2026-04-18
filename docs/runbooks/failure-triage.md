@@ -14,15 +14,18 @@ unexpectedly.
    or guarded input phases.
 4. Inspect `diagnostics/` for failure or CAPTCHA screenshots.
 5. Check whether `data/planner_latest.png` matches the expected game window.
-6. Confirm `ROK_WINDOW_TITLE`, `ROK_YOLO_WEIGHTS`, `TESSERACT_PATH`, and
-   `OPENAI_KEY` or `OPENAI_API_KEY` are configured.
+6. Confirm `ROK_WINDOW_TITLE`, `ROK_YOLO_WEIGHTS`, `OCR_ENGINE`,
+   `TESSERACT_PATH`, `TESSERACT_TIMEOUT_SECONDS`, and `OPENAI_KEY` or
+   `OPENAI_API_KEY` are configured.
 
 ## Verification
 
 - `python verify_integrity.py` should pass or report only known environmental
   warnings.
 - OCR failures should correlate with missing or invalid `TESSERACT_PATH`, weak
-  screenshot quality, or changed UI language.
+  screenshot quality, changed UI language, a timeout that is too small, or a
+  broken EasyOCR/Torch installation. If `ocr_regions` timing is very high and
+  EasyOCR logs a Torch DLL error, set `OCR_ENGINE=tesseract`.
 - YOLO failures should correlate with missing weights, outdated labels, or
   shifted UI layout.
 

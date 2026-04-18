@@ -27,6 +27,18 @@ from Actions.dynamic_planner_services import (
 LOGGER = get_logger(__name__)
 
 
+def _runtime_interrupted(context: Any) -> bool:
+    bot = getattr(context, "bot", None) if context else None
+    if not bot:
+        return False
+    stop_event = getattr(bot, "stop_event", None)
+    pause_event = getattr(bot, "pause_event", None)
+    return bool(
+        (stop_event is not None and stop_event.is_set())
+        or (pause_event is not None and pause_event.is_set())
+    )
+
+
 class DynamicPlannerAction(Action):
     """Execute one guarded planner step using explicit helper services."""
 
@@ -102,10 +114,18 @@ class DynamicPlannerAction(Action):
 
         screenshot_path = self.observation_service.save_latest_screenshot(self.planner.memory.path, observation.screenshot)
         screen_changed, stuck_warning = self.observation_service.screen_change_context(observation.screenshot)
+        if _runtime_interrupted(context):
+            return False
         self.feedback_service.ensure_task_graph(goal)
+        if _runtime_interrupted(context):
+            return False
 
         ocr_text, ocr_regions = self.observation_service.read_planner_ocr(context, observation.screenshot)
+        if _runtime_interrupted(context):
+            return False
         resource_context = self.observation_service.read_resource_context(context)
+        if _runtime_interrupted(context):
+            return False
         visible_labels = self.observation_service.visible_labels(observation.detections)
         self.feedback_service.advance_progress(visible_labels, ocr_text)
 

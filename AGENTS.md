@@ -42,6 +42,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, strict JSON schema validation, target resolution, retries, and memory-first decision selection. |
 | `Classes/task_graph.py` | Mission decomposition, sub-goal cache, focused-goal text, and label/OCR completion checks. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS/NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
+| `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract planner text/region reads, and normalized OCR target extraction. |
 | `Classes/recovery_memory.py` | Bounded atomic persistence for guarded recovery outcomes keyed by state/action/screen signatures. |
 | `Classes/screen_change_detector.py` | Stuck-screen and repeated-action warnings for the planner prompt. |
 | `Classes/state_monitor.py` | Coarse game-state checks, blocker clearing, march-slot OCR, action-point OCR, and explicit client restart support. |

@@ -16,6 +16,7 @@ Side Effects:
 """
 
 import asyncio
+import copy
 import inspect
 import json
 import math
@@ -167,6 +168,40 @@ class PlannerLLMDecision(BaseModel):
         if self.action_type == "type" and not self.text_content:
             raise ValueError("type decisions must specify text_content")
         return self
+
+
+def _openai_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return a Responses API-compatible strict object schema.
+
+    OpenAI structured outputs require each object property to be listed in
+    ``required`` and reject Pydantic's default metadata. Runtime validation
+    still applies the Python-side defaults when parsing historical/test
+    payloads that omit the extended action fields.
+    """
+
+    cleaned_schema = copy.deepcopy(schema)
+
+    def normalize(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        node.pop("default", None)
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            node["required"] = list(properties.keys())
+            node["additionalProperties"] = False
+            for child in properties.values():
+                normalize(child)
+        for key in ("$defs", "items", "anyOf", "oneOf", "allOf"):
+            value = node.get(key)
+            if isinstance(value, dict):
+                for child in value.values():
+                    normalize(child)
+            elif isinstance(value, list):
+                for child in value:
+                    normalize(child)
+
+    normalize(cleaned_schema)
+    return cleaned_schema
 
 
 class PlannerDecision(BaseModel):
@@ -462,7 +497,7 @@ class DynamicPlanner:
         - Never mutates UI or game state.
     """
 
-    SCHEMA = PlannerLLMDecision.model_json_schema()
+    SCHEMA = _openai_strict_schema(PlannerLLMDecision.model_json_schema())
 
     def __init__(self, config=None, memory=None, transport: PlannerTransport | None = None, transport_factory=None):
         """Initialize the planner using ConfigManager and optional memory.

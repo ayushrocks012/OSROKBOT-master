@@ -3,7 +3,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from dynamic_planner import PlannerDecision
 from recovery_memory import RecoveryMemory
 from vision_memory import VisionMemory
@@ -31,6 +30,13 @@ def test_vision_memory_finds_similar_entry_without_faiss(tmp_path):
 
     assert found is not None
     assert found["label"] == "gather"
+
+
+def test_vision_memory_find_skips_embedding_when_no_entries(tmp_path):
+    memory = VisionMemory(path=tmp_path / "memory.json")
+    memory.embed = lambda _value: (_ for _ in ()).throw(AssertionError("embed should not load"))  # noqa: E731
+
+    assert memory.find(tmp_path / "screen.png") is None
 
 
 def test_vision_memory_records_correction_with_manual_source(tmp_path):

@@ -133,8 +133,11 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 ## OCR Perception
 
 - Owner: `Classes/ocr_service.py`
-- Primary engine: EasyOCR
-- Fallback engine: Tesseract through `TESSERACT_PATH`
+- Engine order: configurable with `OCR_ENGINE`; a configured
+  `TESSERACT_PATH` makes bounded Tesseract reads the default live-runtime path.
+- EasyOCR remains available when selected and Torch imports cleanly.
+- Tesseract calls use `TESSERACT_TIMEOUT_SECONDS` and `OCR_MAX_IMAGE_SIDE` to
+  avoid stalling a guarded planner step.
 - Outputs: plain screen text and normalized OCR regions that can become local
   planner targets.
 

@@ -1,3 +1,11 @@
+"""OCR boundary for planner text/target extraction and fallback reads.
+
+The service keeps OCR side effects inside a single module. It can use EasyOCR
+when selected, or bounded Tesseract calls when a local Tesseract executable is
+configured. Planner-sized screenshots are downscaled before Tesseract so a
+broken or slow OCR path cannot stall the guarded run for minutes.
+"""
+
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -8,6 +16,8 @@ from PIL import Image
 LOGGER = get_logger(__name__)
 
 OCR_READ_EXCEPTIONS = (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError)
+DEFAULT_TESSERACT_TIMEOUT_SECONDS = 5.0
+DEFAULT_OCR_MAX_IMAGE_SIDE = 1280
 
 
 @dataclass(frozen=True)
@@ -24,7 +34,7 @@ class OCRRegion:
 
 
 class OCRService:
-    """Side-by-side OCR service: EasyOCR first, Tesseract fallback."""
+    """Side-by-side OCR service with bounded Tesseract fallback."""
 
     _easyocr_reader = None
     _easyocr_error = None
@@ -32,6 +42,52 @@ class OCRService:
     def __init__(self, languages=None, config=None):
         self.languages = languages or ["en"]
         self.config = config or ConfigManager()
+
+    @staticmethod
+    def _config_float(config, key, default):
+        try:
+            return float(config.get(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    @staticmethod
+    def _config_int(config, key, default):
+        try:
+            return int(config.get(key, default))
+        except (TypeError, ValueError):
+            return int(default)
+
+    def _engine_order(self):
+        engine = str(self.config.get("OCR_ENGINE", "") or "").strip().lower()
+        if engine == "easyocr":
+            return ("easyocr", "tesseract")
+        if engine == "tesseract":
+            return ("tesseract",)
+
+        # An explicit Tesseract path usually means the workstation has a known
+        # OCR fallback. Prefer it to avoid expensive EasyOCR/Torch startup
+        # failures on live automation runs.
+        if self.config.get("TESSERACT_PATH"):
+            return ("tesseract",)
+        return ("easyocr", "tesseract")
+
+    def _tesseract_timeout(self):
+        return max(
+            1.0,
+            self._config_float(self.config, "TESSERACT_TIMEOUT_SECONDS", DEFAULT_TESSERACT_TIMEOUT_SECONDS),
+        )
+
+    def _prepare_tesseract_image(self, image):
+        max_side = max(0, self._config_int(self.config, "OCR_MAX_IMAGE_SIDE", DEFAULT_OCR_MAX_IMAGE_SIDE))
+        if not max_side:
+            return image
+        width, height = image.size
+        longest_side = max(width, height)
+        if longest_side <= max_side:
+            return image
+        scale = max_side / float(longest_side)
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        return image.resize((max(1, round(width * scale)), max(1, round(height * scale))), resampling)
 
     @classmethod
     def _reader(cls, languages):
@@ -145,7 +201,13 @@ class OCRService:
             tesseract_path = self.config.get("TESSERACT_PATH")
             if tesseract_path:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
-            return pytesseract.image_to_string(image, lang="eng").strip()
+            image = self._prepare_tesseract_image(image)
+            return pytesseract.image_to_string(
+                image,
+                lang="eng",
+                config="--oem 3 --psm 11",
+                timeout=self._tesseract_timeout(),
+            ).strip()
         except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"Tesseract fallback failed: {exc}")
             return ""
@@ -157,7 +219,14 @@ class OCRService:
             tesseract_path = self.config.get("TESSERACT_PATH")
             if tesseract_path:
                 pytesseract.pytesseract.tesseract_cmd = tesseract_path
-            data = pytesseract.image_to_data(image, lang="eng", output_type=pytesseract.Output.DICT)
+            image = self._prepare_tesseract_image(image)
+            data = pytesseract.image_to_data(
+                image,
+                lang="eng",
+                config="--oem 3 --psm 11",
+                output_type=pytesseract.Output.DICT,
+                timeout=self._tesseract_timeout(),
+            )
         except OCR_READ_EXCEPTIONS as exc:
             LOGGER.warning(f"Tesseract region fallback failed: {exc}")
             return []
@@ -198,15 +267,17 @@ class OCRService:
     def read(self, image_or_roi, purpose=None):
         LOGGER.debug("OCR read purpose: %s", purpose or "general")
         image = self._image(image_or_roi)
-        text = self._read_easyocr(image)
-        if text:
-            return text
-        return self._read_tesseract(image)
+        for engine in self._engine_order():
+            text = self._read_easyocr(image) if engine == "easyocr" else self._read_tesseract(image)
+            if text:
+                return text
+        return ""
 
     def read_regions(self, image_or_roi, purpose=None):
         LOGGER.debug("OCR region read purpose: %s", purpose or "general")
         image = self._image(image_or_roi)
-        regions = self._read_easyocr_regions(image)
-        if regions:
-            return regions
-        return self._read_tesseract_regions(image)
+        for engine in self._engine_order():
+            regions = self._read_easyocr_regions(image) if engine == "easyocr" else self._read_tesseract_regions(image)
+            if regions:
+                return regions
+        return []

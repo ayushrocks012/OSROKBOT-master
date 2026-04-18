@@ -244,10 +244,13 @@ class VisionMemory:
             dict | None: Best matching entry with a ``similarity`` field, or None
             when no safe match is found.
         """
-        query = self.embed(screenshot_or_embedding)
         with self._lock:
             entries = list(self.entries)
-        if query is None or not entries:
+        if not entries:
+            return None
+
+        query = self.embed(screenshot_or_embedding)
+        if query is None:
             return None
 
         labels = set(self._labels(visible_labels))

@@ -144,7 +144,7 @@ they do not use the target approval prompt.
 | `Classes/dynamic_planner.py` | Async OpenAI Responses transport, strict JSON schema validation, target resolution, retry handling, memory-first decision selection, and decision validation. |
 | `Classes/task_graph.py` | One-time mission decomposition into sub-goals, cached per mission, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
-| `Classes/ocr_service.py` | EasyOCR-first OCR with Tesseract text and region fallback. |
+| `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract text/region fallback, and normalized OCR targets. |
 | `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, and explicit client restart support. |
 | `Classes/screen_change_detector.py` | Perceptual-hash screen change checks and repeated-action warnings for the planner prompt. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS or NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
@@ -390,6 +390,7 @@ OPENAI_VISION_MODEL=gpt-5.4-mini
 ROK_WINDOW_TITLE=Rise of Kingdoms
 ROK_YOLO_WEIGHTS=C:\Users\hp\OneDrive\Desktop\OSROKBOT-master\models\rok-ui.pt
 TESSERACT_PATH=C:\Program Files\Tesseract-OCR\tesseract.exe
+OCR_ENGINE=tesseract
 '@ | Set-Content -Path .env -Encoding UTF8
 ```
 
@@ -402,7 +403,10 @@ Core variables:
 | `ROK_WINDOW_TITLE` or `WINDOW_TITLE` | Recommended | Target game window title. Defaults to `Rise of Kingdoms`. |
 | `ROK_YOLO_WEIGHTS` | Optional | Local YOLO `.pt` file. Without it, detector output safely falls back to empty labels. |
 | `ROK_YOLO_WEIGHTS_URL` | Optional | HTTPS URL used by `ModelManager` to download YOLO weights into `models/`. |
+| `OCR_ENGINE` | Optional | `tesseract`, `easyocr`, or unset auto mode. When `TESSERACT_PATH` is set and `OCR_ENGINE` is unset, planner OCR uses Tesseract directly to avoid broken EasyOCR/Torch startup delays. |
+| `OCR_MAX_IMAGE_SIDE` | Optional | Longest image side sent to Tesseract OCR. Defaults to `1280`; set `0` to disable downscaling. |
 | `TESSERACT_PATH` | Optional | Tesseract executable path for OCR fallback and resource OCR. |
+| `TESSERACT_TIMEOUT_SECONDS` | Optional | Per-call Tesseract timeout for planner and resource OCR. Defaults to `5`. |
 | `PLANNER_AUTONOMY_LEVEL` | Optional | Default UI autonomy level, `1` to `3`. |
 | `PLANNER_TRUSTED_SUCCESS_COUNT` | Optional | Clean local successes needed for L2 trusted labels. Defaults to `3`. |
 | `ROK_CLIENT_PATH` | Optional | Game executable used by watchdog or state recovery when explicit restart is enabled. |
@@ -682,8 +686,13 @@ on screenshots, OCR, and memory.
 
 ### OCR Is Weak
 
-Install Tesseract and set `TESSERACT_PATH`. EasyOCR is tried first, but
-Tesseract is used for fallback text/region reads and resource counters.
+Install Tesseract and set `TESSERACT_PATH`. With a configured Tesseract path,
+planner OCR uses bounded Tesseract reads by default. Set `OCR_ENGINE=easyocr`
+only when EasyOCR and Torch import cleanly on the workstation.
+
+If session logs show `ocr_regions` taking many seconds or EasyOCR reports a
+Torch DLL initialization error, set `OCR_ENGINE=tesseract` and keep
+`TESSERACT_TIMEOUT_SECONDS` at a small value such as `5`.
 
 ### The Watchdog Does Not Relaunch The Game
 

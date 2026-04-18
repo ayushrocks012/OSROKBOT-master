@@ -46,6 +46,7 @@ class GameStateMonitor:
 
     OCR_CACHE_SECONDS = 30
     DEFAULT_BARBARIAN_AP_COST = 50
+    DEFAULT_TESSERACT_TIMEOUT_SECONDS = 5.0
 
     # Labels whose presence signals the game is on the world MAP.
     MAP_LABELS = {
@@ -107,7 +108,15 @@ class GameStateMonitor:
             image,
             lang="eng",
             config="--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789/",
+            timeout=self._tesseract_timeout(),
         ).strip()
+
+    def _tesseract_timeout(self):
+        try:
+            configured = float(ConfigManager().get("TESSERACT_TIMEOUT_SECONDS", self.DEFAULT_TESSERACT_TIMEOUT_SECONDS))
+        except (TypeError, ValueError):
+            configured = self.DEFAULT_TESSERACT_TIMEOUT_SECONDS
+        return max(1.0, configured)
 
     @staticmethod
     def _parse_fraction(text):

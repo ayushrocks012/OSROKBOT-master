@@ -17,7 +17,7 @@ pywin32==311
 PyGetWindow==0.0.9
 
 # Foreground hardware input and emergency hotkey support.
-interception-python==2.0.1
+interception-python==1.13.6
 keyboard==0.13.5
 
 # OCR and local configuration.
@@ -39,7 +39,7 @@ ultralytics==8.4.24
 # Optional guarded AI planner perception and local vector memory.
 easyocr==1.7.2
 sentence-transformers==3.4.1
-faiss-cpu==1.9.0
+faiss-cpu==1.9.0.post1
 
 # Console diagnostics.
 termcolor==2.4.0

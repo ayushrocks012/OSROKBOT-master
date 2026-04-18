@@ -17,10 +17,18 @@ class _EasyOCRReader:
         ]
 
 
+class _FakeConfig:
+    def __init__(self, values=None):
+        self.values = values or {}
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+
 def test_read_regions_returns_normalized_easyocr_boxes(monkeypatch):
     monkeypatch.setattr(OCRService, "_easyocr_reader", _EasyOCRReader())
     monkeypatch.setattr(OCRService, "_easyocr_error", None)
-    service = OCRService()
+    service = OCRService(config=_FakeConfig())
 
     regions = service.read_regions(Image.new("RGB", (100, 100)), purpose="planner")
 
@@ -34,7 +42,7 @@ def test_read_regions_returns_normalized_easyocr_boxes(monkeypatch):
 
 
 def test_read_regions_falls_back_to_tesseract_boxes(monkeypatch):
-    service = OCRService()
+    service = OCRService(config=_FakeConfig())
     monkeypatch.setattr(service, "_read_easyocr_regions", lambda _image: [])
     fake_pytesseract = SimpleNamespace(
         Output=SimpleNamespace(DICT="dict"),
@@ -59,9 +67,37 @@ def test_read_regions_falls_back_to_tesseract_boxes(monkeypatch):
     assert regions[0].confidence == pytest.approx(0.62)
 
 
+def test_configured_tesseract_path_skips_easyocr(monkeypatch):
+    service = OCRService(config=_FakeConfig({"TESSERACT_PATH": "C:/Tesseract/tesseract.exe"}))
+    monkeypatch.setattr(service, "_read_easyocr", lambda _image: (_ for _ in ()).throw(AssertionError("easyocr")))
+    monkeypatch.setattr(service, "_read_tesseract", lambda _image: "Search")
+
+    assert service.read(Image.new("RGB", (50, 50)), purpose="planner") == "Search"
+
+
+def test_tesseract_region_read_uses_configured_timeout(monkeypatch):
+    service = OCRService(config=_FakeConfig({"TESSERACT_TIMEOUT_SECONDS": "2.5"}))
+    captured = {}
+
+    def image_to_data(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"text": [], "conf": [], "left": [], "top": [], "width": [], "height": []}
+
+    fake_pytesseract = SimpleNamespace(
+        Output=SimpleNamespace(DICT="dict"),
+        pytesseract=SimpleNamespace(tesseract_cmd=""),
+        image_to_data=image_to_data,
+    )
+    monkeypatch.setitem(sys.modules, "pytesseract", fake_pytesseract)
+
+    assert service._read_tesseract_regions(Image.new("RGB", (100, 100))) == []
+    assert captured["timeout"] == pytest.approx(2.5)
+    assert "--psm 11" in captured["config"]
+
+
 @pytest.mark.integration
 def test_read_falls_back_to_tesseract_text(monkeypatch):
-    service = OCRService()
+    service = OCRService(config=_FakeConfig())
     monkeypatch.setattr(service, "_read_easyocr", lambda _image: "")
     fake_pytesseract = SimpleNamespace(
         pytesseract=SimpleNamespace(tesseract_cmd=""),
@@ -79,7 +115,7 @@ def test_invalid_easyocr_box_is_ignored(monkeypatch):
 
     monkeypatch.setattr(OCRService, "_easyocr_reader", BadBoxReader())
     monkeypatch.setattr(OCRService, "_easyocr_error", None)
-    service = OCRService()
+    service = OCRService(config=_FakeConfig())
     monkeypatch.setattr(service, "_read_tesseract_regions", lambda _image: [])
 
     assert service.read_regions(Image.new("RGB", (100, 100)), purpose="planner") == []

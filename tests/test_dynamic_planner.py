@@ -250,6 +250,18 @@ def test_request_decision_uses_transport_and_parses_response(tmp_path):
     assert decision is not None
     assert decision.target_id == "det_1"
     assert decision.x == pytest.approx(0.25)
+    response_format = planner._transport.payloads[0]["text"]["format"]
+    assert response_format["strict"] is True
+    assert set(response_format["schema"]["required"]) == set(response_format["schema"]["properties"])
+    assert "end_target_id" in response_format["schema"]["required"]
+
+
+def test_openai_schema_removes_pydantic_defaults():
+    schema_text = str(DynamicPlanner.SCHEMA)
+
+    assert "'default'" not in schema_text
+    assert DynamicPlanner.SCHEMA["additionalProperties"] is False
+    assert set(DynamicPlanner.SCHEMA["required"]) == set(DynamicPlanner.SCHEMA["properties"])
 
 
 def test_request_decision_returns_none_on_terminal_transport_error(tmp_path):
