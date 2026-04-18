@@ -29,6 +29,7 @@ from vision_memory import VisionMemory
 from window_handler import WindowHandler
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MIN_APPROVAL_CONFIDENCE = 0.70
 LOGGER = get_logger(__name__)
 EmergencyStop.start_once()
 
@@ -791,13 +792,27 @@ class UI(QtWidgets.QWidget):
         label = decision.get("label", "target")
         confidence = float(decision.get("confidence", 0.0) or 0.0)
         action_type = decision.get("action_type", "click")
+        fix_required = action_type in {"click", "drag", "long_press"} and (
+            confidence < MIN_APPROVAL_CONFIDENCE or decision.get("source") == "ai_review"
+        )
         x = payload.get("absolute_x")
         y = payload.get("absolute_y")
         reason = str(decision.get("reason", ""))[:80]
-        self.status_label.setText(f"AI: {action_type} {label}")
+        self.status_label.setText(f"Fix required: {label}" if fix_required else f"AI: {action_type} {label}")
+        self.status_label.setToolTip(
+            "Low-confidence target. Use Fix to correct the pointer target, or No to reject."
+            if fix_required
+            else ""
+        )
         self.status_label.setStyleSheet("color: #9be7ff; font-weight: bold;")
+        self.approve_button.setEnabled(not fix_required)
+        self.approve_button.setToolTip(
+            "Low-confidence target: use Fix or No"
+            if fix_required
+            else "Approve (F8)"
+        )
         self.current_state_label.setText(
-            f"Approve?\n{label}\nX:{x} Y:{y}\n{confidence:.2f}\n{reason}"
+            f"{'Fix required' if fix_required else 'Approve?'}\n{label}\nX:{x} Y:{y}\n{confidence:.2f}\n{reason}"
         )
 
         # Show click overlay on the game window.
@@ -941,12 +956,28 @@ class UI(QtWidgets.QWidget):
             return None
         return self.current_context
 
+    @staticmethod
+    def _pending_requires_fix(context):
+        pending = context.pending_planner_decision() or {}
+        decision = pending.get("decision", {})
+        action_type = decision.get("action_type", "")
+        confidence = float(decision.get("confidence", 0.0) or 0.0)
+        return action_type in {"click", "drag", "long_press"} and (
+            confidence < MIN_APPROVAL_CONFIDENCE or decision.get("source") == "ai_review"
+        )
+
     def approve_planner_action(self):
         context = self._pending_planner_context()
         if context:
+            if self._pending_requires_fix(context):
+                self.status_label.setText("Use Fix or No")
+                self.status_label.setToolTip("Low-confidence target must be corrected before execution.")
+                return
             context.resolve_planner_decision(True)
             self.status_label.setText("Planner action approved")
             self.status_label.setToolTip("")
+            self.approve_button.setEnabled(True)
+            self.approve_button.setToolTip("Approve (F8)")
             self._click_overlay.dismiss()
             if self._session_logger:
                 pending = context.pending_planner_decision() or {}
@@ -959,6 +990,8 @@ class UI(QtWidgets.QWidget):
             context.resolve_planner_decision(False)
             self.status_label.setText("Planner action rejected")
             self.status_label.setToolTip("")
+            self.approve_button.setEnabled(True)
+            self.approve_button.setToolTip("Approve (F8)")
             self._click_overlay.dismiss()
             if self._session_logger:
                 pending = context.pending_planner_decision() or {}
@@ -994,6 +1027,9 @@ class UI(QtWidgets.QWidget):
         }
         context.resolve_planner_decision(True, corrected_point=corrected)
         self.status_label.setText("Planner correction saved")
+        self.status_label.setToolTip("")
+        self.approve_button.setEnabled(True)
+        self.approve_button.setToolTip("Approve (F8)")
         self._click_overlay.dismiss()
         if self._session_logger:
             label = pending.get("decision", {}).get("label", "")

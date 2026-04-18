@@ -1,10 +1,9 @@
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
 
-from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy
 import detection_dataset as detection_dataset_module
 import diagnostic_screenshot as diagnostic_screenshot_module
+from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy
 from detection_dataset import DetectionDataset
 from diagnostic_screenshot import save_diagnostic_screenshot
 from session_logger import SessionLogger
@@ -62,7 +61,27 @@ def test_session_logger_finalize_prunes_oldest_logs(tmp_path):
     assert first_path is not None
     assert second_path is not None
     assert not first_path.exists()
+    assert not first_path.with_suffix(".txt").exists()
     assert second_path.exists()
+    assert second_path.with_suffix(".txt").exists()
+
+
+def test_session_logger_writes_text_report(tmp_path):
+    logger = SessionLogger(mission="farm", output_dir=tmp_path)
+    logger.record_planner_rejection(
+        reason="confidence_below_threshold:0.460<0.700",
+        action_type="click",
+        label="Resource node",
+        target_id="ocr_1",
+        confidence=0.46,
+    )
+    path = logger.finalize()
+
+    assert path is not None
+    report = path.with_suffix(".txt").read_text(encoding="utf-8")
+    assert "OSROKBOT Session Report" in report
+    assert "Planner rejections: 1" in report
+    assert "Resource node" in report
 
 
 def test_detection_dataset_retention_prunes_oldest_export_group(monkeypatch, tmp_path):

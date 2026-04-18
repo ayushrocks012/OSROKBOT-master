@@ -189,6 +189,10 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 
 - Owner: `Classes/Actions/dynamic_planner_action.py`
 - L1: pointer-target actions require approval.
+- L1 correction review: OCR-only pointer proposals below the normal confidence
+  threshold can be shown for manual `Fix` correction when they meet
+  `PLANNER_L1_REVIEW_MIN_CONFIDENCE`; uncorrected low-confidence proposals do
+  not execute from `OK`.
 - L2: trusted labels can auto-execute pointer actions after enough clean local
   successes.
 - L3: validated pointer actions can execute without approval.
@@ -229,8 +233,9 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Owner: `Classes/session_logger.py`
 - Runtime setup: `Classes/UI.py`
 - Storage: `data/session_logs/`
-- Purpose: local run summaries, planner decisions, approvals, corrections,
-  CAPTCHA events, errors, and bounded timing samples for capture, OCR,
+- Purpose: local JSON run summaries plus compact `.txt` reports covering
+  planner decisions, approvals, corrections, planner rejections, CAPTCHA
+  events, errors, and bounded timing samples for capture, OCR,
   resource-context, planner, and guarded input phases.
 
 ## Artifact Retention

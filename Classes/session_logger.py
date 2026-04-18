@@ -96,6 +96,7 @@ class SessionLogger:
         self.correction_count = 0
         self.memory_hit_count = 0
         self.api_call_count = 0
+        self.planner_rejection_count = 0
         self.error_count = 0
         self.captcha_count = 0
         self.timing_count = 0
@@ -167,6 +168,23 @@ class SessionLogger:
             detail=detail,
         ))
 
+    def record_planner_rejection(self, reason="", action_type="", label="", target_id="", confidence=""):
+        """Record a planner proposal rejected before guarded input."""
+        self.planner_rejection_count += 1
+        detail = f"reason={reason}"
+        if confidence != "":
+            detail = f"{detail} confidence={confidence}"
+        self.events.append(SessionEvent(
+            timestamp=self._now_iso(),
+            elapsed_seconds=self._elapsed(),
+            event_type="planner_rejection",
+            action_type=action_type,
+            label=label,
+            target_id=target_id,
+            outcome="rejected",
+            detail=detail,
+        ))
+
     def record_captcha(self):
         """Record a CAPTCHA detection."""
         self.captcha_count += 1
@@ -229,6 +247,7 @@ class SessionLogger:
             "corrections": self.correction_count,
             "memory_hits": self.memory_hit_count,
             "api_calls": self.api_call_count,
+            "planner_rejections": self.planner_rejection_count,
             "errors": self.error_count,
             "captchas": self.captcha_count,
             "timings": self.timing_count,
@@ -237,6 +256,67 @@ class SessionLogger:
     def timeline(self):
         """Return events as a list of dicts for display."""
         return [event.to_dict() for event in self.events]
+
+    def text_report(self):
+        """Return a compact human-readable session report."""
+        summary = self.summary()
+        lines = [
+            "OSROKBOT Session Report",
+            "",
+            f"Mission: {summary['mission']}",
+            f"Started: {summary['started']}",
+            f"Ended: {summary['ended']}",
+            f"Duration: {summary['duration_text']}",
+            f"Autonomy: L{summary['autonomy_level']}",
+            "",
+            "Counts:",
+            f"- Actions: {summary['total_actions']}",
+            f"- Approvals: {summary['approvals']}",
+            f"- Corrections: {summary['corrections']}",
+            f"- Planner rejections: {summary['planner_rejections']}",
+            f"- API calls: {summary['api_calls']}",
+            f"- Errors: {summary['errors']}",
+            "",
+        ]
+
+        timings = [event for event in self.events if event.event_type == "timing" and event.duration_ms is not None]
+        if timings:
+            lines.append("Timing Averages:")
+            stages = sorted({event.stage for event in timings if event.stage})
+            for stage in stages:
+                values = [float(event.duration_ms or 0.0) for event in timings if event.stage == stage]
+                if not values:
+                    continue
+                lines.append(
+                    f"- {stage}: avg={sum(values) / len(values):.1f}ms max={max(values):.1f}ms count={len(values)}"
+                )
+            lines.append("")
+
+        key_events = [
+            event
+            for event in self.events
+            if event.event_type in {"action", "approval", "rejection", "correction", "planner_rejection", "error", "captcha"}
+        ]
+        if key_events:
+            lines.append("Key Events:")
+            for event in key_events[-20:]:
+                bits = [f"{event.timestamp}", event.event_type]
+                if event.action_type:
+                    bits.append(event.action_type)
+                if event.label:
+                    bits.append(event.label)
+                if event.target_id:
+                    bits.append(event.target_id)
+                if event.outcome:
+                    bits.append(event.outcome)
+                if event.detail:
+                    bits.append(event.detail)
+                lines.append("- " + " | ".join(bits))
+            lines.append("")
+
+        lines.append("Full JSON: same filename with .json")
+        lines.append("Full runtime log: data/logs/osrokbot.log")
+        return "\n".join(lines) + "\n"
 
     def finalize(self):
         """Finalize the session and save the summary to disk.
@@ -257,6 +337,7 @@ class SessionLogger:
                 json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )
+            path.with_suffix(".txt").write_text(self.text_report(), encoding="utf-8")
             self.retention_manager.prune_directory(self.output_dir, self.retention_policy)
             LOGGER.info("Session log saved: %s", path)
             return path

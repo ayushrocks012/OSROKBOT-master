@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -10,6 +11,33 @@ from termcolor import colored
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LOG_PATH = PROJECT_ROOT / "data" / "logs" / "osrokbot.log"
 LOGGER_NAME = "osrokbot"
+DEFAULT_CONSOLE_LOG_LEVEL = "ERROR"
+
+
+def _local_env_value(key: str) -> str | None:
+    if os.getenv(key):
+        return os.getenv(key)
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.is_file():
+        return None
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            env_key, value = line.split("=", 1)
+            if env_key.strip() == key:
+                return value.strip().strip("\"'")
+    except OSError:
+        return None
+    return None
+
+
+def _level_from_name(value: str | None, default: int) -> int:
+    level_name = str(value or "").strip().upper()
+    if not level_name:
+        return default
+    return int(getattr(logging, level_name, default))
 
 
 class ColoredFormatter(logging.Formatter):
@@ -48,6 +76,9 @@ def configure_logging(log_path: Path | str = DEFAULT_LOG_PATH) -> logging.Logger
     logger.propagate = False
 
     console_handler = logging.StreamHandler()
+    console_handler.setLevel(
+        _level_from_name(_local_env_value("OSROKBOT_CONSOLE_LOG_LEVEL"), getattr(logging, DEFAULT_CONSOLE_LOG_LEVEL))
+    )
     console_handler.addFilter(RedactingFilter())
     console_handler.setFormatter(ColoredFormatter("%(levelname)s %(name)s: %(message)s"))
     logger.addHandler(console_handler)
@@ -60,6 +91,7 @@ def configure_logging(log_path: Path | str = DEFAULT_LOG_PATH) -> logging.Logger
         backupCount=3,
         encoding="utf-8",
     )
+    file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(threadName)s: %(message)s")
     )

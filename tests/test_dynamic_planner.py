@@ -73,6 +73,15 @@ def _click_response():
     )
 
 
+def _low_confidence_click_response():
+    return _FakeResponse(
+        '{"thought_process":"Could be a resource.","action_type":"click","target_id":"det_1",'
+        '"label":"Resource node","confidence":0.46,"delay_seconds":1.0,'
+        '"reason":"The resource node appears visible.",'
+        '"end_target_id":"","key_name":"","text_content":"","drag_direction":""}'
+    )
+
+
 def test_safe_json_loads_accepts_wrapped_json():
     raw = 'assistant says: {"action_type": "wait", "label": "none"} done'
 
@@ -196,6 +205,14 @@ def test_validate_decision_rejects_click_without_target_id():
     decision = PlannerDecision("t", "click", "bad", 0.5, 0.5, 0.9, "raw coordinates")
 
     assert DynamicPlanner.validate_decision(decision) is False
+    assert DynamicPlanner.decision_rejection_reason(decision) == "missing_target_id"
+
+
+def test_decision_rejection_reason_reports_low_confidence():
+    decision = PlannerDecision("t", "click", "resource", 0.5, 0.5, 0.5, "uncertain", target_id="ocr_1")
+
+    assert DynamicPlanner.validate_decision(decision) is False
+    assert DynamicPlanner.decision_rejection_reason(decision) == "confidence_below_threshold:0.500<0.700"
 
 
 def test_validate_decision_allows_safe_wait_without_coordinates():
@@ -304,6 +321,32 @@ def test_request_decision_records_timing(tmp_path):
     assert timings[-1][0] == "planner_request"
     assert timings[-1][2] == "action=click"
     assert timings[-1][1] >= 0.0
+
+
+def test_plan_next_routes_low_confidence_pointer_to_l1_review(tmp_path):
+    planner = _planner_with_transport(lambda _payload, _should_cancel: _low_confidence_click_response())
+    context = SimpleNamespace(state_history=[], planner_autonomy_level=1)
+
+    decision = planner.plan_next(
+        context,
+        _screen_path(tmp_path),
+        detections=[
+            {
+                "label": "Resource node",
+                "x": 0.25,
+                "y": 0.75,
+                "width": 0.10,
+                "height": 0.20,
+                "confidence": 0.88,
+            }
+        ],
+        ocr_text="",
+        goal="Gather resources.",
+    )
+
+    assert decision is not None
+    assert decision.source == "ai_review"
+    assert decision.confidence == pytest.approx(0.46)
 
 
 def test_plan_next_prefers_memory_when_entry_resolves_to_valid_target(tmp_path):

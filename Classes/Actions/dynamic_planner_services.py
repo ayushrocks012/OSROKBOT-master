@@ -15,7 +15,7 @@ from typing import Any
 
 from config_manager import ConfigManager
 from detection_dataset import DetectionDataset
-from dynamic_planner import DynamicPlanner, PlannerDecision
+from dynamic_planner import MIN_PLANNER_CONFIDENCE, DynamicPlanner, PlannerDecision
 from input_controller import DelayPolicy, InputController
 from logging_config import get_logger
 from PIL import Image
@@ -298,6 +298,9 @@ class PlannerApprovalService:
                 }
             )
             return corrected, True
+        if decision.source == "ai_review" or decision.confidence < MIN_PLANNER_CONFIDENCE:
+            LOGGER.warning("Low-confidence planner action requires Fix before execution.")
+            return None, False
         return decision, False
 
 
@@ -528,9 +531,14 @@ class PlannerFeedbackService:
             )
 
     def record_wait(self, context: Any, screenshot_path: Path, decision: PlannerDecision, visible_labels: list[Any]) -> None:
-        """Persist a successful wait decision as visual memory and a session event."""
+        """Record a successful wait decision as a session event.
 
-        self.memory.record_success(screenshot_path, decision, visible_labels=visible_labels, source=decision.source)
+        Wait decisions are not useful visual memories and can otherwise trigger
+        optional CLIP/Torch startup on workstations that only need OCR/planner
+        operation.
+        """
+
+        _ = screenshot_path, visible_labels
         self._record_session_action(context, decision, "success")
 
     def record_failure(self, context: Any, decision: PlannerDecision) -> None:

@@ -1,8 +1,9 @@
-from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
-from dynamic_planner import PlannerDecision
 from Actions.dynamic_planner_action import DynamicPlannerAction
+from Actions.dynamic_planner_services import PlannerApprovalService, PlannerFeedbackService
+from dynamic_planner import PlannerDecision
 
 
 class _WindowRect:
@@ -92,3 +93,71 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
     assert ("execute", "click", 400) in calls
     assert ("wait_after_execution", 0.5) in calls
     assert ("record_success", "Gather Button", None) in calls
+
+
+def test_record_wait_does_not_write_visual_memory(tmp_path):
+    calls = []
+    memory = SimpleNamespace(record_success=lambda *args, **kwargs: calls.append(("memory", args, kwargs)))
+    session_logger = SimpleNamespace(
+        record_action=lambda action_type, label, target_id, outcome, source: calls.append(
+            ("session", action_type, label, target_id, outcome, source)
+        )
+    )
+    service = PlannerFeedbackService(
+        task_graph=SimpleNamespace(),
+        planner=SimpleNamespace(),
+        memory=memory,
+        dataset=SimpleNamespace(),
+        change_detector=SimpleNamespace(),
+    )
+    decision = PlannerDecision.from_mapping(
+        {
+            "action_type": "wait",
+            "label": "observe",
+            "confidence": 0.4,
+            "reason": "Need more context.",
+        }
+    )
+
+    service.record_wait(
+        SimpleNamespace(session_logger=session_logger),
+        tmp_path / "screen.png",
+        decision,
+        visible_labels=[],
+    )
+
+    assert calls == [("session", "wait", "observe", "", "success", "ai")]
+
+
+def test_low_confidence_approval_requires_manual_correction(tmp_path):
+    event = Event()
+    event.set()
+    pending = {"event": event, "result": "approved", "corrected_point": None}
+    context = SimpleNamespace(
+        planner_autonomy_level=1,
+        set_pending_planner_decision=lambda *args, **kwargs: pending,
+        clear_pending_planner_decision=lambda: None,
+    )
+    decision = PlannerDecision.from_mapping(
+        {
+            "action_type": "click",
+            "target_id": "ocr_1",
+            "label": "Resource node",
+            "confidence": 0.46,
+            "reason": "Low confidence.",
+            "x": 0.25,
+            "y": 0.50,
+        },
+        source="ai_review",
+    )
+    service = PlannerApprovalService(memory=SimpleNamespace())
+
+    approved, corrected = service.approve_pointer_decision(
+        context,
+        decision,
+        tmp_path / "screen.png",
+        _WindowRect(),
+    )
+
+    assert approved is None
+    assert corrected is False

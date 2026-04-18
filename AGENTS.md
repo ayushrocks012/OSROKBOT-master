@@ -73,7 +73,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Do not log API keys, passwords, tokens, or full secret assignment values.
 - Keep long-running downloads and warmups off the PyQt UI thread.
 - Keep generated diagnostics, session logs, and recovery exports bounded with the shared artifact retention policies.
-- Keep runtime timing telemetry for capture, detector, OCR, planner, and input phases flowing into the current session log when modifying those paths.
+- Keep runtime timing telemetry for capture, detector, OCR, planner, and input phases flowing into the current JSON session log and compact text report when modifying those paths.
 - When code changes behavior, architecture, configuration, runtime data paths, safety rules, or operator workflow, update the affected documentation in the same change. At minimum, review `README.md`, `AGENTS.md`, `SKILLS.md`, and `MEDIA_MAP.md`.
 - Update operator runbooks under `docs/runbooks/` when watchdog, CAPTCHA, emergency-stop, secret provisioning, telemetry, or failure-triage behavior changes.
 - Add or amend ADRs under `docs/adr/` when changing the planner-first runtime path, HITL safety model, input boundary, or other architecture-level contracts.

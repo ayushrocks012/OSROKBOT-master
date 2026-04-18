@@ -408,7 +408,9 @@ Core variables:
 | `TESSERACT_PATH` | Optional | Tesseract executable path for OCR fallback and resource OCR. |
 | `TESSERACT_TIMEOUT_SECONDS` | Optional | Per-call Tesseract timeout for planner and resource OCR. Defaults to `5`. |
 | `PLANNER_AUTONOMY_LEVEL` | Optional | Default UI autonomy level, `1` to `3`. |
+| `PLANNER_L1_REVIEW_MIN_CONFIDENCE` | Optional | Lowest pointer confidence that can be shown for L1 manual `Fix` review. Defaults to `0.10`; uncorrected low-confidence targets still cannot execute. |
 | `PLANNER_TRUSTED_SUCCESS_COUNT` | Optional | Clean local successes needed for L2 trusted labels. Defaults to `3`. |
+| `OSROKBOT_CONSOLE_LOG_LEVEL` | Optional | PowerShell log level. Defaults to `ERROR`; full runtime logs still go to `data/logs/osrokbot.log`. |
 | `ROK_CLIENT_PATH` | Optional | Game executable used by watchdog or state recovery when explicit restart is enabled. |
 | `WATCHDOG_HEARTBEAT_PATH` | Optional | Heartbeat file path. Defaults to `data/heartbeat.json`. |
 | `WATCHDOG_TIMEOUT_SECONDS` | Optional | Heartbeat staleness threshold. Defaults to `30`. |
@@ -516,7 +518,8 @@ The watchdog is intentionally conservative:
 | `.env` | Local secrets and machine-specific paths. Ignored by Git. |
 | `data/vision_memory.json` | Local planner successes, failures, and corrections. |
 | `data/heartbeat.json` | Watchdog heartbeat. |
-| `data/session_logs/` | Local session logs and summaries. |
+| `data/session_logs/` | Per-run JSON logs plus compact `.txt` reports for quick triage. |
+| `data/logs/osrokbot.log` | Full rotating runtime log, including entries that are no longer printed to PowerShell by default. |
 | `data/planner_latest.png` | Most recent planner screenshot. |
 | `datasets/` | Exported correction/training data. |
 | `diagnostics/` | Failure, CAPTCHA, and recovery screenshots/logs. |
@@ -672,6 +675,11 @@ Check:
 - The bot is not paused.
 - Interception is installed and hooked after reboot.
 - L1 approval was granted, or the label is trusted in L2, or L3 is selected.
+- If the overlay says `Fix required`, press `Fix`, move the cursor to the
+  correct target, and wait for the correction capture. Low-confidence OCR-only
+  proposals cannot execute from `OK`.
+- If every session shows `yolo_detect` with `detections=0`, configure YOLO
+  weights with `ROK_YOLO_WEIGHTS` for reliable target boxes.
 
 ### The Planner Chooses The Wrong Target
 
@@ -683,6 +691,10 @@ Set `ROK_YOLO_WEIGHTS` to a valid local `.pt` file or set
 `ROK_YOLO_WEIGHTS_URL` to an HTTPS URL that `ModelManager` can download.
 Without weights, OSROKBOT still runs with empty detector labels and relies more
 on screenshots, OCR, and memory.
+
+OCR-only map targets are often low-confidence. In `L1 approve`, those can be
+shown for manual `Fix` correction, but they cannot execute from `OK` unless
+they meet the normal confidence threshold.
 
 ### OCR Is Weak
 

@@ -53,6 +53,7 @@ LOGGER = get_logger(__name__)
 ALLOWED_ACTION_TYPES = {"click", "wait", "stop", "drag", "long_press", "key", "type"}
 DEFAULT_MODEL = "gpt-5.4-mini"
 MIN_PLANNER_CONFIDENCE = 0.70
+MIN_L1_REVIEW_CONFIDENCE = 0.10
 MAX_PLANNER_DELAY_SECONDS = 10.0
 REQUEST_POLL_SECONDS = 0.1
 MAX_REQUEST_ATTEMPTS = 3
@@ -736,6 +737,90 @@ class DynamicPlanner:
         return True
 
     @staticmethod
+    def decision_rejection_reason(decision):
+        """Return a concise reason explaining why a decision is unsafe."""
+
+        if not isinstance(decision, PlannerDecision):
+            return "not_a_planner_decision"
+        if decision.action_type not in ALLOWED_ACTION_TYPES:
+            return f"unsupported_action:{decision.action_type}"
+        if not math.isfinite(decision.confidence):
+            return "confidence_not_finite"
+        if decision.confidence < MIN_PLANNER_CONFIDENCE and decision.action_type in {"click", "drag", "long_press", "key", "type"}:
+            return f"confidence_below_threshold:{decision.confidence:.3f}<{MIN_PLANNER_CONFIDENCE:.3f}"
+        if not math.isfinite(decision.delay_seconds) or not 0.0 <= decision.delay_seconds <= MAX_PLANNER_DELAY_SECONDS:
+            return f"delay_out_of_bounds:{decision.delay_seconds}"
+        if decision.action_type in {"click", "long_press"}:
+            if not decision.target_id:
+                return "missing_target_id"
+            if not math.isfinite(decision.x) or not math.isfinite(decision.y):
+                return "target_coordinates_not_finite"
+            if not 0.0 <= decision.x <= 1.0 or not 0.0 <= decision.y <= 1.0:
+                return f"target_coordinates_out_of_bounds:{decision.x:.3f},{decision.y:.3f}"
+        if decision.action_type == "drag":
+            if not decision.target_id:
+                return "missing_target_id"
+            if not math.isfinite(decision.x) or not math.isfinite(decision.y):
+                return "drag_start_not_finite"
+            if not 0.0 <= decision.x <= 1.0 or not 0.0 <= decision.y <= 1.0:
+                return f"drag_start_out_of_bounds:{decision.x:.3f},{decision.y:.3f}"
+            valid_end = (
+                math.isfinite(decision.end_x)
+                and math.isfinite(decision.end_y)
+                and 0.0 <= decision.end_x <= 1.0
+                and 0.0 <= decision.end_y <= 1.0
+            )
+            if not valid_end and not decision.drag_direction:
+                return "drag_missing_end_target_or_direction"
+        if decision.action_type == "key" and not decision.key_name:
+            return "missing_key_name"
+        if decision.action_type == "type" and not decision.text_content:
+            return "missing_text_content"
+        return "unknown"
+
+    @staticmethod
+    def _autonomy_level(context):
+        try:
+            return int(getattr(context, "planner_autonomy_level", 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def _l1_review_min_confidence(self):
+        try:
+            return float(self.config.get("PLANNER_L1_REVIEW_MIN_CONFIDENCE", MIN_L1_REVIEW_CONFIDENCE))
+        except (TypeError, ValueError):
+            return MIN_L1_REVIEW_CONFIDENCE
+
+    def _is_l1_reviewable_pointer_decision(self, context, decision, rejection_reason):
+        if self._autonomy_level(context) != 1:
+            return False
+        if not isinstance(decision, PlannerDecision):
+            return False
+        if decision.action_type not in {"click", "drag", "long_press"}:
+            return False
+        if not str(rejection_reason).startswith("confidence_below_threshold:"):
+            return False
+        if decision.confidence < self._l1_review_min_confidence():
+            return False
+
+        structurally_safe = decision.model_copy(update={"confidence": MIN_PLANNER_CONFIDENCE})
+        return self.validate_decision(structurally_safe)
+
+    @staticmethod
+    def _record_planner_rejection(context, decision, reason):
+        session_logger = getattr(context, "session_logger", None)
+        if not session_logger or not hasattr(session_logger, "record_planner_rejection"):
+            return
+        decision_detail = decision.to_dict() if isinstance(decision, PlannerDecision) else {}
+        session_logger.record_planner_rejection(
+            reason=reason,
+            action_type=decision_detail.get("action_type", ""),
+            label=decision_detail.get("label", ""),
+            target_id=decision_detail.get("target_id", ""),
+            confidence=decision_detail.get("confidence", ""),
+        )
+
+    @staticmethod
     def _request_interrupted(context):
         bot = getattr(context, "bot", None) if context else None
         if not bot:
@@ -978,6 +1063,26 @@ class DynamicPlanner:
             screen_changed=screen_changed,
         )
         if not self.validate_decision(decision):
-            LOGGER.warning("Dynamic planner rejected an invalid or low-confidence decision.")
+            reason = self.decision_rejection_reason(decision)
+            decision_detail = decision.to_dict() if isinstance(decision, PlannerDecision) else {}
+            if self._is_l1_reviewable_pointer_decision(context, decision, reason):
+                LOGGER.warning(
+                    "Dynamic planner sent low-confidence decision to L1 Fix review: reason=%s action=%s target_id=%s label=%s confidence=%s",
+                    reason,
+                    decision_detail.get("action_type", ""),
+                    decision_detail.get("target_id", ""),
+                    decision_detail.get("label", ""),
+                    decision_detail.get("confidence", ""),
+                )
+                return decision.model_copy(update={"source": "ai_review"})
+            LOGGER.warning(
+                "Dynamic planner rejected decision: reason=%s action=%s target_id=%s label=%s confidence=%s",
+                reason,
+                decision_detail.get("action_type", ""),
+                decision_detail.get("target_id", ""),
+                decision_detail.get("label", ""),
+                decision_detail.get("confidence", ""),
+            )
+            self._record_planner_rejection(context, decision, reason)
             return None
         return decision
