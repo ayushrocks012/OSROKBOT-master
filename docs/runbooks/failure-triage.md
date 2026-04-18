@@ -32,8 +32,13 @@ unexpectedly.
   shifted UI layout.
 - Repeated `confidence_below_threshold` planner rejections with
   `yolo_detect detections=0` indicate OCR-only targeting. In `L1 approve`,
-  use `Fix` for low-confidence proposals or configure YOLO weights for stable
-  target boxes.
+  use `Fix` for low-confidence proposals, then click the corrected target in
+  the blocking crosshair overlay, or configure YOLO weights for stable target
+  boxes.
+- If a gather/resource run shows repeated waits followed by `action=stop`
+  while `yolo_detect detections=0`, check whether the overlay raised an
+  OCR-only `Fix required` target. That is the bounded no-YOLO fallback path in
+  `L1 approve`.
 
 ## Escalation
 

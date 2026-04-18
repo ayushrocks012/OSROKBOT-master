@@ -91,7 +91,8 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Model management: `Classes/model_manager.py`
 - Configuration: `ROK_YOLO_WEIGHTS` or `ROK_YOLO_WEIGHTS_URL`
 - Behavior: loads local YOLO weights when available; otherwise uses a no-op
-  detector that returns no labels.
+  detector that returns no labels. In `L1 approve`, gather/resource missions
+  can fall back to an OCR-only `Fix required` review target before stopping.
 - Download safety: configured downloads must use HTTPS, stream with a timeout,
   write through a temporary file, and stay below `ROK_YOLO_MAX_BYTES`.
 - Purpose: provide structured visible UI labels and target boxes to planner,
@@ -177,11 +178,12 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 
 ## Fix-Based Human Correction
 
-- Owner: `Classes/UI.py` and `Classes/Actions/dynamic_planner_action.py`
+- Owner: `Classes/UI.py`, `Classes/UIController.py`, and `Classes/Actions/dynamic_planner_action.py`
 - Memory writer: `Classes/vision_memory.py`
 - Dataset export: `Classes/detection_dataset.py`
-- Workflow: user presses `Fix`, moves the cursor to the correct target, and
-  the bot records a corrected normalized point.
+- Workflow: user presses `Fix`, the console opens a blocking crosshair overlay
+  over the game window, the user clicks the corrected target, and the bot
+  records a corrected normalized point.
 - Purpose: teach local memory and generate correction data when the planner
   chooses the wrong pointer target.
 
@@ -192,13 +194,15 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - L1 correction review: OCR-only pointer proposals below the normal confidence
   threshold can be shown for manual `Fix` correction when they meet
   `PLANNER_L1_REVIEW_MIN_CONFIDENCE`; uncorrected low-confidence proposals do
-  not execute from `OK`.
+  not execute from `OK`. When YOLO returns no boxes on a gather/resource
+  mission, the planner can also raise one OCR-only `Fix required` target after
+  a detector-less `stop` decision.
 - L2: trusted labels can auto-execute pointer actions after enough clean local
   successes.
 - L3: validated pointer actions can execute without approval.
 - Note: current target approval UI covers `click`, `drag`, and `long_press`,
-  and `L1 approve` now draws the current YOLO detector boxes plus the selected
-  target.
+  and `L1 approve` now draws the current YOLO detector boxes, the selected
+  target, and an intent tooltip.
   `key` and `type` are validation-gated and still route through
   `InputController`, but do not use the target approval prompt.
 

@@ -82,6 +82,15 @@ def _low_confidence_click_response():
     )
 
 
+def _stop_response():
+    return _FakeResponse(
+        '{"thought_process":"No safe detector target is visible.","action_type":"stop","target_id":"",'
+        '"label":"stop","confidence":0.91,"delay_seconds":0.0,'
+        '"reason":"No listed target is safe.",'
+        '"end_target_id":"","key_name":"","text_content":"","drag_direction":""}'
+    )
+
+
 def test_safe_json_loads_accepts_wrapped_json():
     raw = 'assistant says: {"action_type": "wait", "label": "none"} done'
 
@@ -347,6 +356,49 @@ def test_plan_next_routes_low_confidence_pointer_to_l1_review(tmp_path):
     assert decision is not None
     assert decision.source == "ai_review"
     assert decision.confidence == pytest.approx(0.46)
+
+
+def test_plan_next_routes_stop_without_detections_to_ocr_fix_review(tmp_path):
+    planner = _planner_with_transport(lambda _payload, _should_cancel: _stop_response())
+    context = SimpleNamespace(state_history=[], planner_autonomy_level=1)
+
+    decision = planner.plan_next(
+        context,
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="4 wood node",
+        goal="Gather the nearest useful resource safely.",
+        ocr_regions=[
+            {"text": "Technology Research", "x": 0.08, "y": 0.30, "width": 0.18, "height": 0.12, "confidence": 0.90},
+            {"text": "4", "x": 0.34, "y": 0.78, "width": 0.04, "height": 0.04, "confidence": 0.62},
+        ],
+    )
+
+    assert decision is not None
+    assert decision.source == "ai_review"
+    assert decision.action_type == "click"
+    assert decision.target_id == "ocr_2"
+    assert "Use Fix" in decision.reason
+    assert 0.10 <= decision.confidence < 0.70
+
+
+def test_plan_next_keeps_stop_without_detections_for_non_resource_goal(tmp_path):
+    planner = _planner_with_transport(lambda _payload, _should_cancel: _stop_response())
+    context = SimpleNamespace(state_history=[], planner_autonomy_level=1)
+
+    decision = planner.plan_next(
+        context,
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="4 wood node",
+        goal="Open alliance mail safely.",
+        ocr_regions=[
+            {"text": "4", "x": 0.34, "y": 0.78, "width": 0.04, "height": 0.04, "confidence": 0.62},
+        ],
+    )
+
+    assert decision is not None
+    assert decision.action_type == "stop"
 
 
 def test_plan_next_prefers_memory_when_entry_resolves_to_valid_target(tmp_path):

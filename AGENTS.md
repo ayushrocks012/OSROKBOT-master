@@ -28,7 +28,9 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 
 | Module | Owns |
 | --- | --- |
-| `Classes/UI.py` | Overlay, settings, mission input, autonomy selector, approval controls, detector-box approval overlay, mission history, background YOLO warmup, session logger setup, and per-run `Context`. |
+| `Classes/UI.py` | Agent Supervisor Console view, shell layout, tabs, tray notifications, state-responsive collapse/expand behavior, and overlay presentation. |
+| `Classes/UIController.py` | Mission history, autonomy selection, pending-action evaluation, YOLO warmup, session logging, and per-run `Context` creation for the supervisor console. |
+| `Classes/click_overlay.py` | Non-blocking planner preview overlay plus the blocking crosshair correction overlay used by `Fix`. |
 | `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and UI signal access. |
 | `Classes/action_sets.py` | Supported workflow factory. New runtime work should use `dynamic_planner()`. |
 | `Classes/state_machine.py` | Deterministic state execution, preconditions, transition history, diagnostics, and tiered global recovery. |
@@ -151,7 +153,12 @@ The UI autonomy levels are part of the safety model:
 - `L3 auto`: validated pointer actions can execute without approval.
 
 In `L1 approve`, the overlay highlights the selected target and the current
-YOLO detector boxes for faster human verification.
+YOLO detector boxes for faster human verification and shows an intent tooltip
+next to the selected target. `Fix` must open the blocking crosshair overlay
+over the game client and wait indefinitely for one operator click. When a
+gather/resource mission has no detector boxes, the planner may surface one
+OCR-only `Fix required` target instead of stopping; uncorrected low-confidence
+OCR targets must not execute from `OK`.
 
 Default to L1 when testing changes, new prompts, new weights, new action types,
 new missions, or new memory.

@@ -130,7 +130,9 @@ they do not use the target approval prompt.
 
 | Module | Responsibility |
 | --- | --- |
-| `Classes/UI.py` | PyQt overlay, mission input, settings, autonomy selector, approval controls, detector-box approval overlay, mission history, session logging, background YOLO warmup, and per-run `Context` creation. |
+| `Classes/UI.py` | PyQt Agent Supervisor Console view: shell layout, theming, tabs, state-responsive collapse/expand behavior, tray notifications, and overlay presentation. |
+| `Classes/UIController.py` | View-model/controller for mission history, autonomy selection, session logging, planner approval state, YOLO warmup, and per-run `Context` creation. |
+| `Classes/click_overlay.py` | Non-blocking planner target preview overlay plus the blocking crosshair correction overlay used by `Fix`. |
 | `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and signal access. |
 | `Classes/action_sets.py` | Supported workflow factory. `dynamic_planner()` is the current runtime entry point. |
 | `Classes/state_machine.py` | Deterministic action runner, preconditions, transition history, diagnostics, and tiered global recovery. |
@@ -184,9 +186,10 @@ flowchart TD
 stateDiagram-v2
     [*] --> Idle
     Idle --> Running: start run
-    Running --> Approval: L1 pointer action
-    Approval --> Running: approve and execute
-    Approval --> Paused: operator review or fix
+    Running --> Approval: L1 pointer action or Fix required
+    Approval --> Approval: correction overlay captures one click
+    Approval --> Running: approve or corrected point recorded
+    Approval --> Paused: operator reject or pause
     Running --> Paused: user pause or captcha
     Paused --> Running: resume
     Running --> Recovery: repeated failure threshold
@@ -275,7 +278,7 @@ input boundary, memory strategy, or operational contract.
 
 | Level | UI Label | Behavior |
 | --- | --- | --- |
-| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes plus the selected target. Use this by default. |
+| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes, the selected target, and an intent tooltip. `Fix` opens a blocking crosshair overlay over the game client and waits indefinitely for one corrected click. When detector boxes are unavailable on a gather/resource mission, the planner can surface an OCR-only `Fix required` target instead of stopping. Use this by default. |
 | L2 | `L2 trusted` | Pointer actions with locally trusted labels can execute after enough clean successes. New or failed labels still require approval. |
 | L3 | `L3 auto` | Validated pointer actions can execute without approval. Use only for stable, supervised workflows. |
 
@@ -442,8 +445,8 @@ Recommended first run:
 1. Choose `L1 approve`.
 2. Enter a narrow mission in plain English.
 3. Press Play.
-4. Review each pointer action with the detector-box overlay.
-5. Use `OK`, `No`, or `Fix` from the approval controls.
+4. Review each pointer action with the detector-box overlay and intent tooltip.
+5. Use `OK`, `No`, or `Fix` from the Agent Intent Card.
 
 Example missions:
 
@@ -466,8 +469,8 @@ Use `Fix` when the planner chooses the wrong pointer target.
 1. Run in `L1 approve`.
 2. Wait for a `click`, `drag`, or `long_press` proposal.
 3. Press `Fix`.
-4. Move the cursor to the corrected target inside the game window.
-5. Let the overlay capture the corrected normalized point.
+4. Click the corrected target inside the blocking crosshair overlay over the game window.
+5. Let the console record the corrected normalized point and close the overlay immediately.
 
 Correction data is written through:
 
@@ -675,11 +678,14 @@ Check:
 - The bot is not paused.
 - Interception is installed and hooked after reboot.
 - L1 approval was granted, or the label is trusted in L2, or L3 is selected.
-- If the overlay says `Fix required`, press `Fix`, move the cursor to the
-  correct target, and wait for the correction capture. Low-confidence OCR-only
-  proposals cannot execute from `OK`.
+- If the overlay says `Fix required`, press `Fix`, then click the correct
+  target in the blocking crosshair overlay. Low-confidence OCR-only proposals
+  cannot execute from `OK`.
 - If every session shows `yolo_detect` with `detections=0`, configure YOLO
-  weights with `ROK_YOLO_WEIGHTS` for reliable target boxes.
+  weights with `ROK_YOLO_WEIGHTS` for reliable target boxes. Without weights,
+  gather/resource missions in `L1 approve` can still surface an OCR-only
+  `Fix required` target after the planner exhausts safe detector-backed
+  options.
 
 ### The Planner Chooses The Wrong Target
 
@@ -694,7 +700,9 @@ on screenshots, OCR, and memory.
 
 OCR-only map targets are often low-confidence. In `L1 approve`, those can be
 shown for manual `Fix` correction, but they cannot execute from `OK` unless
-they meet the normal confidence threshold.
+they meet the normal confidence threshold. When the planner would otherwise
+end a gather/resource run with `stop`, it now tries to surface one OCR-only
+review target first.
 
 ### OCR Is Weak
 

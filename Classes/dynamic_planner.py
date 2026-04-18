@@ -20,6 +20,7 @@ import copy
 import inspect
 import json
 import math
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -58,6 +59,26 @@ MAX_PLANNER_DELAY_SECONDS = 10.0
 REQUEST_POLL_SECONDS = 0.1
 MAX_REQUEST_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
+RESOURCE_GOAL_KEYWORDS = ("gather", "farm", "resource", "harvest", "mine", "collect")
+RESOURCE_TEXT_KEYWORDS = ("food", "wood", "stone", "gold", "gem", "ore", "gather", "farm", "resource", "node")
+OCR_UI_BLACKLIST = (
+    "technology",
+    "research",
+    "apprentice",
+    "civilization",
+    "barbarian",
+    "swordsman",
+    "blacksmith",
+    "land of",
+    "multi",
+    "space",
+    "mail",
+    "alliance",
+    "event",
+    "quest",
+    "mission",
+    "vip",
+)
 
 
 def _safe_float(value, default=math.nan):
@@ -791,6 +812,91 @@ class DynamicPlanner:
         except (TypeError, ValueError):
             return MIN_L1_REVIEW_CONFIDENCE
 
+    @staticmethod
+    def _goal_prefers_resource_targets(goal):
+        goal_text = str(goal or "").lower()
+        return any(keyword in goal_text for keyword in RESOURCE_GOAL_KEYWORDS)
+
+    @staticmethod
+    def _ocr_review_candidate_score(target):
+        if not isinstance(target, PlannerTarget) or target.source != "ocr":
+            return None
+
+        text = str(target.label or "").strip().lower()
+        if not text:
+            return None
+        if target.x < 0.12 or target.x > 0.92 or target.y < 0.10 or target.y > 0.88:
+            return None
+        if any(token in text for token in OCR_UI_BLACKLIST):
+            return None
+        if ":" in text or "[" in text or "]" in text:
+            return None
+        if len(text) > 24:
+            return None
+
+        compact_text = re.sub(r"[^a-z0-9]+", "", text)
+        digits_only = re.sub(r"\D+", "", text)
+        if digits_only.isdigit() and len(digits_only) >= 4:
+            return None
+
+        score = float(target.confidence)
+        if any(keyword in text for keyword in RESOURCE_TEXT_KEYWORDS):
+            score += 4.0
+        if "lv" in text or "level" in text:
+            score += 2.0
+        if digits_only.isdigit() and len(digits_only) <= 2 and 1 <= int(digits_only) <= 8:
+            score += 3.0
+        if compact_text.isalnum() and len(compact_text) <= 4:
+            score += 0.5
+
+        distance_from_center = abs(target.x - 0.5) + abs(target.y - 0.5)
+        score += max(0.0, 0.75 - distance_from_center)
+        return score if score >= 2.0 else None
+
+    def _best_ocr_review_target(self, goal, targets):
+        if not self._goal_prefers_resource_targets(goal):
+            return None
+
+        best_target = None
+        best_score = -1.0
+        for target in targets or []:
+            score = self._ocr_review_candidate_score(target)
+            if score is None:
+                continue
+            if score > best_score:
+                best_target = target
+                best_score = score
+        return best_target
+
+    def _ocr_only_review_decision(self, context, goal, detections, targets, decision):
+        if self._autonomy_level(context) != 1:
+            return None
+        if detections:
+            return None
+        if isinstance(decision, PlannerDecision) and decision.action_type not in {"wait", "stop"}:
+            return None
+
+        target = self._best_ocr_review_target(goal, targets)
+        if target is None:
+            return None
+
+        review_confidence = max(
+            self._l1_review_min_confidence(),
+            min(MIN_PLANNER_CONFIDENCE - 0.01, max(target.confidence, 0.35)),
+        )
+        return PlannerDecision(
+            thought_process="No detector boxes are available; escalate an OCR-only candidate for guarded review.",
+            action_type="click",
+            label=target.label,
+            x=target.x,
+            y=target.y,
+            confidence=review_confidence,
+            reason="YOLO is unavailable on this screen. Use Fix to confirm the resource node before execution.",
+            source="ai_review",
+            target_id=target.target_id,
+            delay_seconds=1.0,
+        )
+
     def _is_l1_reviewable_pointer_decision(self, context, decision, rejection_reason):
         if self._autonomy_level(context) != 1:
             return False
@@ -1062,6 +1168,16 @@ class DynamicPlanner:
             stuck_warning=stuck_warning,
             screen_changed=screen_changed,
         )
+        fallback_review = self._ocr_only_review_decision(context, goal, detections, targets, decision)
+        if fallback_review is not None:
+            LOGGER.warning(
+                "Dynamic planner surfaced OCR-only L1 Fix review: prior_action=%s target_id=%s label=%s confidence=%s",
+                decision.action_type if isinstance(decision, PlannerDecision) else "",
+                fallback_review.target_id,
+                fallback_review.label,
+                fallback_review.confidence,
+            )
+            return fallback_review
         if not self.validate_decision(decision):
             reason = self.decision_rejection_reason(decision)
             decision_detail = decision.to_dict() if isinstance(decision, PlannerDecision) else {}
