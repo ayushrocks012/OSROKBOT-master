@@ -17,10 +17,16 @@ runtime session or maintainer command without extra verbal handoff.
    `.ndjson` when event ordering matters.
 5. Only fall back to `data/logs/osrokbot.log` after the per-run artifacts.
 
+`latest_run.json` and `latest_run.txt` are refreshed during active runtime
+sessions and maintainer commands. If the current run is still active, expect
+`status=partial` until a terminal event is recorded.
+
 ## Verification
 
 - `latest_run.json` should point to the same run stem across `.json`, `.txt`,
   `.log`, `.err`, and runtime `.ndjson`.
+- Runtime `.ndjson` events should include a stable `run_id`, `run_kind`, and a
+  monotonic `sequence` field so ordering survives concurrent UI/runtime writes.
 - `status` should be one of `success`, `failed`, `interrupted`, or `partial`.
 - Runtime sessions should expose mission/autonomy fields and maintainer runs
   should expose command/exit-code details.

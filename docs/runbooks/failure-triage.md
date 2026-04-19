@@ -24,6 +24,9 @@ unexpectedly.
    `PLANNER_L1_REVIEW_MIN_CONFIDENCE`, and `OPENAI_KEY` or `OPENAI_API_KEY`
    are configured.
 
+If the run is still active, `latest_run.json` may still report `status=partial`
+while the grouped `.ndjson` timeline and latest handoff continue to refresh.
+
 ## Verification
 
 - `python verify_integrity.py` should pass or report only known environmental
@@ -32,6 +35,9 @@ unexpectedly.
   screenshot quality, changed UI language, a timeout that is too small, or a
   broken EasyOCR/Torch installation. If `ocr_regions` timing is very high and
   EasyOCR logs a Torch DLL error, set `OCR_ENGINE=tesseract`.
+- `data/logs/osrokbot.log` is structured JSON by default. Use it when you need
+  cross-run logger output, correlation fields such as `run_id`, or exceptions
+  that did not make it into the per-run handoff.
 - YOLO failures should correlate with missing weights, outdated labels, or
   shifted UI layout.
 - Repeated `confidence_below_threshold` planner rejections with

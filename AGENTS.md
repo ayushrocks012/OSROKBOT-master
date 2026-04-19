@@ -79,6 +79,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Keep long-running downloads and warmups off the PyQt UI thread.
 - Keep generated diagnostics, session logs, and recovery exports bounded with the shared artifact retention policies.
 - Keep `data/handoff/latest_run.json` and `data/handoff/latest_run.txt` as the canonical AI/operator entrypoint when modifying runtime or maintainer logging behavior.
+- Keep `data/logs/osrokbot.log` machine-ingestable; structured JSON is the default file-log contract unless maintainers intentionally document a replacement.
+- Keep `latest_run.json` and `latest_run.txt` refreshed during active runtime or maintainer sessions when changing handoff/session logging behavior; do not regress them to finalize-only snapshots.
 - Keep runtime timing telemetry for capture, detector, OCR, planner, and input phases flowing into the current grouped session artifacts and latest-run handoff when modifying those paths.
 - When code changes behavior, architecture, configuration, runtime data paths, safety rules, or operator workflow, update the affected documentation in the same change. At minimum, review `README.md`, `AGENTS.md`, `SKILLS.md`, and `MEDIA_MAP.md`.
 - Update operator runbooks under `docs/runbooks/` when watchdog, CAPTCHA, emergency-stop, secret provisioning, telemetry, or failure-triage behavior changes.

@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from logging_config import get_logger
+from logging_config import get_logger, scoped_log_context
 from run_handoff import (
     DEFAULT_TEST_RUNS_DIR,
     RunRecordSession,
@@ -194,8 +194,9 @@ def run_preset(preset: str, extra_args: list[str]) -> int:
             command_or_mission="cleanup-test-artifacts",
             metadata={"command_arguments": extra_args},
         )
-        _print_milestone("RUN START", session, preset=preset, command="cleanup-test-artifacts")
-        return _cleanup_command(session)
+        with scoped_log_context(run_id=session.run_id, session_id=session.run_id, run_kind=session.run_kind):
+            _print_milestone("RUN START", session, preset=preset, command="cleanup-test-artifacts")
+            return _cleanup_command(session)
 
     run_id = build_run_id("maintainer_command")
     command, env, metadata = _build_preset_command(preset, extra_args, run_id)
@@ -206,42 +207,43 @@ def run_preset(preset: str, extra_args: list[str]) -> int:
         run_id=run_id,
         metadata={"command_arguments": extra_args, **metadata},
     )
-    session.record_event("info", detail=f"Maintainer preset started: {preset}")
-    _print_milestone("RUN START", session, preset=preset, command=display_command)
-    exit_code, stdout_lines, stderr_lines = _run_subprocess(session, command, env)
+    with scoped_log_context(run_id=session.run_id, session_id=session.run_id, run_kind=session.run_kind):
+        session.record_event("info", detail=f"Maintainer preset started: {preset}")
+        _print_milestone("RUN START", session, preset=preset, command=display_command)
+        exit_code, stdout_lines, stderr_lines = _run_subprocess(session, command, env)
 
-    command_summary: dict[str, Any] = {}
-    if preset == "pytest":
-        command_summary["failing_tests"] = _parse_failing_tests(stdout_lines + stderr_lines)
-    if preset in {"verify-integrity", "verify-docs"}:
-        command_summary["failed_checks"] = _parse_failed_checks(stdout_lines + stderr_lines)
+        command_summary: dict[str, Any] = {}
+        if preset == "pytest":
+            command_summary["failing_tests"] = _parse_failing_tests(stdout_lines + stderr_lines)
+        if preset in {"verify-integrity", "verify-docs"}:
+            command_summary["failed_checks"] = _parse_failed_checks(stdout_lines + stderr_lines)
 
-    session.update_metadata(exit_code=exit_code, command_summary=command_summary)
-    if exit_code == 0:
-        session.mark_terminal("success", "command_completed", detail=f"{preset} completed successfully.")
-        status = "success"
-        end_reason = "command_completed"
-    else:
-        session.mark_terminal("failed", f"exit_code_{exit_code}", detail=f"{preset} exited with code {exit_code}.")
-        status = "failed"
-        end_reason = f"exit_code_{exit_code}"
+        session.update_metadata(exit_code=exit_code, command_summary=command_summary)
+        if exit_code == 0:
+            session.mark_terminal("success", "command_completed", detail=f"{preset} completed successfully.")
+            status = "success"
+            end_reason = "command_completed"
+        else:
+            session.mark_terminal("failed", f"exit_code_{exit_code}", detail=f"{preset} exited with code {exit_code}.")
+            status = "failed"
+            end_reason = f"exit_code_{exit_code}"
 
-    session_path = session.finalize()
-    test_run_root = metadata.get("test_run_root")
-    if test_run_root:
-        test_root_path = Path(str(test_run_root))
-        test_root_path.mkdir(parents=True, exist_ok=True)
-        _copy_run_summary_to_test_root(session_path, test_root_path)
-        prune_test_run_artifacts()
-    _print_milestone(
-        "RUN END",
-        session,
-        status=status,
-        end_reason=end_reason,
-        exit_code=str(exit_code),
-        summary=str(session_path),
-    )
-    return exit_code
+        session_path = session.finalize()
+        test_run_root = metadata.get("test_run_root")
+        if test_run_root:
+            test_root_path = Path(str(test_run_root))
+            test_root_path.mkdir(parents=True, exist_ok=True)
+            _copy_run_summary_to_test_root(session_path, test_root_path)
+            prune_test_run_artifacts()
+        _print_milestone(
+            "RUN END",
+            session,
+            status=status,
+            end_reason=end_reason,
+            exit_code=str(exit_code),
+            summary=str(session_path),
+        )
+        return exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:

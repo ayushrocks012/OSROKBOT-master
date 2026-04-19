@@ -418,6 +418,11 @@ Core variables:
 | `PLANNER_L1_REVIEW_MIN_CONFIDENCE` | Optional | Lowest pointer confidence that can be shown for L1 manual `Fix` review. Defaults to `0.10`; uncorrected low-confidence targets still cannot execute. |
 | `PLANNER_TRUSTED_SUCCESS_COUNT` | Optional | Clean local successes needed for L2 trusted labels. Defaults to `3`. |
 | `OSROKBOT_CONSOLE_LOG_LEVEL` | Optional | PowerShell log level. Defaults to `ERROR`; full runtime logs still go to `data/logs/osrokbot.log`. |
+| `OSROKBOT_LOG_LEVEL` | Optional | Base logger level for the rotating runtime log. Defaults to `INFO`. |
+| `OSROKBOT_FILE_LOG_LEVEL` | Optional | File-handler override for `data/logs/osrokbot.log`. Defaults to `INFO`. |
+| `OSROKBOT_LOG_FORMAT` | Optional | Global log formatter override: `json` or `plain`. File logs default to `json`; console logs default to `plain`. |
+| `OSROKBOT_FILE_LOG_FORMAT` | Optional | File-handler formatter override. Defaults to `json`. |
+| `OSROKBOT_CONSOLE_LOG_FORMAT` | Optional | Console formatter override. Defaults to `plain`. |
 | `ROK_CLIENT_PATH` | Optional | Game executable used by watchdog or state recovery when explicit restart is enabled. |
 | `WATCHDOG_HEARTBEAT_PATH` | Optional | Heartbeat file path. Defaults to `data/heartbeat.json`. |
 | `WATCHDOG_TIMEOUT_SECONDS` | Optional | Heartbeat staleness threshold. Defaults to `30`. |
@@ -427,7 +432,9 @@ Core variables:
 
 `ConfigManager` stores sensitive values such as `OPENAI_KEY`,
 `OPENAI_API_KEY`, and `EMAIL_PASSWORD` in `.env`, not `config.json`.
-Application logs redact OpenAI-style keys and known secret assignments.
+Application logs redact OpenAI-style keys and known secret assignments. The
+rotating runtime log is structured JSON by default so it can be ingested by log
+pipelines without post-processing.
 YOLO weight downloads must use HTTPS, run with a timeout, stream to a same-dir
 temporary file, and fail if they exceed `ROK_YOLO_MAX_BYTES`.
 
@@ -534,7 +541,7 @@ The watchdog is intentionally conservative:
 | `data/handoff/latest_run.json` | Canonical AI entrypoint for the most recent runtime or maintainer run. |
 | `data/handoff/latest_run.txt` | Fixed-section plain-English companion to `latest_run.json`. |
 | `data/session_logs/` | Per-run grouped history artifacts: `.json`, `.txt`, `.log`, `.err`, and runtime `.ndjson`. |
-| `data/logs/osrokbot.log` | Full rotating runtime log, including entries that are no longer printed to PowerShell by default. |
+| `data/logs/osrokbot.log` | Full rotating runtime log as structured JSON lines by default, including entries that are no longer printed to PowerShell by default. |
 | `data/planner_latest.png` | Most recent planner screenshot. |
 | `.artifacts/test_runs/` | Centralized pytest temp, cache, and latest-run copies for maintainer test runs. |
 | `datasets/` | Exported correction/training data. |
@@ -544,6 +551,8 @@ The watchdog is intentionally conservative:
 Start every investigation with `data/handoff/latest_run.json` or
 `data/handoff/latest_run.txt`. Those files point to the matching per-run
 history group, diagnostics, heartbeat, planner screenshot, and next actions.
+They are refreshed during active runtime sessions and maintainer commands, so
+an in-progress run may legitimately report `status=partial`.
 
 Runtime artifact retention is bounded by default:
 
@@ -563,10 +572,11 @@ These can be overridden with:
 `ROK_TEST_RUN_FAILURE_MAX_FILES`, and `ROK_TEST_RUN_FAILURE_MAX_AGE_DAYS`.
 
 Session logs also include bounded `timing` events for the guarded runtime
-phases so performance regressions can be diagnosed from one run artifact.
-Current timing samples cover window capture, YOLO detection, OCR region/text
-reads, resource-context OCR, planner memory lookup, planner request latency,
-guarded input execution, and post-action waits.
+phases so performance regressions can be diagnosed from one run artifact. Live
+handoff snapshots refresh while the run is active, including metadata updates
+such as diagnostics paths. Current timing samples cover window capture, YOLO
+detection, OCR region/text reads, resource-context OCR, planner memory lookup,
+planner request latency, guarded input execution, and post-action waits.
 
 For documented maintainer commands, prefer the wrapper:
 

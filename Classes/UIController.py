@@ -20,7 +20,7 @@ from config_manager import ConfigManager
 from context import Context
 from detection_dataset import DetectionDataset
 from input_controller import InputController
-from logging_config import get_logger
+from logging_config import bind_log_context, get_logger, reset_log_context
 from model_manager import ModelManager, yolo_download_required
 from object_detector import create_detector
 from ocr_service import OCRService
@@ -161,6 +161,7 @@ class UIController(QtCore.QObject):
         self._yolo_warmup_future: Future[Any] | None = None
         self._current_context: Context | None = None
         self._session_logger: SessionLogger | None = None
+        self._logging_context_token: Any | None = None
         self._pending_payload: dict[str, Any] | None = None
         self._fix_capture_active = False
         self._session_active = False
@@ -374,6 +375,9 @@ class UIController(QtCore.QObject):
             return
 
         self._session_logger = SessionLogger(mission=mission, autonomy_level=selected_autonomy)
+        if self._logging_context_token is not None:
+            reset_log_context(self._logging_context_token)
+        self._logging_context_token = bind_log_context(**self._session_logger.log_context_fields())
         context = Context(
             ui_instance=self,
             bot=self.OS_ROKBOT,
@@ -410,6 +414,9 @@ class UIController(QtCore.QObject):
         self._finalized_timeline = self._session_logger.timeline()
         self._session_active = False
         self._session_finalized = True
+        if self._logging_context_token is not None:
+            reset_log_context(self._logging_context_token)
+            self._logging_context_token = None
         if path:
             self.notification_requested.emit(
                 "OSROKBOT - Session Saved",

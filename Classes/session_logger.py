@@ -15,6 +15,7 @@ from typing import Any
 from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy
 from logging_config import get_logger
 from run_handoff import (
+    DEFAULT_LIVE_SNAPSHOT_INTERVAL_SECONDS,
     DEFAULT_SESSION_LOGS_DIR,
     DEFAULT_SESSION_RETENTION,
     RunRecordSession,
@@ -91,6 +92,7 @@ class SessionLogger:
         handoff_dir: Path | None = None,
         retention_manager: ArtifactRetentionManager | None = None,
         retention_policy: ArtifactRetentionPolicy | None = None,
+        snapshot_update_interval_seconds: float | None = None,
     ) -> None:
         self.mission = str(mission)
         self.autonomy_level = int(autonomy_level)
@@ -105,6 +107,11 @@ class SessionLogger:
                 "mission": self.mission,
                 "autonomy_level": self.autonomy_level,
             },
+            snapshot_update_interval_seconds=(
+                snapshot_update_interval_seconds
+                if snapshot_update_interval_seconds is not None
+                else DEFAULT_LIVE_SNAPSHOT_INTERVAL_SECONDS
+            ),
         )
 
     @property
@@ -118,6 +125,15 @@ class SessionLogger:
         """Expose grouped output paths for callers that need them."""
 
         return self._session.paths
+
+    def log_context_fields(self) -> dict[str, Any]:
+        """Return correlation fields suitable for structured log binding."""
+
+        return {
+            "run_id": self.run_id,
+            "session_id": self.run_id,
+            "run_kind": self._session.run_kind,
+        }
 
     def _record(self, event_type: str, *, detail: str = "", severity: str = "INFO", **fields: Any) -> None:
         self._session.record_event(event_type, detail=detail, severity=severity, **fields)

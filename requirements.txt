@@ -34,7 +34,7 @@ openai==2.31.0
 jiter==0.14.0
 
 # Optional YOLO object detection when ROK_YOLO_WEIGHTS is configured.
-ultralytics==8.4.24
+ultralytics==8.4.39
 
 # Optional guarded AI planner perception and local vector memory.
 easyocr==1.7.2

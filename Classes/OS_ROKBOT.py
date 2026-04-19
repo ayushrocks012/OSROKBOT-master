@@ -16,7 +16,7 @@ from context import Context, ObservationSnapshot
 from diagnostic_screenshot import save_diagnostic_screenshot
 from emergency_stop import EmergencyStop
 from input_controller import InputController
-from logging_config import get_logger
+from logging_config import get_logger, scoped_log_context
 from object_detector import create_detector
 from runtime_contracts import ConfigProvider, DetectionProvider, EmergencyStopController, WindowCaptureProvider
 from runtime_payloads import HeartbeatPayload
@@ -86,6 +86,15 @@ class OSROKBOT:
     @staticmethod
     def _session_logger(context: Context | None) -> Any | None:
         return getattr(context, "session_logger", None) if context is not None else None
+
+    @classmethod
+    def _session_log_context_fields(cls, context: Context | None) -> dict[str, Any]:
+        session_logger = cls._session_logger(context)
+        if session_logger and hasattr(session_logger, "log_context_fields"):
+            fields = session_logger.log_context_fields()
+            if isinstance(fields, dict):
+                return {str(key): value for key, value in fields.items()}
+        return {}
 
     def _record_session_error(
         self,
@@ -379,106 +388,113 @@ class OSROKBOT:
         context.signal_emitter = context.signal_emitter or self.signal_emitter
         context.window_title = context.window_title or self.window_title
         self._active_context = context
+        base_log_context = self._session_log_context_fields(context)
 
-        self.stop_event.clear()
-        self.all_threads_joined = False
-        self.write_heartbeat(context, force=True)
+        with scoped_log_context(**base_log_context):
+            self.stop_event.clear()
+            self.all_threads_joined = False
+            self.write_heartbeat(context, force=True)
 
-        def run_single_machine(machine: Any) -> None:
-            while not self.stop_event.is_set():
-                observation = None
-                if getattr(machine, "halted", False):
-                    LOGGER.error("Workflow state machine halted; stopping workflow thread.")
-                    break
-                try:
-                    if self.pause_event.is_set():
-                        self.write_heartbeat(context)
-                        self.stop_event.wait(self.delay)
-                        continue
-                    self.write_heartbeat(context)
-                    if not self._ensure_foreground(context):
-                        continue
-                    observation = self._observe_window(context)
-                    if observation is None:
-                        continue
-                    if self._detect_captcha(context, observation=observation):
-                        continue
-                    if not self._ensure_foreground(context):
-                        continue
-                    step_result = machine.execute(context)
-                    if getattr(machine, "halted", False):
-                        LOGGER.error("Workflow state machine halted after execute; stopping workflow thread.")
-                        break
-                    if step_result:
-                        self.stop_event.wait(self.delay)
-                finally:
-                    if hasattr(context, "clear_current_observation_if"):
-                        context.clear_current_observation_if(observation)
-                    elif getattr(context, "current_observation", None) is observation:
-                        context.clear_current_observation()
+            def run_single_machine(machine: Any, machine_index: int) -> None:
+                with scoped_log_context(**base_log_context, machine_id=f"machine_{machine_index + 1}"):
+                    while not self.stop_event.is_set():
+                        observation = None
+                        if getattr(machine, "halted", False):
+                            LOGGER.error("Workflow state machine halted; stopping workflow thread.")
+                            break
+                        try:
+                            if self.pause_event.is_set():
+                                self.write_heartbeat(context)
+                                self.stop_event.wait(self.delay)
+                                continue
+                            self.write_heartbeat(context)
+                            if not self._ensure_foreground(context):
+                                continue
+                            observation = self._observe_window(context)
+                            if observation is None:
+                                continue
+                            if self._detect_captcha(context, observation=observation):
+                                continue
+                            if not self._ensure_foreground(context):
+                                continue
+                            step_result = machine.execute(context)
+                            if getattr(machine, "halted", False):
+                                LOGGER.error("Workflow state machine halted after execute; stopping workflow thread.")
+                                break
+                            if step_result:
+                                self.stop_event.wait(self.delay)
+                        finally:
+                            if hasattr(context, "clear_current_observation_if"):
+                                context.clear_current_observation_if(observation)
+                            elif getattr(context, "current_observation", None) is observation:
+                                context.clear_current_observation()
 
-        try:
-            with ThreadPoolExecutor(
-                max_workers=max(1, len(state_machines)),
-                thread_name_prefix="OSROKBOT-Workflow",
-            ) as executor:
-                futures: list[Future[None]] = [
-                    executor.submit(run_single_machine, machine) for machine in state_machines
-                ]
-                while futures and not self.stop_event.is_set():
-                    done, _pending = wait(futures, timeout=0.5, return_when=FIRST_EXCEPTION)
-                    for future in done:
-                        future.result()
-                    futures = [future for future in futures if not future.done()]
-        finally:
-            for machine in state_machines:
-                self._close_state_machine(machine)
-            self.stop_event.set()
-            self.all_threads_joined = True
-            self.is_running = False
+            try:
+                with ThreadPoolExecutor(
+                    max_workers=max(1, len(state_machines)),
+                    thread_name_prefix="OSROKBOT-Workflow",
+                ) as executor:
+                    futures: list[Future[None]] = [
+                        executor.submit(run_single_machine, machine, index) for index, machine in enumerate(state_machines)
+                    ]
+                    while futures and not self.stop_event.is_set():
+                        done, _pending = wait(futures, timeout=0.5, return_when=FIRST_EXCEPTION)
+                        for future in done:
+                            future.result()
+                        futures = [future for future in futures if not future.done()]
+            finally:
+                for machine in state_machines:
+                    self._close_state_machine(machine)
+                self.stop_event.set()
+                self.all_threads_joined = True
+                self.is_running = False
 
     def _runner_done(self, future: Future[None]) -> None:
         failed = False
         context = self._active_context
-        try:
-            future.result()
-        except Exception as exc:
-            failed = True
-            LOGGER.error("OSROKBOT runner stopped after an unhandled error: %s", exc)
-            self._record_session_error(context, f"Unhandled runner error: {exc}", stage="runner")
-            self._mark_terminal(context, "failed", "runner_unhandled_exception", detail=str(exc))
-        if future is not self._runner_future:
-            return
-        if not failed and context is not None:
-            session_logger = self._session_logger(context)
-            if session_logger and hasattr(session_logger, "summary"):
-                status = str(session_logger.summary().get("status", "partial") or "partial")
-                if status == "partial":
-                    self._mark_terminal(
-                        context,
-                        "interrupted",
-                        "runner_stopped_without_terminal_reason",
-                        detail="Runner stopped without a recorded terminal reason.",
-                    )
-        if failed:
-            self.stop_event.set()
-        if self.signal_emitter and hasattr(self.signal_emitter, "run_finished"):
-            session_logger = self._session_logger(context)
-            summary = session_logger.summary() if session_logger and hasattr(session_logger, "summary") else {}
-            self.signal_emitter.run_finished.emit(
-                {
-                    "status": str(summary.get("status", "failed" if failed else "interrupted")),
-                    "end_reason": str(
-                        summary.get("end_reason", "runner_unhandled_exception" if failed else "runner_stopped_without_terminal_reason")
-                    ),
-                    "detail": str(summary.get("final_state", "") or ""),
-                }
-            )
-        self._runner_future = None
-        self.is_running = False
-        self._shutdown_runner_executor()
-        self.all_threads_joined = True
-        self._active_context = None
+        with scoped_log_context(**self._session_log_context_fields(context)):
+            try:
+                future.result()
+            except Exception as exc:
+                failed = True
+                LOGGER.error("OSROKBOT runner stopped after an unhandled error: %s", exc)
+                self._record_session_error(context, f"Unhandled runner error: {exc}", stage="runner")
+                self._mark_terminal(context, "failed", "runner_unhandled_exception", detail=str(exc))
+            if future is not self._runner_future:
+                return
+            if not failed and context is not None:
+                session_logger = self._session_logger(context)
+                if session_logger and hasattr(session_logger, "summary"):
+                    status = str(session_logger.summary().get("status", "partial") or "partial")
+                    if status == "partial":
+                        self._mark_terminal(
+                            context,
+                            "interrupted",
+                            "runner_stopped_without_terminal_reason",
+                            detail="Runner stopped without a recorded terminal reason.",
+                        )
+            if failed:
+                self.stop_event.set()
+            if self.signal_emitter and hasattr(self.signal_emitter, "run_finished"):
+                session_logger = self._session_logger(context)
+                summary = session_logger.summary() if session_logger and hasattr(session_logger, "summary") else {}
+                self.signal_emitter.run_finished.emit(
+                    {
+                        "status": str(summary.get("status", "failed" if failed else "interrupted")),
+                        "end_reason": str(
+                            summary.get(
+                                "end_reason",
+                                "runner_unhandled_exception" if failed else "runner_stopped_without_terminal_reason",
+                            )
+                        ),
+                        "detail": str(summary.get("final_state", "") or ""),
+                    }
+                )
+            self._runner_future = None
+            self.is_running = False
+            self._shutdown_runner_executor()
+            self.all_threads_joined = True
+            self._active_context = None
 
     def start(self, steps: Sequence[Any], context: Context | None = None) -> bool:
         if self.is_running or not self.all_threads_joined:

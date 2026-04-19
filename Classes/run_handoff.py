@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ DEFAULT_HEARTBEAT_PATH = PROJECT_ROOT / "data" / "heartbeat.json"
 DEFAULT_PLANNER_SCREENSHOT_PATH = PROJECT_ROOT / "data" / "planner_latest.png"
 DEFAULT_DIAGNOSTICS_DIR = PROJECT_ROOT / "diagnostics"
 DEFAULT_TEST_RUNS_DIR = PROJECT_ROOT / ".artifacts" / "test_runs"
+DEFAULT_LIVE_SNAPSHOT_INTERVAL_SECONDS = 1.0
 DEFAULT_SESSION_RETENTION = policy_from_environment(
     max_groups_env="ROK_SESSION_LOG_MAX_FILES",
     max_age_days_env="ROK_SESSION_LOG_MAX_AGE_DAYS",
@@ -543,6 +545,7 @@ class RunRecordSession:
         retention_manager: ArtifactRetentionManager | None = None,
         retention_policy: ArtifactRetentionPolicy | None = None,
         metadata: dict[str, Any] | None = None,
+        snapshot_update_interval_seconds: float = DEFAULT_LIVE_SNAPSHOT_INTERVAL_SECONDS,
     ) -> None:
         self.run_kind = str(run_kind)
         self.command_or_mission = str(command_or_mission)
@@ -558,14 +561,18 @@ class RunRecordSession:
         self.started_at = _isoformat(self.started_at_dt)
         self._start_monotonic = time.monotonic()
         self._terminal_status = "partial"
-        self._terminal_reason = "run_started"
+        self._terminal_reason = "run_in_progress"
         self._terminal_detail = ""
         self._finalized = False
         self._final_record: dict[str, Any] | None = None
         self.events: list[dict[str, Any]] = []
+        self._lock = threading.RLock()
+        self._snapshot_update_interval_seconds = max(0.0, float(snapshot_update_interval_seconds))
+        self._last_snapshot_monotonic = 0.0
         self.paths = build_run_artifact_paths(self.output_dir, self.run_id)
-        self._prepare_artifacts()
-        self._write_partial_snapshot()
+        with self._lock:
+            self._prepare_artifacts()
+            self._write_partial_snapshot_locked(force=True)
 
     def _prepare_artifacts(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -587,7 +594,8 @@ class RunRecordSession:
         if not clean_text:
             return
         target = self.paths.err_path if stream == "stderr" else self.paths.log_path
-        _append_text(target, clean_text + "\n")
+        with self._lock:
+            _append_text(target, clean_text + "\n")
 
     def record_event(
         self,
@@ -600,54 +608,75 @@ class RunRecordSession:
     ) -> dict[str, Any]:
         """Append one structured event to the per-run event stream."""
 
-        if self._finalized:
-            return self.events[-1] if self.events else {}
-        event = {
-            "timestamp": _isoformat(_now()),
-            "elapsed_seconds": round(self.elapsed_seconds(), 1),
-            "event_type": str(event_type),
-            "detail": redact_secret(detail),
-            "severity": str(severity).upper(),
-        }
-        for key, value in fields.items():
-            if _is_blank(value):
-                continue
-            event[key] = redact_secret(value) if isinstance(value, str) else value
-        self.events.append(event)
-        _append_json_line(self.paths.ndjson_path, event)
-        _append_text(self.paths.log_path, _event_log_line(event))
-        if event["event_type"] == "error" or event["severity"] in {"ERROR", "CRITICAL"}:
-            _append_text(self.paths.err_path, _event_log_line(event))
-        if update_latest:
-            self._write_partial_snapshot()
-        return event
+        with self._lock:
+            if self._finalized:
+                return dict(self.events[-1]) if self.events else {}
+            event = {
+                "run_id": self.run_id,
+                "run_kind": self.run_kind,
+                "sequence": len(self.events) + 1,
+                "timestamp": _isoformat(_now()),
+                "elapsed_seconds": round(self.elapsed_seconds(), 1),
+                "event_type": str(event_type),
+                "detail": redact_secret(detail),
+                "severity": str(severity).upper(),
+            }
+            for key, value in fields.items():
+                if _is_blank(value):
+                    continue
+                event[key] = redact_secret(value) if isinstance(value, str) else value
+            self.events.append(event)
+            _append_json_line(self.paths.ndjson_path, event)
+            _append_text(self.paths.log_path, _event_log_line(event))
+            if event["event_type"] == "error" or event["severity"] in {"ERROR", "CRITICAL"}:
+                _append_text(self.paths.err_path, _event_log_line(event))
+            force_snapshot = bool(update_latest) or event["event_type"] == "terminal" or event["severity"] in {
+                "ERROR",
+                "CRITICAL",
+            }
+            self._write_partial_snapshot_locked(force=force_snapshot)
+            return dict(event)
 
     def update_metadata(self, **updates: Any) -> None:
         """Persist metadata that feeds the final handoff payload."""
 
-        for key, value in updates.items():
-            if _is_blank(value):
-                continue
-            self.metadata[key] = value
+        updated = False
+        with self._lock:
+            if self._finalized:
+                return
+            for key, value in updates.items():
+                if _is_blank(value):
+                    continue
+                self.metadata[key] = value
+                updated = True
+            if updated:
+                self._write_partial_snapshot_locked(force=True)
 
     def mark_terminal(self, status: str, end_reason: str, detail: str = "") -> None:
         """Record exactly one terminal event for the run."""
 
-        if self._finalized:
-            return
-        if self.events and str(self.events[-1].get("event_type", "")) == "terminal":
-            return
-        self._terminal_status = _coerce_status(status)
-        self._terminal_reason = str(end_reason or "completed")
-        self._terminal_detail = detail
-        severity = "ERROR" if self._terminal_status == "failed" else "WARNING" if self._terminal_status == "interrupted" else "INFO"
-        self.record_event(
-            "terminal",
-            detail=detail or self._terminal_reason,
-            severity=severity,
-            status=self._terminal_status,
-            end_reason=self._terminal_reason,
-        )
+        with self._lock:
+            if self._finalized:
+                return
+            if self.events and str(self.events[-1].get("event_type", "")) == "terminal":
+                return
+            self._terminal_status = _coerce_status(status)
+            self._terminal_reason = str(end_reason or "completed")
+            self._terminal_detail = detail
+            severity = (
+                "ERROR"
+                if self._terminal_status == "failed"
+                else "WARNING"
+                if self._terminal_status == "interrupted"
+                else "INFO"
+            )
+            self.record_event(
+                "terminal",
+                detail=detail or self._terminal_reason,
+                severity=severity,
+                status=self._terminal_status,
+                end_reason=self._terminal_reason,
+            )
 
     def _build_record(self, *, ended_at: str | None = None) -> dict[str, Any]:
         ended_text = ended_at or _isoformat(_now())
@@ -664,49 +693,58 @@ class RunRecordSession:
             metadata=self.metadata,
         )
 
-    def _write_partial_snapshot(self) -> None:
-        self._terminal_status = "partial"
-        self._terminal_reason = "run_in_progress"
-        record = self._build_record()
+    def _write_snapshot_files_locked(self, record: dict[str, Any]) -> None:
+        report_text = render_latest_run_text(record)
         atomic_write_text(self.paths.json_path, json.dumps(record, indent=2, ensure_ascii=False) + "\n")
-        atomic_write_text(self.paths.txt_path, render_latest_run_text(record))
+        atomic_write_text(self.paths.txt_path, report_text)
         atomic_write_text(self.latest_run_json_path, json.dumps(record, indent=2, ensure_ascii=False) + "\n")
-        atomic_write_text(self.latest_run_text_path, render_latest_run_text(record))
+        atomic_write_text(self.latest_run_text_path, report_text)
+        self._last_snapshot_monotonic = time.monotonic()
+
+    def _should_refresh_snapshot_locked(self, *, force: bool) -> bool:
+        if force:
+            return True
+        return (time.monotonic() - self._last_snapshot_monotonic) >= self._snapshot_update_interval_seconds
+
+    def _write_partial_snapshot_locked(self, *, force: bool = False) -> None:
+        if not self._should_refresh_snapshot_locked(force=force):
+            return
+        self._write_snapshot_files_locked(self._build_record())
 
     def finalize(self, *, status: str | None = None, end_reason: str | None = None, detail: str = "") -> Path:
         """Finalize the run exactly once and refresh latest handoff files."""
 
-        if self._finalized and self._final_record is not None:
+        with self._lock:
+            if self._finalized and self._final_record is not None:
+                return self.paths.json_path
+            if status or end_reason:
+                self.mark_terminal(status or self._terminal_status, end_reason or self._terminal_reason, detail=detail)
+            elif not self.events or str(self.events[-1].get("event_type", "")) != "terminal":
+                self.mark_terminal("interrupted", "finalized_without_terminal_event", detail=detail)
+            self._finalized = True
+            ended_at = _isoformat(_now())
+            self._final_record = self._build_record(ended_at=ended_at)
+            self._write_snapshot_files_locked(self._final_record)
+            self.retention_manager.prune_directory(self.output_dir, self.retention_policy)
             return self.paths.json_path
-        if status or end_reason:
-            self.mark_terminal(status or self._terminal_status, end_reason or self._terminal_reason, detail=detail)
-        elif not self.events or str(self.events[-1].get("event_type", "")) != "terminal":
-            self.mark_terminal("interrupted", "finalized_without_terminal_event", detail=detail)
-        self._finalized = True
-        ended_at = _isoformat(_now())
-        self._final_record = self._build_record(ended_at=ended_at)
-        atomic_write_text(self.paths.json_path, json.dumps(self._final_record, indent=2, ensure_ascii=False) + "\n")
-        report_text = render_latest_run_text(self._final_record)
-        atomic_write_text(self.paths.txt_path, report_text)
-        atomic_write_text(self.latest_run_json_path, json.dumps(self._final_record, indent=2, ensure_ascii=False) + "\n")
-        atomic_write_text(self.latest_run_text_path, report_text)
-        self.retention_manager.prune_directory(self.output_dir, self.retention_policy)
-        return self.paths.json_path
 
     def summary(self) -> dict[str, Any]:
         """Return the current summary dict for UI/dashboard use."""
 
-        return self._build_record()["summary"]
+        with self._lock:
+            return self._build_record()["summary"]
 
     def timeline(self) -> list[dict[str, Any]]:
         """Return the current event timeline."""
 
-        return list(self.events)
+        with self._lock:
+            return list(self.events)
 
     def text_report(self) -> str:
         """Return the fixed-section handoff text for the current run state."""
 
-        return render_latest_run_text(self._build_record())
+        with self._lock:
+            return render_latest_run_text(self._build_record())
 
 
 def reconcile_latest_runtime_run(
@@ -730,6 +768,9 @@ def reconcile_latest_runtime_run(
     started_dt = datetime.fromisoformat(started_at)
     ended_at = _isoformat(_now())
     event = {
+        "run_id": str(payload.get("run_id", event_stream.stem)),
+        "run_kind": "runtime_session",
+        "sequence": len(events) + 1,
         "timestamp": ended_at,
         "elapsed_seconds": round(max(0.0, (_now() - started_dt).total_seconds()), 1),
         "event_type": "terminal",

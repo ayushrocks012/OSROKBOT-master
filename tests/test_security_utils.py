@@ -1,7 +1,8 @@
+import json
 import logging
 from pathlib import Path
 
-from logging_config import RedactingFilter
+from logging_config import JsonFormatter, RedactingFilter, scoped_log_context
 from security_utils import atomic_write_text, format_env_value, redact_secret, update_env_file
 
 
@@ -23,6 +24,27 @@ def test_logging_filter_redacts_rendered_message():
 
     assert RedactingFilter().filter(record) is True
     assert record.getMessage() == "key=<redacted>"
+
+
+def test_json_formatter_includes_bound_context_and_redacts_message():
+    record = logging.LogRecord(
+        name="test",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=12,
+        msg="planner key=%s",
+        args=("sk-test-secret-value-123456",),
+        exc_info=None,
+    )
+
+    with scoped_log_context(run_id="run_123", session_id="run_123", run_kind="runtime_session"):
+        assert RedactingFilter().filter(record) is True
+        payload = json.loads(JsonFormatter().format(record))
+
+    assert payload["message"] == "planner key=<redacted>"
+    assert payload["run_id"] == "run_123"
+    assert payload["session_id"] == "run_123"
+    assert payload["run_kind"] == "runtime_session"
 
 
 def test_format_env_value_quotes_values_with_spaces_and_comments():
