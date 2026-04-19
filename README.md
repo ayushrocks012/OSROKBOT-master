@@ -157,7 +157,8 @@ they do not use the target approval prompt.
 | `Classes/input_controller.py` | The only allowed hardware input path. It owns Interception readiness, pause/stop checks, foreground checks, bounds validation, bounded humanization, mouse movement, clicks, drags, long presses, keys, scrolls, and waits. |
 | `Classes/window_handler.py` | Foreground enforcement, client-rect discovery, and named capture backend selection with Win32 PrintWindow/BitBlt as the current default. |
 | `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download from `ROK_YOLO_WEIGHTS_URL` with timeout, streaming, and size-cap enforcement. |
-| `Classes/security_utils.py` | Secret redaction, atomic text writes, and dotenv updates for sensitive local configuration. |
+| `Classes/security_utils.py` | Secret redaction, dotenv parsing/updates, and atomic text writes for sensitive local configuration. |
+| `Classes/secret_providers.py` | Secret-provider chain, `.env` fallback, and Windows DPAPI-backed encrypted local secret storage. |
 | `Classes/detection_dataset.py` | Planner no-decision stubs and correction export for detector training data. |
 | `Classes/session_logger.py` | Runtime session wrapper over the shared run-handoff contract. |
 | `Classes/maintainer_run.py` | Maintainer command wrapper that captures stdout/stderr, emits deterministic milestone lines, and keeps pytest artifacts under one ignored root. |
@@ -255,8 +256,8 @@ documentation surface:
 - `docs/runbooks/captcha-manual-recovery.md`: required human handling when
   CAPTCHA detection pauses automation.
 - `docs/runbooks/emergency-stop.md`: F12 termination and recovery expectations.
-- `docs/runbooks/secret-provisioning.md`: local `.env` provisioning and
-  workstation-grade secret handling limits.
+- `docs/runbooks/secret-provisioning.md`: secret-provider selection, `.env`
+  fallback, and Windows DPAPI rotation guidance.
 - `docs/runbooks/failure-triage.md`: first-pass investigation for stalled or
   degraded runs.
 - `docs/runbooks/run-handoff.md`: how operators and AI agents should read the
@@ -384,16 +385,23 @@ python -c "import interception; interception.auto_capture_devices(); print('inte
 
 ## Configuration
 
-Configuration is read in this order:
+Non-sensitive configuration is read in this order:
 
 1. Local `config.json`, written by the overlay settings UI.
 2. Project `.env`.
 3. Process environment variables.
 
-Create `.env` in the project root for secrets and local paths:
+Sensitive configuration is resolved from the selected secret provider first,
+then falls back to legacy `.env` values and finally to the process
+environment. The shipped providers are `dotenv` and Windows `dpapi`.
+
+Create `.env` in the project root for secrets and local paths, or switch to
+`SECRET_PROVIDER=dpapi` and let the settings UI or `ConfigManager` migrate the
+supported secrets:
 
 ```powershell
 @'
+SECRET_PROVIDER=dpapi
 OPENAI_KEY=your-openai-api-key
 OPENAI_VISION_MODEL=gpt-5.4-mini
 ROK_WINDOW_TITLE=Rise of Kingdoms
@@ -409,6 +417,8 @@ Core variables:
 | --- | --- | --- |
 | `OPENAI_KEY` or `OPENAI_API_KEY` | Yes | API key for OpenAI Responses API planning. |
 | `OPENAI_VISION_MODEL` | Recommended | Planner and task-graph model. Defaults to `gpt-5.4-mini`. |
+| `SECRET_PROVIDER` | Optional | Secret backend selector: `dotenv` or `dpapi`. Defaults to `dotenv`. |
+| `DPAPI_SECRET_STORE_PATH` | Optional | Encrypted store path used when `SECRET_PROVIDER=dpapi`. Defaults to `data/secrets/dpapi_secrets.json`. |
 | `ROK_WINDOW_TITLE` or `WINDOW_TITLE` | Recommended | Target game window title. Defaults to `Rise of Kingdoms`. |
 | `ROK_YOLO_WEIGHTS` | Optional | Local YOLO `.pt` file. Without it, detector output safely falls back to empty labels. |
 | `ROK_YOLO_WEIGHTS_URL` | Optional | HTTPS URL used by `ModelManager` to download YOLO weights into `models/`. |
@@ -433,17 +443,20 @@ Core variables:
 | `ROK_YOLO_MAX_BYTES` | Optional | Maximum YOLO weight download size in bytes. Defaults to `314572800`. |
 
 `ConfigManager` stores sensitive values such as `OPENAI_KEY`,
-`OPENAI_API_KEY`, and `EMAIL_PASSWORD` in `.env`, not `config.json`.
-Application logs redact OpenAI-style keys and known secret assignments. The
-rotating runtime log is structured JSON by default so it can be ingested by log
-pipelines without post-processing.
+`OPENAI_API_KEY`, and `EMAIL_PASSWORD` in the selected secret provider, not in
+`config.json`. The shipped provider boundary supports `.env` and Windows
+DPAPI, and future enterprise backends can plug into the same runtime seam
+without changing callers. Application logs redact OpenAI-, Vault-, AWS-,
+bearer-token, and password-style secret assignments. The rotating runtime log
+is structured JSON by default so it can be ingested by log pipelines without
+post-processing.
 YOLO weight downloads must use HTTPS, run with a timeout, stream to a same-dir
 temporary file, and fail if they exceed `ROK_YOLO_MAX_BYTES`.
 
 > [!NOTE]
-> `.env` is a workstation-grade local secret store for supervised operators.
-> On Windows it is not equivalent to an enterprise vault, DPAPI-backed
-> credential store, or centralized rotation and audit system.
+> `.env` remains a workstation-grade fallback for supervised operators. On
+> Windows, prefer `SECRET_PROVIDER=dpapi` when you need local encrypted
+> at-rest secrets without introducing an external vault dependency.
 
 ## Running OSROKBOT
 
@@ -537,7 +550,8 @@ The watchdog is intentionally conservative:
 | Path | Purpose |
 | --- | --- |
 | `config.json` | Local settings saved by the overlay. Ignored by Git. |
-| `.env` | Local secrets and machine-specific paths. Ignored by Git. |
+| `.env` | Local fallback secrets and machine-specific paths. Ignored by Git. |
+| `data/secrets/dpapi_secrets.json` | Optional Windows DPAPI-backed encrypted secret store when `SECRET_PROVIDER=dpapi`. |
 | `data/vision_memory.json` | Local planner successes, failures, and corrections. |
 | `data/heartbeat.json` | Watchdog heartbeat. |
 | `data/handoff/latest_run.json` | Canonical AI entrypoint for the most recent runtime or maintainer run. |
@@ -632,8 +646,8 @@ nested under other `Media/` subdirectories.
 - Do not import from `Actions.legacy` in production runtime code.
 - Keep runner-owned services injectable and close action/planner resources at
   the end of each run.
-- Store secrets in `.env` or process environment only; do not persist them to
-  `config.json` or include them in logs.
+- Store secrets in the configured secret provider or process environment only;
+  do not persist them to `config.json` or include them in logs.
 - Keep long-running setup/download work off the PyQt UI thread.
 - Use Google-style docstrings on active runtime modules, classes, and
   non-trivial public methods; update the README Mermaid diagrams when runtime

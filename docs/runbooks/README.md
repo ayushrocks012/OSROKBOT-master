@@ -9,7 +9,7 @@ triaging a paused automation run:
 - `watchdog-restart.md`: heartbeat monitoring and conservative restart flow.
 - `captcha-manual-recovery.md`: required manual handling when CAPTCHA is detected.
 - `emergency-stop.md`: F12 kill switch behavior and recovery after termination.
-- `secret-provisioning.md`: local `.env` setup and rotation limits.
+- `secret-provisioning.md`: secret-provider selection, `.env` fallback, and Windows DPAPI rotation guidance.
 - `failure-triage.md`: first-pass investigation for failed or degraded runs.
 - `run-handoff.md`: how to start from `data/handoff/latest_run.*` and follow
   the matching run artifacts.

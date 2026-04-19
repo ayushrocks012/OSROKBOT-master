@@ -359,6 +359,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.yolo_url_input = QtWidgets.QLineEdit(self.config.get("ROK_YOLO_WEIGHTS_URL", "") or "")
         self.model_input = QtWidgets.QLineEdit(self.config.get("OPENAI_VISION_MODEL", "gpt-5.4-mini") or "gpt-5.4-mini")
         self.planner_goal_input = QtWidgets.QLineEdit(self.config.get("PLANNER_GOAL", DEFAULT_MISSION) or DEFAULT_MISSION)
+        self.secret_provider_input = QtWidgets.QComboBox()
+        self.secret_provider_input.addItem(".env (workstation)", "dotenv")
+        if os.name == "nt":
+            self.secret_provider_input.addItem("Windows DPAPI (encrypted)", "dpapi")
+        current_provider = str(self.config.get("SECRET_PROVIDER", self.config.secret_provider_name) or self.config.secret_provider_name)
+        provider_index = self.secret_provider_input.findData(current_provider)
+        if provider_index >= 0:
+            self.secret_provider_input.setCurrentIndex(provider_index)
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setObjectName("HintText")
 
@@ -368,6 +376,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(12)
         form.addRow("OpenAI API Key", self.openai_key_input)
+        form.addRow("Secret Provider", self.secret_provider_input)
         form.addRow("Notification Email", self.email_input)
         form.addRow("Tesseract Path", self._path_row(self.tesseract_input, self.browse_tesseract))
         form.addRow("YOLO Weights", self._path_row(self.yolo_weights_input, self.browse_yolo_weights))
@@ -393,7 +402,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         title = QtWidgets.QLabel("Runtime Settings")
         title.setObjectName("SectionTitle")
-        subtitle = QtWidgets.QLabel("Secrets stay in .env. Mission defaults and local paths stay in config.json.")
+        subtitle = QtWidgets.QLabel("Secrets use the selected provider. Mission defaults and local paths stay in config.json.")
         subtitle.setObjectName("HintText")
 
         layout.addWidget(title)
@@ -438,6 +447,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.config.set_many(
             {
                 "OPENAI_KEY": self.openai_key_input.text(),
+                "SECRET_PROVIDER": self.secret_provider_input.currentData(),
                 "EMAIL": self.email_input.text(),
                 "TESSERACT_PATH": self.tesseract_input.text(),
                 "ROK_YOLO_WEIGHTS": self.yolo_weights_input.text(),
@@ -446,7 +456,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 "PLANNER_GOAL": self.planner_goal_input.text(),
             }
         )
-        self.status_label.setText("Saved. YOLO warmup will refresh in the background.")
+        provider_label = self.secret_provider_input.currentText()
+        self.status_label.setText(f"Saved via {provider_label}. YOLO warmup will refresh in the background.")
         self.accept()
 
 

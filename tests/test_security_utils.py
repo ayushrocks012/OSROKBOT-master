@@ -11,6 +11,12 @@ def test_redact_secret_masks_openai_key_patterns():
     assert redact_secret("token sk-test-secret-value-123456") == "token <redacted>"
 
 
+def test_redact_secret_masks_bearer_and_vault_tokens():
+    assert redact_secret("Authorization: Bearer super-secret-token-value") == "Authorization: Bearer <redacted>"
+    assert redact_secret("X-Vault-Token=vault-secret-token") == "X-Vault-Token=<redacted>"
+    assert redact_secret('{"authorization":"super-secret-token-value"}') == '{"authorization":"<redacted>"}'
+
+
 def test_logging_filter_redacts_rendered_message():
     record = logging.LogRecord(
         name="test",
@@ -64,6 +70,17 @@ def test_update_env_file_preserves_comments_and_replaces_requested_keys(tmp_path
     assert 'OPENAI_KEY="new value"' in written
     assert "UNCHANGED=1" in written
     assert "EMAIL_PASSWORD=secret" in written
+
+
+def test_update_env_file_removes_keys_when_value_is_none(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("OPENAI_KEY=old\nUNCHANGED=1\n", encoding="utf-8")
+
+    update_env_file(env_path, {"OPENAI_KEY": None})
+
+    written = env_path.read_text(encoding="utf-8")
+    assert "OPENAI_KEY" not in written
+    assert "UNCHANGED=1" in written
 
 
 def test_atomic_write_text_replaces_existing_file_atomically(tmp_path):

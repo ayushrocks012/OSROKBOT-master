@@ -52,7 +52,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/input_controller.py` | All mouse, keyboard, and scroll execution, including bounded humanization for pointer actions. No other module should call lower-level input APIs. |
 | `Classes/window_handler.py` | Foreground enforcement, client-rect discovery, and named window capture backends. |
 | `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download with timeout, streaming, and size-cap enforcement. |
-| `Classes/security_utils.py` | Secret redaction, atomic text writes, and dotenv updates for sensitive local configuration. |
+| `Classes/security_utils.py` | Secret redaction, dotenv parsing/updates, and atomic text writes for sensitive local configuration. |
+| `Classes/secret_providers.py` | Secret-provider chain, `.env` fallback, and Windows DPAPI-backed encrypted local secret storage. |
 | `Classes/session_logger.py` | Runtime-session wrapper over the shared run-handoff contract. |
 | `Classes/maintainer_run.py` | Canonical maintainer command runner for documented PowerShell workflows, stdout/stderr capture, and centralized pytest artifact layout. |
 | `Classes/emergency_stop.py` | F12 emergency termination. |
@@ -73,8 +74,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Keep agentic input execution behind `DynamicPlannerAction` and `InputController`.
 - Keep runner-owned dependencies injectable and close planner/action resources during run teardown.
 - Keep startup/runtime composition in `UI.py` or another explicit composition root; `OS_ROKBOT` should stay orchestration-focused.
-- Store sensitive configuration in `.env` or process environment, never in `config.json`.
-- Treat `.env` as workstation-grade local secret storage, not as an enterprise vault or central rotation/audit system.
+- Store sensitive configuration in the configured secret provider or process environment, never in `config.json`.
+- Treat `.env` as workstation-grade fallback storage. On Windows, prefer the DPAPI provider when you need local encrypted at-rest secrets without an external vault.
 - Do not log API keys, passwords, tokens, or full secret assignment values.
 - Keep long-running downloads and warmups off the PyQt UI thread.
 - Keep generated diagnostics, session logs, and recovery exports bounded with the shared artifact retention policies.
