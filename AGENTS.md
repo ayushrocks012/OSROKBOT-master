@@ -42,8 +42,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
 | `Classes/Actions/legacy/` | Deprecated action templates retained outside the supported runtime. Do not import them from production paths. |
-| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, strict JSON schema validation, target resolution, retries, and memory-first decision selection. |
-| `Classes/task_graph.py` | Mission decomposition, sub-goal cache, focused-goal text, and label/OCR completion checks. |
+| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, jittered retries, circuit-breaker fallback, strict JSON schema validation, target resolution, and memory-first decision selection. |
+| `Classes/task_graph.py` | Mission decomposition through the shared planner transport, sub-goal cache, focused-goal text, and label/OCR completion checks. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS/NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
 | `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract planner text/region reads, and normalized OCR target extraction. |
 | `Classes/recovery_memory.py` | Bounded atomic persistence for guarded recovery outcomes keyed by state/action/screen signatures. |
@@ -111,8 +111,9 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 `dynamic_planner.py` accepts screenshot context, local YOLO/OCR target IDs, OCR
 text, recent state history, optional resource context, stuck-screen warnings,
 and a natural-language focused mission. It returns a validated
-`PlannerDecision`. Network I/O is handled behind a dedicated async transport,
-but the planner surface used by the runtime remains synchronous.
+`PlannerDecision`. Planner decisions and task-graph decomposition share a
+dedicated async transport with jittered exponential backoff and a circuit
+breaker, but the planner surface used by the runtime remains synchronous.
 
 Strict model-facing JSON fields:
 

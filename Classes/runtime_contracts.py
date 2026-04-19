@@ -97,10 +97,10 @@ class ConfigProvider(Protocol):
 
 
 class PlannerTransport(Protocol):
-    """Transport boundary for side-effect-free planner requests."""
+    """Transport boundary for side-effect-free planner and task-graph requests."""
 
     def request(self, request_payload: dict[str, Any], should_cancel: Callable[[], bool]) -> Any | None:
-        """Submit a planner request unless cancellation is requested."""
+        """Submit a planner-adjacent request unless cancellation is requested."""
 
     def close(self) -> None:
         """Release transport resources."""

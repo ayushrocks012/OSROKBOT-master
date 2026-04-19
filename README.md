@@ -63,9 +63,10 @@ OSROKBOT executes one guarded planner step at a time.
    services: observation, approval, execution, and feedback.
 5. `Classes/vision_memory.py` tries to reuse a successful local visual match
    before spending an OpenAI call.
-6. `Classes/dynamic_planner.py` sends planner requests through a dedicated
-   async Responses API transport when memory has no safe match and validates
-   the strict JSON response.
+6. `Classes/dynamic_planner.py` and `Classes/task_graph.py` share one
+   dedicated async Responses API transport with jittered retries and a circuit
+   breaker. The planner uses it for decision requests when memory has no safe
+   match, and the task graph uses it for one-time mission decomposition.
 7. `DynamicPlannerAction` resolves target IDs to current screen geometry,
    applies the autonomy policy, records corrections or failures, and sends any
    hardware input through `Classes/input_controller.py`.
@@ -102,8 +103,9 @@ The model-facing schema accepts these fields:
 The model may reference current detector/OCR target IDs, but it must not return
 raw `x` or `y` coordinates. `DynamicPlanner.resolve_target_decision(...)`
 resolves target IDs to normalized coordinates after schema validation.
-Planner networking is handled behind a dedicated async transport, but the
-planner API used by the rest of the runtime remains synchronous.
+Planner and task-graph networking are handled behind a dedicated async
+transport with jittered exponential backoff and a circuit breaker, but the
+runtime-facing planner APIs remain synchronous.
 
 Supported actions:
 
@@ -144,8 +146,8 @@ they do not use the target approval prompt.
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and guarded execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
 | `Classes/Actions/legacy/` | Deprecated template actions retained outside the supported runtime and excluded from static cleanup gates. |
-| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, strict JSON schema validation, target resolution, retry handling, memory-first decision selection, and decision validation. |
-| `Classes/task_graph.py` | One-time mission decomposition into sub-goals, cached per mission, with label/OCR post-condition tracking. |
+| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, jittered retry and circuit-breaker handling, strict JSON schema validation, target resolution, memory-first decision selection, and decision validation. |
+| `Classes/task_graph.py` | One-time mission decomposition into sub-goals through the shared planner transport, cached per mission, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
 | `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract text/region fallback, and normalized OCR targets. |
 | `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, and explicit client restart support. |

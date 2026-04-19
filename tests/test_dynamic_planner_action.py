@@ -31,7 +31,6 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
     calls = []
     planner = SimpleNamespace(
         memory=SimpleNamespace(path=tmp_path / "vision_memory.json"),
-        client=None,
         model="gpt-5.4-mini",
         plan_next=lambda *args, **kwargs: decision,
         close=lambda: None,
@@ -49,7 +48,7 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
         visible_labels=lambda detections: [d.label for d in detections],
     )
     feedback_service = SimpleNamespace(
-        ensure_task_graph=lambda goal: calls.append(("ensure_task_graph", goal)),
+        ensure_task_graph=lambda context, goal: calls.append(("ensure_task_graph", goal)),
         advance_progress=lambda labels, text: calls.append(("advance_progress", labels, text)),
         mission_complete=lambda context: False,
         focused_goal=lambda goal: f"focus:{goal}",

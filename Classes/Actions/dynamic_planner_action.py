@@ -116,7 +116,7 @@ class DynamicPlannerAction(Action):
         screen_changed, stuck_warning = self.observation_service.screen_change_context(observation.screenshot)
         if _runtime_interrupted(context):
             return False
-        self.feedback_service.ensure_task_graph(goal)
+        self.feedback_service.ensure_task_graph(context, goal)
         if _runtime_interrupted(context):
             return False
 

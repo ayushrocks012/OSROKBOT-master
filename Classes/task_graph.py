@@ -1,16 +1,27 @@
 """Multi-step goal decomposition for complex missions.
 
-Decomposes a natural-language mission into ordered sub-goals using one upfront
-LLM call, then feeds each sub-goal as focused context to the planner loop.
-Sub-goal completion is detected by matching expected post-conditions against
-the currently visible labels and OCR text.
+This module owns the planner-adjacent mission-decomposition boundary. It
+decomposes a natural-language mission into ordered sub-goals using the shared
+planner transport, then feeds each sub-goal as focused context to the planner
+loop. Sub-goal completion is detected by matching expected post-conditions
+against the currently visible labels and OCR text.
+
+Side Effects:
+    May call the shared planner transport for one OpenAI Responses request.
+    Does not execute input or mutate game state.
 """
 
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from config_manager import ConfigManager
 from encoding_utils import safe_json_loads
 from logging_config import get_logger
+from runtime_contracts import PlannerTransport
 
 LOGGER = get_logger(__name__)
 
@@ -62,7 +73,11 @@ class SubGoal:
     completion_hint: str = ""
     completed: bool = False
 
-    def is_completed_by(self, visible_labels=None, ocr_text=""):
+    def is_completed_by(
+        self,
+        visible_labels: list[str] | None = None,
+        ocr_text: str = "",
+    ) -> bool:
         """Check if current observations satisfy this sub-goal's post-conditions.
 
         A sub-goal is considered complete when at least one expected label is
@@ -75,45 +90,54 @@ class SubGoal:
         labels = {str(label).lower() for label in (visible_labels or [])}
         lower_ocr = str(ocr_text or "").lower()
 
-        # Check label post-conditions.
         for expected in self.expected_labels:
             if expected.lower() in labels:
                 return True
 
-        # Check OCR keyword post-conditions.
         return any(keyword.lower() in lower_ocr for keyword in self.expected_ocr_keywords)
 
 
+def _record_runtime_timing(
+    context: Any,
+    stage: str,
+    started_at: float,
+    *,
+    detail: str = "",
+) -> None:
+    record_timing = getattr(context, "record_runtime_timing", None)
+    if callable(record_timing):
+        record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
+
+
 class TaskGraph:
-    """Decomposes missions into sub-goals and tracks progress.
+    """Decompose missions into sub-goals and track their completion.
 
     Usage:
         graph = TaskGraph()
-        graph.decompose("Farm the nearest wood node safely", client)
+        graph.decompose("Farm the nearest wood node safely", transport=planner.transport)
         current = graph.current_subgoal()
         # ... pass current.description to the planner as the focused goal ...
         graph.advance_if_completed(visible_labels, ocr_text)
     """
 
-    # Cache decompositions to avoid repeated LLM calls for the same mission.
     _decomposition_cache: dict[str, list[SubGoal]] = {}
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.sub_goals: list[SubGoal] = []
-        self.current_index: int = 0
-        self.mission: str = ""
+        self.current_index = 0
+        self.mission = ""
 
-    def current_subgoal(self):
+    def current_subgoal(self) -> SubGoal | None:
         """Return the current active sub-goal, or None if all are complete."""
         if self.current_index < len(self.sub_goals):
             return self.sub_goals[self.current_index]
         return None
 
-    def is_complete(self):
+    def is_complete(self) -> bool:
         """Return True when all sub-goals have been completed."""
         return self.current_index >= len(self.sub_goals)
 
-    def progress_summary(self):
+    def progress_summary(self) -> str:
         """Return a human-readable progress string."""
         if not self.sub_goals:
             return ""
@@ -122,10 +146,14 @@ class TaskGraph:
         current = self.current_subgoal()
         summary = f"Progress: {completed}/{total} steps complete."
         if current:
-            summary += f" Current: step {current.step} — {current.description}"
+            summary += f" Current: step {current.step} - {current.description}"
         return summary
 
-    def advance_if_completed(self, visible_labels=None, ocr_text=""):
+    def advance_if_completed(
+        self,
+        visible_labels: list[str] | None = None,
+        ocr_text: str = "",
+    ) -> bool:
         """Check if the current sub-goal's post-conditions are met and advance.
 
         Args:
@@ -140,29 +168,25 @@ class TaskGraph:
             return False
         if current.is_completed_by(visible_labels, ocr_text):
             current.completed = True
-            LOGGER.info(
-                f"Sub-goal {current.step} completed: {current.description}"
-            )
+            LOGGER.info("Sub-goal %s completed: %s", current.step, current.description)
             self.current_index += 1
             next_goal = self.current_subgoal()
             if next_goal:
-                LOGGER.info(
-                    f"Advancing to sub-goal {next_goal.step}: {next_goal.description}"
-                )
+                LOGGER.info("Advancing to sub-goal %s: %s", next_goal.step, next_goal.description)
             else:
                 LOGGER.info("All sub-goals completed for mission: %s", self.mission)
             return True
         return False
 
-    def force_advance(self):
-        """Manually skip the current sub-goal (e.g., when stuck too long)."""
+    def force_advance(self) -> None:
+        """Manually skip the current sub-goal (for example, when stuck too long)."""
         current = self.current_subgoal()
         if current:
-            LOGGER.warning(f"Force-advancing past sub-goal {current.step}: {current.description}")
+            LOGGER.warning("Force-advancing past sub-goal %s: %s", current.step, current.description)
             current.completed = True
             self.current_index += 1
 
-    def focused_goal_text(self, full_mission):
+    def focused_goal_text(self, full_mission: str) -> str:
         """Build a focused goal string for the planner.
 
         If sub-goals are active, returns the current sub-goal description
@@ -177,50 +201,18 @@ class TaskGraph:
             f"Completion hint: {current.completion_hint}"
         )
 
-    def decompose(self, mission, openai_client=None, model=None):
-        """Decompose a mission into sub-goals using an LLM call.
+    def _single_goal(
+        self,
+        mission: str,
+        *,
+        completion_hint: str = "Mission complete.",
+    ) -> list[SubGoal]:
+        self.sub_goals = [SubGoal(step=1, description=mission, completion_hint=completion_hint)]
+        self.current_index = 0
+        return self.sub_goals
 
-        Results are cached per mission text to avoid redundant API calls.
-
-        Args:
-            mission: Natural-language mission text.
-            openai_client: OpenAI client instance. If None, falls back to
-                single-goal mode (the full mission becomes the only sub-goal).
-            model: OpenAI model name.
-
-        Returns:
-            list[SubGoal]: The decomposed sub-goals.
-        """
-        self.mission = mission
-
-        # Check cache first.
-        if mission in self._decomposition_cache:
-            cached = self._decomposition_cache[mission]
-            self.sub_goals = [
-                SubGoal(
-                    step=sg.step,
-                    description=sg.description,
-                    expected_labels=list(sg.expected_labels),
-                    expected_ocr_keywords=list(sg.expected_ocr_keywords),
-                    completion_hint=sg.completion_hint,
-                )
-                for sg in cached
-            ]
-            self.current_index = 0
-            LOGGER.info(f"TaskGraph: reusing cached decomposition ({len(self.sub_goals)} sub-goals).")
-            return self.sub_goals
-
-        # If no client, fall back to single-goal mode.
-        if not openai_client:
-            self.sub_goals = [
-                SubGoal(step=1, description=mission, completion_hint="Mission complete.")
-            ]
-            self.current_index = 0
-            return self.sub_goals
-
-        config = ConfigManager()
-        model = model or config.get("OPENAI_VISION_MODEL", "gpt-5.4-mini") or "gpt-5.4-mini"
-
+    @staticmethod
+    def _build_request_payload(mission: str, model: str) -> dict[str, Any]:
         prompt = (
             "You are a Rise of Kingdoms automation planner. Decompose the following "
             "mission into a sequence of 2-8 concrete sub-goals that a screen-based "
@@ -236,54 +228,134 @@ class TaskGraph:
             "- completion_hint: how to know this step is done\n\n"
             f"Mission: {mission}"
         )
+        return {
+            "model": model,
+            "instructions": "Return only the strict JSON object requested by the schema.",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "mission_decomposition",
+                    "strict": True,
+                    "schema": DECOMPOSITION_SCHEMA,
+                }
+            },
+        }
 
-        try:
-            if not hasattr(openai_client, "responses"):
-                LOGGER.warning("TaskGraph decomposition unavailable: Responses API not supported.")
-                self.sub_goals = [SubGoal(step=1, description=mission)]
-                self.current_index = 0
-                return self.sub_goals
-
-            response = openai_client.responses.create(
-                model=model,
-                instructions="Return only the strict JSON object requested by the schema.",
-                input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "mission_decomposition",
-                        "strict": True,
-                        "schema": DECOMPOSITION_SCHEMA,
-                    }
-                },
+    @staticmethod
+    def _parse_sub_goals(raw_goals: list[dict[str, Any]]) -> list[SubGoal]:
+        return [
+            SubGoal(
+                step=int(goal.get("step", index + 1)),
+                description=str(goal.get("description", "")),
+                expected_labels=list(goal.get("expected_labels", [])),
+                expected_ocr_keywords=list(goal.get("expected_ocr_keywords", [])),
+                completion_hint=str(goal.get("completion_hint", "")),
             )
-            raw = safe_json_loads(response.output_text)
-            raw_goals = raw.get("sub_goals", [])
+            for index, goal in enumerate(raw_goals)
+            if goal.get("description")
+        ]
+
+    def decompose(
+        self,
+        mission: str,
+        *,
+        transport: PlannerTransport | None = None,
+        model: str | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+        context: Any | None = None,
+    ) -> list[SubGoal]:
+        """Decompose a mission into sub-goals using one shared planner request.
+
+        Results are cached per mission text to avoid redundant API calls.
+
+        Args:
+            mission: Natural-language mission text.
+            transport: Shared planner transport. If None, falls back to
+                single-goal mode.
+            model: OpenAI model name.
+            should_cancel: Optional callback that aborts decomposition while
+                the runtime is pausing or stopping.
+            context: Optional runtime context used for timing telemetry.
+
+        Returns:
+            list[SubGoal]: The decomposed sub-goals.
+        """
+        started_at = time.perf_counter()
+        self.mission = mission
+
+        if mission in self._decomposition_cache:
+            cached = self._decomposition_cache[mission]
             self.sub_goals = [
                 SubGoal(
-                    step=int(g.get("step", i + 1)),
-                    description=str(g.get("description", "")),
-                    expected_labels=list(g.get("expected_labels", [])),
-                    expected_ocr_keywords=list(g.get("expected_ocr_keywords", [])),
-                    completion_hint=str(g.get("completion_hint", "")),
+                    step=sg.step,
+                    description=sg.description,
+                    expected_labels=list(sg.expected_labels),
+                    expected_ocr_keywords=list(sg.expected_ocr_keywords),
+                    completion_hint=sg.completion_hint,
                 )
-                for i, g in enumerate(raw_goals)
-                if g.get("description")
+                for sg in cached
             ]
+            self.current_index = 0
+            LOGGER.info("TaskGraph: reusing cached decomposition (%s sub-goals).", len(self.sub_goals))
+            _record_runtime_timing(
+                context,
+                "task_graph_decompose",
+                started_at,
+                detail=f"cache_hit sub_goals={len(self.sub_goals)}",
+            )
+            return self.sub_goals
+
+        if not transport:
+            _record_runtime_timing(
+                context,
+                "task_graph_decompose",
+                started_at,
+                detail="fallback=no_transport",
+            )
+            return self._single_goal(mission)
+
+        config = ConfigManager()
+        model = model or config.get("OPENAI_VISION_MODEL", "gpt-5.4-mini") or "gpt-5.4-mini"
+        cancellation = should_cancel or (lambda: False)
+
+        try:
+            response = transport.request(self._build_request_payload(mission, model), cancellation)
+            if response is None:
+                LOGGER.info("TaskGraph decomposition cancelled; using single-goal fallback.")
+                _record_runtime_timing(
+                    context,
+                    "task_graph_decompose",
+                    started_at,
+                    detail="cancelled",
+                )
+                return self._single_goal(mission)
+            raw = safe_json_loads(response.output_text)
+            self.sub_goals = self._parse_sub_goals(raw.get("sub_goals", []))
         except Exception as exc:
-            LOGGER.warning(f"TaskGraph decomposition failed, using single goal: {exc}")
-            self.sub_goals = [
-                SubGoal(step=1, description=mission, completion_hint="Mission complete.")
-            ]
+            LOGGER.warning("TaskGraph decomposition failed, using single goal: %s", exc)
+            _record_runtime_timing(
+                context,
+                "task_graph_decompose",
+                started_at,
+                detail=f"fallback=error:{type(exc).__name__}",
+            )
+            return self._single_goal(mission)
 
         if not self.sub_goals:
-            self.sub_goals = [SubGoal(step=1, description=mission)]
+            self._single_goal(mission)
 
         self.current_index = 0
-        # Cache the result.
         self._decomposition_cache[mission] = self.sub_goals
         LOGGER.info(
-            f"TaskGraph: decomposed mission into {len(self.sub_goals)} sub-goals: "
-            + ", ".join(sg.description[:60] for sg in self.sub_goals)
+            "TaskGraph: decomposed mission into %s sub-goals: %s",
+            len(self.sub_goals),
+            ", ".join(sg.description[:60] for sg in self.sub_goals),
+        )
+        _record_runtime_timing(
+            context,
+            "task_graph_decompose",
+            started_at,
+            detail=f"sub_goals={len(self.sub_goals)}",
         )
         return self.sub_goals

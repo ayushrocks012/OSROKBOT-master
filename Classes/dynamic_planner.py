@@ -20,6 +20,7 @@ import copy
 import inspect
 import json
 import math
+import random
 import re
 import threading
 import time
@@ -40,7 +41,6 @@ from openai import (
     AuthenticationError,
     BadRequestError,
     InternalServerError,
-    OpenAI,
     PermissionDeniedError,
     RateLimitError,
 )
@@ -59,6 +59,9 @@ MAX_PLANNER_DELAY_SECONDS = 10.0
 REQUEST_POLL_SECONDS = 0.1
 MAX_REQUEST_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
+RETRY_JITTER_RATIO = 0.2
+PLANNER_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 3
+PLANNER_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 30.0
 RESOURCE_GOAL_KEYWORDS = ("gather", "farm", "resource", "harvest", "mine", "collect")
 RESOURCE_TEXT_KEYWORDS = ("food", "wood", "stone", "gold", "gem", "ore", "gather", "farm", "resource", "node")
 OCR_UI_BLACKLIST = (
@@ -365,6 +368,10 @@ class PlannerDecision(BaseModel):
         return self.model_dump()
 
 
+class PlannerTransportCircuitOpenError(RuntimeError):
+    """Raised when the planner transport circuit breaker is open."""
+
+
 class AsyncPlannerTransport:
     """Run planner network I/O on a dedicated asyncio loop.
 
@@ -378,14 +385,30 @@ class AsyncPlannerTransport:
         api_key: str,
         is_transient_error: Callable[[Exception], bool],
         poll_seconds: float = REQUEST_POLL_SECONDS,
+        *,
+        max_attempts: int = MAX_REQUEST_ATTEMPTS,
+        retry_base_delay_seconds: float = RETRY_BASE_DELAY_SECONDS,
+        retry_jitter_ratio: float = RETRY_JITTER_RATIO,
+        circuit_breaker_failure_threshold: int = PLANNER_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+        circuit_breaker_cooldown_seconds: float = PLANNER_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+        random_source: Callable[[], float] | None = None,
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key)
         self._is_transient_error = is_transient_error
         self._poll_seconds = poll_seconds
+        self._max_attempts = max(1, int(max_attempts))
+        self._retry_base_delay_seconds = max(0.0, float(retry_base_delay_seconds))
+        self._retry_jitter_ratio = max(0.0, float(retry_jitter_ratio))
+        self._circuit_breaker_failure_threshold = max(1, int(circuit_breaker_failure_threshold))
+        self._circuit_breaker_cooldown_seconds = max(0.0, float(circuit_breaker_cooldown_seconds))
+        self._random_source = random_source or random.random
         self._ready = threading.Event()
         self._closed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._startup_error: Exception | None = None
+        self._state_lock = threading.Lock()
+        self._consecutive_transient_failures = 0
+        self._circuit_open_until = 0.0
         self._thread = threading.Thread(
             target=self._run_loop,
             name="OSROKBOT-PlannerAsync",
@@ -453,6 +476,38 @@ class AsyncPlannerTransport:
             time.sleep(min(poll_seconds, deadline - time.monotonic()))
         return not should_cancel()
 
+    def _check_circuit_breaker(self) -> None:
+        with self._state_lock:
+            now = time.monotonic()
+            if self._circuit_open_until > now:
+                remaining = self._circuit_open_until - now
+                raise PlannerTransportCircuitOpenError(
+                    f"Planner async transport circuit breaker is open for {remaining:.1f}s"
+                )
+            if self._circuit_open_until:
+                self._circuit_open_until = 0.0
+                self._consecutive_transient_failures = 0
+
+    def _record_success(self) -> None:
+        with self._state_lock:
+            self._consecutive_transient_failures = 0
+            self._circuit_open_until = 0.0
+
+    def _record_transient_failure(self) -> float | None:
+        with self._state_lock:
+            self._consecutive_transient_failures += 1
+            if self._consecutive_transient_failures < self._circuit_breaker_failure_threshold:
+                return None
+            self._circuit_open_until = time.monotonic() + self._circuit_breaker_cooldown_seconds
+            return self._circuit_open_until
+
+    def _compute_backoff_seconds(self, attempt: int) -> float:
+        base_delay = self._retry_base_delay_seconds * (2 ** (attempt - 1))
+        if base_delay <= 0.0 or self._retry_jitter_ratio <= 0.0:
+            return base_delay
+        jitter_scale = 1.0 + self._retry_jitter_ratio * ((2.0 * self._random_source()) - 1.0)
+        return max(0.0, base_delay * jitter_scale)
+
     def request(self, request_payload: dict[str, Any], should_cancel: Callable[[], bool]) -> Any | None:
         """Submit one planner request and retry transient failures.
 
@@ -470,17 +525,42 @@ class AsyncPlannerTransport:
             Exception: Re-raises the last non-transient API or transport error
             after retries are exhausted.
         """
-        for attempt in range(1, MAX_REQUEST_ATTEMPTS + 1):
+        self._check_circuit_breaker()
+        for attempt in range(1, self._max_attempts + 1):
             if should_cancel():
                 return None
             future = self._submit(request_payload)
             try:
-                return self._wait_for_future(future, should_cancel)
+                response = self._wait_for_future(future, should_cancel)
+                if response is not None:
+                    self._record_success()
+                return response
             except Exception as exc:
-                if not self._is_transient_error(exc) or attempt >= MAX_REQUEST_ATTEMPTS:
+                if not self._is_transient_error(exc):
                     raise
-                backoff = RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-                LOGGER.warning("Dynamic planner transient OpenAI failure; retrying: %s", exc)
+                circuit_open_until = self._record_transient_failure()
+                if circuit_open_until is not None:
+                    cooldown = max(0.0, circuit_open_until - time.monotonic())
+                    LOGGER.error(
+                        "Dynamic planner circuit breaker opened after transient failure attempt=%s/%s cooldown_seconds=%.2f error=%s",
+                        attempt,
+                        self._max_attempts,
+                        cooldown,
+                        exc,
+                    )
+                    raise PlannerTransportCircuitOpenError(
+                        f"Planner async transport circuit breaker opened for {cooldown:.1f}s"
+                    ) from exc
+                if attempt >= self._max_attempts:
+                    raise
+                backoff = self._compute_backoff_seconds(attempt)
+                LOGGER.warning(
+                    "Dynamic planner transient OpenAI failure; retrying attempt=%s/%s backoff_seconds=%.2f error=%s",
+                    attempt,
+                    self._max_attempts,
+                    backoff,
+                    exc,
+                )
                 if not self._interruptible_sleep(should_cancel, backoff, self._poll_seconds):
                     return None
         return None
@@ -537,7 +617,6 @@ class DynamicPlanner:
         """
         self.config = config or ConfigManager()
         api_key = self.config.get("OPENAI_KEY") or self.config.get("OPENAI_API_KEY")
-        self.client = OpenAI(api_key=api_key) if api_key else None
         self.model = self.config.get("OPENAI_VISION_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
         self.memory = memory or VisionMemory()
         factory = transport_factory or AsyncPlannerTransport
@@ -927,7 +1006,7 @@ class DynamicPlanner:
         )
 
     @staticmethod
-    def _request_interrupted(context):
+    def request_interrupted(context):
         bot = getattr(context, "bot", None) if context else None
         if not bot:
             return False
@@ -953,7 +1032,13 @@ class DynamicPlanner:
         if not self._transport:
             LOGGER.warning("Dynamic planner unavailable: async planner transport is not configured.")
             return None
-        return self._transport.request(request_payload, lambda: self._request_interrupted(context))
+        return self._transport.request(request_payload, lambda: self.request_interrupted(context))
+
+    @property
+    def transport(self) -> PlannerTransport | None:
+        """Expose the planner transport for shared runtime services."""
+
+        return self._transport
 
     def close(self):
         """Release the planner transport owned by this planner instance."""

@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import dynamic_planner as dynamic_planner_module
 import pytest
-from dynamic_planner import AsyncPlannerTransport, DynamicPlanner, PlannerDecision, PlannerLLMDecision
+from dynamic_planner import (
+    AsyncPlannerTransport,
+    DynamicPlanner,
+    PlannerDecision,
+    PlannerLLMDecision,
+    PlannerTransportCircuitOpenError,
+)
 from encoding_utils import safe_json_loads
 from pydantic import ValidationError
 
@@ -259,6 +265,67 @@ def test_async_planner_transport_retries_transient_failures(monkeypatch):
 
     assert len(calls) == 2
     assert response is not None
+
+
+def test_async_planner_transport_applies_jittered_backoff(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def create_response(_request_payload):
+        calls.append("call")
+        if len(calls) == 1:
+            raise RuntimeError("transient")
+        return _click_response()
+
+    transport = AsyncPlannerTransport(
+        api_key="test-key",
+        is_transient_error=lambda exc: isinstance(exc, RuntimeError),
+        poll_seconds=0.005,
+        retry_base_delay_seconds=2.0,
+        retry_jitter_ratio=0.2,
+        random_source=lambda: 1.0,
+    )
+    monkeypatch.setattr(transport, "_create_response", create_response)
+    monkeypatch.setattr(
+        transport,
+        "_interruptible_sleep",
+        lambda _should_cancel, seconds, _poll_seconds: sleeps.append(seconds) or True,
+    )
+
+    response = transport.request({"model": "gpt-5.4-mini"}, lambda: False)
+    transport.close()
+
+    assert response is not None
+    assert sleeps == [pytest.approx(2.4)]
+
+
+def test_async_planner_transport_opens_circuit_after_threshold(monkeypatch):
+    calls = []
+
+    async def create_response(_request_payload):
+        calls.append("call")
+        raise RuntimeError("transient")
+
+    transport = AsyncPlannerTransport(
+        api_key="test-key",
+        is_transient_error=lambda exc: isinstance(exc, RuntimeError),
+        poll_seconds=0.005,
+        max_attempts=5,
+        retry_base_delay_seconds=0.0,
+        circuit_breaker_failure_threshold=2,
+        circuit_breaker_cooldown_seconds=60.0,
+    )
+    monkeypatch.setattr(transport, "_create_response", create_response)
+
+    with pytest.raises(PlannerTransportCircuitOpenError):
+        transport.request({"model": "gpt-5.4-mini"}, lambda: False)
+
+    with pytest.raises(PlannerTransportCircuitOpenError):
+        transport.request({"model": "gpt-5.4-mini"}, lambda: False)
+
+    transport.close()
+
+    assert len(calls) == 2
 
 
 def test_request_decision_uses_transport_and_parses_response(tmp_path):

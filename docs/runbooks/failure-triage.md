@@ -16,7 +16,7 @@ unexpectedly.
    `.json`, `.log`, `.err`, and runtime `.ndjson` files under
    `data/session_logs/`.
 4. Check `timing` events for slow window capture, YOLO, OCR, planner request,
-   or guarded input phases.
+   task-graph decomposition, or guarded input phases.
 5. Inspect `diagnostics/` for failure or CAPTCHA screenshots.
 6. Check whether `data/planner_latest.png` matches the expected game window.
 7. Confirm `ROK_WINDOW_TITLE`, `ROK_YOLO_WEIGHTS`, `OCR_ENGINE`,
@@ -38,6 +38,11 @@ while the grouped `.ndjson` timeline and latest handoff continue to refresh.
 - `data/logs/osrokbot.log` is structured JSON by default. Use it when you need
   cross-run logger output, correlation fields such as `run_id`, or exceptions
   that did not make it into the per-run handoff.
+- Repeated `PlannerTransportCircuitOpenError` failures mean the shared OpenAI
+  transport has tripped its cooldown after consecutive transient failures.
+  Inspect network reachability, OpenAI status, rate limiting, or proxy issues,
+  then wait for the cooldown window before retrying. `task_graph_decompose`
+  may fall back to a single-goal mission during that window.
 - YOLO failures should correlate with missing weights, outdated labels, or
   shifted UI layout.
 - Repeated `confidence_below_threshold` planner rejections with

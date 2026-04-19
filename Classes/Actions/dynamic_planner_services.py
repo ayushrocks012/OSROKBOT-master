@@ -487,12 +487,18 @@ class PlannerFeedbackService:
         self.change_detector = change_detector
         self._task_graph_initialized = False
 
-    def ensure_task_graph(self, goal: str) -> None:
+    def ensure_task_graph(self, context: Any, goal: str) -> None:
         """Build the mission task graph once per action instance."""
 
         if self._task_graph_initialized:
             return
-        self.task_graph.decompose(goal, openai_client=self.planner.client, model=self.planner.model)
+        self.task_graph.decompose(
+            goal,
+            transport=self.planner.transport,
+            model=self.planner.model,
+            should_cancel=lambda: self.planner.request_interrupted(context),
+            context=context,
+        )
         self._task_graph_initialized = True
 
     def advance_progress(self, visible_labels: list[str], ocr_text: str) -> None:
