@@ -22,7 +22,7 @@ class _FakeTransport:
 
 
 def setup_function(_function=None):
-    TaskGraph._decomposition_cache.clear()
+    pass
 
 
 def test_task_graph_decompose_uses_shared_transport():

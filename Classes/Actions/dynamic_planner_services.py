@@ -33,20 +33,11 @@ from runtime_payloads import ResourceContext
 from screen_change_detector import ScreenChangeDetector
 from task_graph import TaskGraph
 from vision_memory import VisionMemory
+from context import record_stage_timing
 
 LOGGER = get_logger(__name__)
 
 
-def _record_runtime_timing(
-    context: Any,
-    stage: str,
-    started_at: float,
-    *,
-    detail: str = "",
-) -> None:
-    record_timing = getattr(context, "record_runtime_timing", None)
-    if callable(record_timing):
-        record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
 
 
 def _session_logger(context: Any) -> Any | None:
@@ -135,7 +126,7 @@ class PlannerObservationService:
 
         capture_started_at = time.perf_counter()
         screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
-        _record_runtime_timing(
+        record_stage_timing(
             context,
             "window_capture",
             capture_started_at,
@@ -150,7 +141,7 @@ class PlannerObservationService:
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             LOGGER.warning("Dynamic planner local detector skipped: %s", exc)
             detections = []
-        _record_runtime_timing(
+        record_stage_timing(
             context,
             "yolo_detect",
             detect_started_at,
@@ -183,7 +174,7 @@ class PlannerObservationService:
 
         ocr_started_at = time.perf_counter()
         ocr_regions = list(self.ocr.read_regions(screenshot, purpose="planner"))
-        _record_runtime_timing(
+        record_stage_timing(
             context,
             "ocr_regions",
             ocr_started_at,
@@ -201,7 +192,7 @@ class PlannerObservationService:
 
         ocr_text_started_at = time.perf_counter()
         ocr_text = self.ocr.read(screenshot, purpose="planner")
-        _record_runtime_timing(
+        record_stage_timing(
             context,
             "ocr_text",
             ocr_text_started_at,
@@ -227,7 +218,7 @@ class PlannerObservationService:
                 result["idle_march_slots"] = march_slots
             if action_points is not None:
                 result["action_points"] = action_points
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "resource_context",
                 started_at,
@@ -235,7 +226,7 @@ class PlannerObservationService:
             )
             return result if result else None
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "resource_context",
                 started_at,
@@ -278,6 +269,7 @@ class PlannerApprovalService:
         screenshot_path: Path,
         window_rect: ClientRectLike,
         detections: list[DetectionLike] | None = None,
+        sub_goal: str = "",
     ) -> dict[str, Any] | None:
         """Block until the UI resolves a pending planner approval event."""
 
@@ -308,6 +300,7 @@ class PlannerApprovalService:
             screenshot_path=screenshot_path,
             window_rect=window_rect,
             detections=detections,
+            sub_goal=sub_goal,
         )
         event = pending.get("event")
         delay_policy = DelayPolicy()
@@ -325,6 +318,7 @@ class PlannerApprovalService:
         screenshot_path: Path,
         window_rect: ClientRectLike,
         detections: list[DetectionLike] | None = None,
+        sub_goal: str = "",
     ) -> tuple[PlannerDecision | None, bool]:
         """Return the approved decision and whether a manual correction was applied."""
 
@@ -345,6 +339,7 @@ class PlannerApprovalService:
                 screenshot_path,
                 window_rect,
                 detections=detections,
+                sub_goal=sub_goal,
             )
         finally:
             context.clear_pending_planner_decision()
@@ -408,13 +403,17 @@ class PlannerExecutionService:
 
     def __init__(self) -> None:
         self._delay_policy = DelayPolicy()
+        self._controller: InputControllerLike | None = None
 
-    @staticmethod
-    def _input_controller(context: Any) -> InputControllerLike:
+    def _input_controller(self, context: Any) -> InputControllerLike:
+        if self._controller is not None:
+            return self._controller
         build_input_controller = getattr(context, "build_input_controller", None)
         if callable(build_input_controller):
-            return build_input_controller()
-        return InputController(context=context)
+            self._controller = build_input_controller()
+        else:
+            self._controller = InputController(context=context)
+        return self._controller
 
     @staticmethod
     def _validate_bounds(controller: InputControllerLike, x: int, y: int, window_rect: ClientRectLike) -> bool:
@@ -510,18 +509,20 @@ class PlannerExecutionService:
             )
         )
 
-    @staticmethod
-    def _execute_key(context: Any, decision: PlannerDecision, _window_rect: ClientRectLike) -> bool:
-        controller = PlannerExecutionService._input_controller(context)
+    def _execute_key(self, context: Any, decision: PlannerDecision, _window_rect: ClientRectLike) -> bool:
+        controller = self._input_controller(context)
+        if not self._is_allowed(controller, context):
+            return False
         LOGGER.info("Dynamic planner key press: %s", decision.key_name)
         return bool(controller.key_press(decision.key_name, hold_seconds=0.1, context=context))
 
-    @staticmethod
-    def _execute_type(context: Any, decision: PlannerDecision, _window_rect: ClientRectLike) -> bool:
-        controller = PlannerExecutionService._input_controller(context)
+    def _execute_type(self, context: Any, decision: PlannerDecision, _window_rect: ClientRectLike) -> bool:
+        controller = self._input_controller(context)
         LOGGER.info("Dynamic planner typing: %s...", decision.text_content[:30])
+        if not self._is_allowed(controller, context):
+            return False
         for char in decision.text_content:
-            if not PlannerExecutionService._is_allowed(controller, context):
+            if not self._is_allowed(controller, context):
                 return False
             if not controller.key_press(char, hold_seconds=0.05, context=context):
                 return False
@@ -562,7 +563,7 @@ class PlannerExecutionService:
             _update_step_scope(context, input_id=input_id)
         if decision.action_type == "wait":
             result = bool(self._delay_policy.wait(decision.delay_seconds, context=context))
-            _record_runtime_timing(context, "planner_wait", started_at, detail=f"result={result}")
+            record_stage_timing(context, "planner_wait", started_at, detail=f"result={result}")
             return result
         if decision.action_type == "stop":
             session_logger = getattr(context, "session_logger", None)
@@ -570,7 +571,7 @@ class PlannerExecutionService:
                 session_logger.mark_terminal("success", "planner_stop", detail="Planner chose a stop action.")
             if getattr(context, "bot", None):
                 context.bot.stop()
-            _record_runtime_timing(context, "planner_stop", started_at, detail="result=True")
+            record_stage_timing(context, "planner_stop", started_at, detail="result=True")
             return False
 
         handlers = {
@@ -603,7 +604,7 @@ class PlannerExecutionService:
                 )
             _update_step_scope(context, input_id=None)
             raise
-        _record_runtime_timing(
+        record_stage_timing(
             context,
             "input_execute",
             started_at,
@@ -643,7 +644,7 @@ class PlannerExecutionService:
 
         started_at = time.perf_counter()
         result = bool(self._delay_policy.wait(delay_seconds, context=context))
-        _record_runtime_timing(
+        record_stage_timing(
             context,
             "post_action_wait",
             started_at,
@@ -685,10 +686,12 @@ class PlannerFeedbackService:
         )
         self._task_graph_initialized = True
 
-    def advance_progress(self, visible_labels: list[str], ocr_text: str) -> None:
+    def advance_progress(self, visible_labels: list[str], ocr_text: str, context: Any = None) -> None:
         """Advance task-graph completion using current detector/OCR context."""
 
-        self.task_graph.advance_if_completed(visible_labels, ocr_text)
+        if self.task_graph.advance_if_completed(visible_labels, ocr_text):
+            if context:
+                context.emit_state(self.task_graph.progress_summary())
 
     def mission_complete(self, context: Any) -> bool:
         """Stop the run when the task graph reports completion."""
@@ -738,7 +741,11 @@ class PlannerFeedbackService:
                 confidence=float(decision.confidence),
             )
             _update_step_scope(context, decision_id=decision_id, approval_id=None, input_id=None)
-        context.emit_state(f"Planner: {decision.action_type}\n{decision.label}")
+        context.emit_state(
+            f"Planner: {decision.action_type} → {decision.label}\n"
+            f"Reason: {decision.reason}\n"
+            f"Confidence: {decision.confidence:.0%}"
+        )
 
     def record_no_decision(self, screenshot_path: Path, detections: list[DetectionLike]) -> None:
         """Export a recovery dataset stub when the planner cannot decide."""
@@ -784,11 +791,12 @@ class PlannerFeedbackService:
     ) -> None:
         """Persist either a corrected or normal successful planner action."""
 
+        mission = getattr(self.task_graph, "mission", "")
         if correction:
-            self.memory.record_correction(screenshot_path, decision, correction, visible_labels=visible_labels)
+            self.memory.record_correction(screenshot_path, decision, correction, visible_labels=visible_labels, mission=mission)
             self.dataset.export_correction(screenshot_path, decision, correction, detections=visible_labels)
             self._record_session_action(context, decision, "corrected")
             return
 
-        self.memory.record_success(screenshot_path, decision, visible_labels=visible_labels, source=decision.source)
+        self.memory.record_success(screenshot_path, decision, visible_labels=visible_labels, source=decision.source, mission=mission)
         self._record_session_action(context, decision, "success")

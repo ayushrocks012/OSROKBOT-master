@@ -127,7 +127,7 @@ class DynamicPlannerAction(Action):
         if _runtime_interrupted(context):
             return False
         visible_labels = self.observation_service.visible_labels(observation.detections)
-        self.feedback_service.advance_progress(visible_labels, ocr_text)
+        self.feedback_service.advance_progress(visible_labels, ocr_text, context=context)
 
         if self.feedback_service.mission_complete(context):
             return False
@@ -161,6 +161,7 @@ class DynamicPlannerAction(Action):
             screenshot_path,
             observation.window_rect,
             detections=observation.detections,
+            sub_goal=focused_goal,
         )
         if approved_decision is None:
             self.feedback_service.record_failure(context, decision)

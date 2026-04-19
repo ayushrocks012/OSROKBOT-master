@@ -11,6 +11,7 @@ This module owns two related UI-only surfaces:
 from __future__ import annotations
 
 from typing import Any
+import textwrap
 
 from logging_config import get_logger
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -126,14 +127,16 @@ class ClickOverlay(QtWidgets.QWidget):
             self._intent_tooltip.hide()
             return
 
-        tooltip_text = (
-            f"Action: {self._action_type.title()} | "
-            f"Conf: {self._confidence:.0%} | "
-            f"{self._shortcut_hint}"
-        )
+        tooltip_text = f"<b>Action:</b> {self._action_type.title()} | <b>Conf:</b> {self._confidence:.0%}<br>"
+        if self._sub_goal:
+            tooltip_text += f"<span style='color: #94a3b8;'>Goal:</span> {self._sub_goal}<br>"
+        if self._thought_process:
+            tooltip_text += f"<span style='color: #94a3b8;'>Reason:</span> {self._thought_process}<br>"
+        tooltip_text += f"<br><i>{self._shortcut_hint}</i>"
+        
         self._intent_tooltip.setText(tooltip_text)
         self._intent_tooltip.adjustSize()
-        size = self._intent_tooltip.sizeHint() + QtCore.QSize(12, 8)
+        size = self._intent_tooltip.sizeHint() + QtCore.QSize(12, 12)
         anchor = self._tooltip_anchor_rect()
 
         x = anchor.right() + 12
@@ -156,6 +159,8 @@ class ClickOverlay(QtWidgets.QWidget):
         detections: list[dict[str, Any]] | None = None,
         target_id: str = "",
         shortcut_hint: str = "Waiting for approval",
+        thought_process: str = "",
+        sub_goal: str = "",
     ) -> None:
         """Show the planner preview over the supplied client rectangle."""
 
@@ -174,6 +179,8 @@ class ClickOverlay(QtWidgets.QWidget):
         self._target_id = str(target_id or "")
         self._detections = list(detections or [])
         self._shortcut_hint = str(shortcut_hint or "Waiting for approval")
+        self._thought_process = textwrap.shorten(thought_process, width=120, placeholder="...") if thought_process else ""
+        self._sub_goal = textwrap.shorten(sub_goal, width=80, placeholder="...") if sub_goal else ""
         self._visible = True
 
         self.show()

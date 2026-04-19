@@ -100,6 +100,7 @@ class PlannerPendingPayload(TypedDict):
     detections: list[SerializedDetection]
     absolute_x: int | None
     absolute_y: int | None
+    sub_goal: str
     event: Event
     result: PlannerApprovalResult | None
     corrected_point: NormalizedPoint | None
@@ -114,6 +115,7 @@ class PlannerDecisionSignalPayload(TypedDict):
     detections: list[SerializedDetection]
     absolute_x: int | None
     absolute_y: int | None
+    sub_goal: str
 
 
 class PendingRecoveryPayload(TypedDict):
@@ -202,6 +204,7 @@ def planner_signal_payload(pending: PlannerPendingPayload) -> PlannerDecisionSig
         "detections": pending["detections"],
         "absolute_x": pending["absolute_x"],
         "absolute_y": pending["absolute_y"],
+        "sub_goal": pending.get("sub_goal", ""),
     }
 
 

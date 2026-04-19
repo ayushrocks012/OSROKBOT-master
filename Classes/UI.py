@@ -145,6 +145,11 @@ QFrame#MetricCard {
     border: 1px solid rgba(71, 85, 105, 138);
     border-radius: 18px;
 }
+QFrame#ErrorCard {
+    background: rgba(127, 29, 29, 200);
+    border: 1px solid rgba(239, 68, 68, 140);
+    border-radius: 14px;
+}
 QLabel#SectionTitle {
     color: #f8fafc;
     font-size: 13px;
@@ -153,6 +158,11 @@ QLabel#SectionTitle {
 QLabel#HintText {
     color: #94a3b8;
     font-size: 11px;
+}
+QLabel#ErrorBannerText {
+    color: #fecaca;
+    font-size: 12px;
+    font-weight: 500;
 }
 QLabel#IntentTitle {
     color: #e2e8f0;
@@ -370,19 +380,44 @@ class SettingsDialog(QtWidgets.QDialog):
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setObjectName("HintText")
 
-        form = QtWidgets.QFormLayout()
-        form.setLabelAlignment(QtCore.Qt.AlignLeft)
-        form.setFormAlignment(QtCore.Qt.AlignTop)
-        form.setHorizontalSpacing(16)
-        form.setVerticalSpacing(12)
-        form.addRow("OpenAI API Key", self.openai_key_input)
-        form.addRow("Secret Provider", self.secret_provider_input)
-        form.addRow("Notification Email", self.email_input)
-        form.addRow("Tesseract Path", self._path_row(self.tesseract_input, self.browse_tesseract))
-        form.addRow("YOLO Weights", self._path_row(self.yolo_weights_input, self.browse_yolo_weights))
-        form.addRow("YOLO Weights URL", self.yolo_url_input)
-        form.addRow("OpenAI Model", self.model_input)
-        form.addRow("Default Mission", self.planner_goal_input)
+        # Create tab widget
+        self.tabs = QtWidgets.QTabWidget()
+        
+        # --- General Tab ---
+        general_tab = QtWidgets.QWidget()
+        general_form = QtWidgets.QFormLayout(general_tab)
+        general_form.setLabelAlignment(QtCore.Qt.AlignLeft)
+        general_form.setFormAlignment(QtCore.Qt.AlignTop)
+        general_form.setHorizontalSpacing(16)
+        general_form.setVerticalSpacing(12)
+        general_form.addRow("Secret Provider", self.secret_provider_input)
+        general_form.addRow("OpenAI API Key", self.openai_key_input)
+        general_form.addRow("Notification Email", self.email_input)
+        
+        # --- Planner AI Tab ---
+        planner_tab = QtWidgets.QWidget()
+        planner_form = QtWidgets.QFormLayout(planner_tab)
+        planner_form.setLabelAlignment(QtCore.Qt.AlignLeft)
+        planner_form.setFormAlignment(QtCore.Qt.AlignTop)
+        planner_form.setHorizontalSpacing(16)
+        planner_form.setVerticalSpacing(12)
+        planner_form.addRow("OpenAI Model", self.model_input)
+        planner_form.addRow("Default Mission", self.planner_goal_input)
+        
+        # --- Vision & OCR Tab ---
+        vision_tab = QtWidgets.QWidget()
+        vision_form = QtWidgets.QFormLayout(vision_tab)
+        vision_form.setLabelAlignment(QtCore.Qt.AlignLeft)
+        vision_form.setFormAlignment(QtCore.Qt.AlignTop)
+        vision_form.setHorizontalSpacing(16)
+        vision_form.setVerticalSpacing(12)
+        vision_form.addRow("YOLO Weights URL", self.yolo_url_input)
+        vision_form.addRow("YOLO Weights", self._path_row(self.yolo_weights_input, self.browse_yolo_weights))
+        vision_form.addRow("Tesseract Path", self._path_row(self.tesseract_input, self.browse_tesseract))
+        
+        self.tabs.addTab(general_tab, "General")
+        self.tabs.addTab(planner_tab, "Planner AI")
+        self.tabs.addTab(vision_tab, "Vision & OCR")
 
         save_button = QtWidgets.QPushButton("Save")
         save_button.setObjectName("DialogPrimary")
@@ -407,7 +442,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
-        layout.addLayout(form)
+        layout.addWidget(self.tabs)
         layout.addWidget(self.status_label)
         layout.addLayout(buttons)
 
@@ -929,6 +964,23 @@ class UI(QtWidgets.QWidget):
         operator_layout.addWidget(operator_title)
         operator_layout.addWidget(self.guidance_label)
 
+        self.error_card = QtWidgets.QFrame()
+        self.error_card.setObjectName("ErrorCard")
+        error_layout = QtWidgets.QVBoxLayout(self.error_card)
+        error_layout.setContentsMargins(16, 16, 16, 16)
+        error_layout.setSpacing(8)
+        
+        self.error_title = QtWidgets.QLabel("Error Guidance")
+        self.error_title.setObjectName("SectionTitle")
+        self.error_label = QtWidgets.QLabel("")
+        self.error_label.setObjectName("ErrorBannerText")
+        self.error_label.setWordWrap(True)
+        
+        error_layout.addWidget(self.error_title)
+        error_layout.addWidget(self.error_label)
+        self.error_card.setVisible(False)
+
+        mission_layout.addWidget(self.error_card)
         mission_layout.addWidget(mission_card)
         mission_layout.addWidget(autonomy_card)
         mission_layout.addWidget(operator_card)
@@ -1045,6 +1097,11 @@ class UI(QtWidgets.QWidget):
             snapshot.status_detail
             or "The console will expand automatically whenever a planner action needs approval."
         )
+        if snapshot.status_tone == "danger" and snapshot.status_detail:
+            self.error_label.setText(snapshot.status_detail)
+            self.error_card.setVisible(True)
+        else:
+            self.error_card.setVisible(False)
 
         self._apply_mode(snapshot.mode)
 
@@ -1054,16 +1111,19 @@ class UI(QtWidgets.QWidget):
         y = payload.get("absolute_y")
         if x is None or y is None:
             return
+        decision = payload.get("decision", {})
         self._click_overlay.show_target(
             int(x),
             int(y),
-            payload.get("label", "target"),
-            float(payload.get("confidence", 0.0) or 0.0),
+            decision.get("label", "target"),
+            float(decision.get("confidence", 0.0) or 0.0),
             window_rect=payload.get("window_rect", {}),
-            action_type=payload.get("action_type", "click"),
+            action_type=decision.get("action_type", "click"),
             detections=payload.get("detections", []),
-            target_id=payload.get("target_id", ""),
+            target_id=decision.get("target_id", ""),
             shortcut_hint=payload.get("shortcut_hint", "Waiting for approval"),
+            thought_process=decision.get("thought_process", ""),
+            sub_goal=payload.get("sub_goal", ""),
         )
 
     def _clear_planner_overlay(self) -> None:

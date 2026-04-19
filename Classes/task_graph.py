@@ -97,17 +97,7 @@ class SubGoal:
         return any(keyword.lower() in lower_ocr for keyword in self.expected_ocr_keywords)
 
 
-def _record_runtime_timing(
-    context: Any,
-    stage: str,
-    started_at: float,
-    *,
-    detail: str = "",
-) -> None:
-    record_timing = getattr(context, "record_runtime_timing", None)
-    if callable(record_timing):
-        record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
-
+from context import record_stage_timing
 
 class TaskGraph:
     """Decompose missions into sub-goals and track their completion.
@@ -120,12 +110,12 @@ class TaskGraph:
         graph.advance_if_completed(visible_labels, ocr_text)
     """
 
-    _decomposition_cache: dict[str, list[SubGoal]] = {}
-
     def __init__(self) -> None:
         self.sub_goals: list[SubGoal] = []
         self.current_index = 0
         self.mission = ""
+        self.current_goal_cycles_stuck = 0
+        self._decomposition_cache: dict[str, list[SubGoal]] = {}
 
     def current_subgoal(self) -> SubGoal | None:
         """Return the current active sub-goal, or None if all are complete."""
@@ -166,17 +156,31 @@ class TaskGraph:
         current = self.current_subgoal()
         if not current:
             return False
+            
+        self.current_goal_cycles_stuck += 1
+        
         if current.is_completed_by(visible_labels, ocr_text):
             current.completed = True
             LOGGER.info("Sub-goal %s completed: %s", current.step, current.description)
-            self.current_index += 1
-            next_goal = self.current_subgoal()
-            if next_goal:
-                LOGGER.info("Advancing to sub-goal %s: %s", next_goal.step, next_goal.description)
-            else:
-                LOGGER.info("All sub-goals completed for mission: %s", self.mission)
+            self._advance_index()
             return True
+            
+        if self.current_goal_cycles_stuck > 15:
+            LOGGER.warning("Sub-goal %s stuck for >15 cycles, fuzzy force-advancing: %s", current.step, current.description)
+            current.completed = True
+            self._advance_index()
+            return True
+            
         return False
+
+    def _advance_index(self):
+        self.current_index += 1
+        self.current_goal_cycles_stuck = 0
+        next_goal = self.current_subgoal()
+        if next_goal:
+            LOGGER.info("Advancing to sub-goal %s: %s", next_goal.step, next_goal.description)
+        else:
+            LOGGER.info("All sub-goals completed for mission: %s", self.mission)
 
     def force_advance(self) -> None:
         """Manually skip the current sub-goal (for example, when stuck too long)."""
@@ -184,7 +188,7 @@ class TaskGraph:
         if current:
             LOGGER.warning("Force-advancing past sub-goal %s: %s", current.step, current.description)
             current.completed = True
-            self.current_index += 1
+            self._advance_index()
 
     def focused_goal_text(self, full_mission: str) -> str:
         """Build a focused goal string for the planner.
@@ -209,6 +213,7 @@ class TaskGraph:
     ) -> list[SubGoal]:
         self.sub_goals = [SubGoal(step=1, description=mission, completion_hint=completion_hint)]
         self.current_index = 0
+        self.current_goal_cycles_stuck = 0
         return self.sub_goals
 
     @staticmethod
@@ -297,8 +302,9 @@ class TaskGraph:
                 for sg in cached
             ]
             self.current_index = 0
+            self.current_goal_cycles_stuck = 0
             LOGGER.info("TaskGraph: reusing cached decomposition (%s sub-goals).", len(self.sub_goals))
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "task_graph_decompose",
                 started_at,
@@ -307,7 +313,7 @@ class TaskGraph:
             return self.sub_goals
 
         if not transport:
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "task_graph_decompose",
                 started_at,
@@ -323,7 +329,7 @@ class TaskGraph:
             response = transport.request(self._build_request_payload(mission, model), cancellation)
             if response is None:
                 LOGGER.info("TaskGraph decomposition cancelled; using single-goal fallback.")
-                _record_runtime_timing(
+                record_stage_timing(
                     context,
                     "task_graph_decompose",
                     started_at,
@@ -334,7 +340,7 @@ class TaskGraph:
             self.sub_goals = self._parse_sub_goals(raw.get("sub_goals", []))
         except Exception as exc:
             LOGGER.warning("TaskGraph decomposition failed, using single goal: %s", exc)
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "task_graph_decompose",
                 started_at,
@@ -346,13 +352,14 @@ class TaskGraph:
             self._single_goal(mission)
 
         self.current_index = 0
+        self.current_goal_cycles_stuck = 0
         self._decomposition_cache[mission] = self.sub_goals
         LOGGER.info(
             "TaskGraph: decomposed mission into %s sub-goals: %s",
             len(self.sub_goals),
             ", ".join(sg.description[:60] for sg in self.sub_goals),
         )
-        _record_runtime_timing(
+        record_stage_timing(
             context,
             "task_graph_decompose",
             started_at,

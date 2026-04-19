@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from logging_config import get_logger
 from PIL import Image
+from config_manager import ConfigManager
 
 LOGGER = get_logger(__name__)
 
@@ -26,9 +27,10 @@ class ScreenChangeDetector:
 
     stuck_threshold: int = DEFAULT_STUCK_THRESHOLD
     repeat_threshold: int = DEFAULT_REPEAT_THRESHOLD
-    _hash_history: deque = field(default_factory=lambda: deque(maxlen=10))
-    _action_history: deque = field(default_factory=lambda: deque(maxlen=20))
+    _hash_history: deque = field(default_factory=lambda: deque(maxlen=20))
+    _action_history: deque = field(default_factory=lambda: deque(maxlen=40))
     _last_hash: str = ""
+    config: ConfigManager = field(default_factory=ConfigManager)
 
     @staticmethod
     def perceptual_hash(image_or_path):
@@ -133,7 +135,8 @@ class ScreenChangeDetector:
 
         recent = list(self._hash_history)[-self.stuck_threshold:]
         reference = recent[-1]
-        return all(self.hamming_distance(reference, past_hash) <= 3 for past_hash in recent[:-1])
+        threshold = int(self.config.get("STUCK_HAMMING_THRESHOLD", 3))
+        return all(self.hamming_distance(reference, past_hash) <= threshold for past_hash in recent[:-1])
 
     def screen_changed_since_last(self):
         """Check if the current screenshot differs from the previous one.
@@ -145,7 +148,8 @@ class ScreenChangeDetector:
         if len(self._hash_history) < 2:
             return True
         hashes = list(self._hash_history)
-        return self.hamming_distance(hashes[-1], hashes[-2]) > 3
+        threshold = int(self.config.get("STUCK_HAMMING_THRESHOLD", 3))
+        return self.hamming_distance(hashes[-1], hashes[-2]) > threshold
 
     def repeated_action_count(self, action_type=None, target_id=None):
         """Count consecutive trailing repetitions of the same action.

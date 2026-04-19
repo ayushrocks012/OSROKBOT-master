@@ -6,13 +6,13 @@ import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait, TimeoutError
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from config_manager import ConfigManager
-from context import Context, ObservationSnapshot
+from context import Context, ObservationSnapshot, record_stage_timing
 from diagnostic_screenshot import save_diagnostic_screenshot
 from emergency_stop import EmergencyStop
 from input_controller import InputController
@@ -336,7 +336,7 @@ class OSROKBOT:
     def _observe_window(self, context: Context) -> ObservationSnapshot | None:
         capture_started_at = time.perf_counter()
         screenshot, window_rect = self.window_handler.screenshot_window(context.window_title)
-        self._record_runtime_timing(
+        record_stage_timing(
             context,
             "window_capture",
             capture_started_at,
@@ -347,12 +347,17 @@ class OSROKBOT:
 
         started_at = time.perf_counter()
         try:
-            detections = tuple(self.detector.detect(screenshot))
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.detector.detect, screenshot)
+                detections = tuple(future.result(timeout=5.0))
+        except TimeoutError:
+            LOGGER.error("YOLO detection timed out after 5.0s")
+            detections = ()
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
             LOGGER.warning("Window observation detector skipped: %s", exc)
             detections = ()
         duration_ms = (time.perf_counter() - started_at) * 1000.0
-        self._record_runtime_timing(
+        record_stage_timing(
             context,
             "yolo_detect",
             started_at,

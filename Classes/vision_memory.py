@@ -91,7 +91,15 @@ class VisionMemory:
             payload = {"version": 2, "entries": self.entries}
             temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
             temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            temp_path.replace(self.path)
+            import time
+            for attempt in range(4):
+                try:
+                    temp_path.replace(self.path)
+                    break
+                except PermissionError:
+                    if attempt == 3:
+                        raise
+                    time.sleep(0.1)
 
     def _evict_if_needed(self):
         """Remove lowest-value entries when the cap is exceeded."""
@@ -231,7 +239,7 @@ class VisionMemory:
         index.add(matrix)
         return index
 
-    def find(self, screenshot_or_embedding, visible_labels=None):
+    def find(self, screenshot_or_embedding, visible_labels=None, mission: str = ""):
         """Find the most similar successful memory entry.
 
         Uses time-weighted decay and label-match bonuses for better ranking.
@@ -296,8 +304,16 @@ class VisionMemory:
                 label.lower() == entry_label for label in labels
             ):
                 label_bonus = 0.05
+            
+            # Mission-match bonus: +8% if the active mission overlaps with memory context
+            mission_bonus = 0.0
+            if mission:
+                query_words = set(w.lower() for w in str(mission).split() if len(w) >= 3)
+                entry_kws = set(candidate.get("mission_keywords", []))
+                if query_words and entry_kws and query_words.intersection(entry_kws):
+                     mission_bonus = 0.08
 
-            adjusted_score = raw_score * freshness + label_bonus
+            adjusted_score = raw_score * freshness + label_bonus + mission_bonus
 
             # Failure gate: per-label check.
             if int(candidate.get("failure_count", 0)) > int(candidate.get("success_count", 0)) + 2:
@@ -395,6 +411,7 @@ class VisionMemory:
 
             existing["embedding"] = entry["embedding"]
             existing["visible_labels"] = sorted(set(existing.get("visible_labels", [])) | set(entry.get("visible_labels", [])))
+            existing["mission_keywords"] = sorted(set(existing.get("mission_keywords", [])) | set(entry.get("mission_keywords", [])))
             existing["normalized_point"] = entry["normalized_point"]
             existing["confidence"] = max(float(existing.get("confidence", 0.0)), float(entry.get("confidence", 0.0)))
             existing["success_count"] = int(existing.get("success_count", 0)) + int(entry.get("success_count", 1))
@@ -405,7 +422,7 @@ class VisionMemory:
         self.entries.append(entry)
         return entry
 
-    def _record(self, screenshot_path, decision, visible_labels=None, source="ai", corrected=False):
+    def _record(self, screenshot_path, decision, visible_labels=None, source="ai", corrected=False, mission: str = ""):
         """Record a successful decision and its visual embedding.
 
         Args:
@@ -438,13 +455,14 @@ class VisionMemory:
             "source": source,
             "corrected": bool(corrected),
             "last_used": now,
+            "mission_keywords": sorted(set(w.lower() for w in str(mission or "").split() if len(w) >= 3)),
         }
         with self._lock:
             stored_entry = self._merge_or_append(entry)
             self.save()
             return stored_entry
 
-    def record_success(self, screenshot_path: str | Path, decision: PlannerDecision | dict[str, Any], visible_labels: list[Any] | None = None, source: str = "ai") -> dict[str, Any] | None:
+    def record_success(self, screenshot_path: str | Path, decision: PlannerDecision | dict[str, Any], visible_labels: list[Any] | None = None, source: str = "ai", mission: str = "") -> dict[str, Any] | None:
         """Store a successful AI or memory decision.
 
         Args:
@@ -456,12 +474,12 @@ class VisionMemory:
         Returns:
             dict | None: Stored memory entry.
         """
-        entry = self._record(screenshot_path, decision, visible_labels=visible_labels, source=source, corrected=False)
+        entry = self._record(screenshot_path, decision, visible_labels=visible_labels, source=source, corrected=False, mission=mission)
         if entry:
             LOGGER.info(f"Vision memory success recorded: {entry.get('label')}")
         return entry
 
-    def record_correction(self, screenshot_path: str | Path, decision: PlannerDecision | dict[str, Any], corrected_point: dict[str, Any], visible_labels: list[Any] | None = None) -> dict[str, Any] | None:
+    def record_correction(self, screenshot_path: str | Path, decision: PlannerDecision | dict[str, Any], corrected_point: dict[str, Any], visible_labels: list[Any] | None = None, mission: str = "") -> dict[str, Any] | None:
         """Store a human-corrected target point.
 
         Args:
@@ -475,11 +493,11 @@ class VisionMemory:
         """
         if hasattr(decision, "to_dict"):
             decision = decision.to_dict()
-        corrected = dict(decision)
-        corrected["x"] = float(corrected_point["x"])
-        corrected["y"] = float(corrected_point["y"])
-        corrected["confidence"] = 1.0
-        entry = self._record(screenshot_path, corrected, visible_labels=visible_labels, source="manual", corrected=True)
+        decision_dict = dict(decision)
+        decision_dict["x"] = float(corrected_point["x"])
+        decision_dict["y"] = float(corrected_point["y"])
+        decision_dict["confidence"] = 1.0
+        entry = self._record(screenshot_path, decision_dict, visible_labels=visible_labels, source="manual", corrected=True, mission=mission)
         if entry:
             LOGGER.info(f"Vision memory correction recorded: {entry.get('label')}")
         return entry

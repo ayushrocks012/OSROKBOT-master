@@ -36,6 +36,22 @@ LOGGER = get_logger(__name__)
 DEFAULT_WINDOW_TITLE = "Rise of Kingdoms"
 
 
+def record_stage_timing(
+    context: Any,
+    stage: str,
+    started_at: float,
+    *,
+    detail: str = "",
+) -> None:
+    """Helper to safely record runtime timings across modules without repeating time-drift logic."""
+    import time
+    if context is None:
+        return
+    record_timing = getattr(context, "record_runtime_timing", None)
+    if callable(record_timing):
+        record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
+
+
 @dataclass(frozen=True)
 class ObservationSnapshot:
     """One per-step observation reused across safety and planning checks."""
@@ -404,6 +420,7 @@ class Context:
         screenshot_path: str | Path | None = None,
         window_rect: Any | None = None,
         detections: Iterable[object] | None = None,
+        sub_goal: str = "",
     ) -> PlannerPendingPayload:
         decision_data = coerce_decision_payload(decision)
         rect_data = serialize_window_rect(window_rect)
@@ -416,6 +433,7 @@ class Context:
             "detections": detection_data,
             "absolute_x": absolute_point[0] if absolute_point else None,
             "absolute_y": absolute_point[1] if absolute_point else None,
+            "sub_goal": sub_goal,
             "event": threading.Event(),
             "result": None,
             "corrected_point": None,

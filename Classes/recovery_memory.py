@@ -163,7 +163,15 @@ class RecoveryMemory:
             }
             temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
             temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            temp_path.replace(self.path)
+            import time
+            for attempt in range(4):
+                try:
+                    temp_path.replace(self.path)
+                    break
+                except PermissionError:
+                    if attempt == 3:
+                        raise
+                    time.sleep(0.1)
 
     def _evict_if_needed(self):
         if len(self.entries) <= self.max_entries:

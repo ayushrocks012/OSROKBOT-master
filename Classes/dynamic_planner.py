@@ -46,6 +46,7 @@ from openai import (
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from runtime_contracts import PlannerTransport
+from context import record_stage_timing
 from vision_memory import VisionMemory
 
 LOGGER = get_logger(__name__)
@@ -98,16 +99,6 @@ def _clamp_delay(value):
     return max(0.0, min(MAX_PLANNER_DELAY_SECONDS, delay))
 
 
-def _record_runtime_timing(
-    context: Any,
-    stage: str,
-    started_at: float,
-    *,
-    detail: str = "",
-) -> None:
-    record_timing = getattr(context, "record_runtime_timing", None)
-    if callable(record_timing):
-        record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
 
 
 @dataclass(frozen=True)
@@ -896,21 +887,29 @@ class DynamicPlanner:
         goal_text = str(goal or "").lower()
         return any(keyword in goal_text for keyword in RESOURCE_GOAL_KEYWORDS)
 
-    @staticmethod
-    def _ocr_review_candidate_score(target):
+    def _ocr_review_candidate_score(self, target):
         if not isinstance(target, PlannerTarget) or target.source != "ocr":
             return None
 
         text = str(target.label or "").strip().lower()
         if not text:
             return None
-        if target.x < 0.12 or target.x > 0.92 or target.y < 0.10 or target.y > 0.88:
+        
+        bounds_arr = self.config.get("OCR_REVIEW_BOUNDS", [0.12, 0.92, 0.10, 0.88])
+        if type(bounds_arr) is list and len(bounds_arr) >= 4:
+            x_min, x_max, y_min, y_max = map(float, bounds_arr[:4])
+        else:
+            x_min, x_max, y_min, y_max = 0.12, 0.92, 0.10, 0.88
+            
+        if target.x < x_min or target.x > x_max or target.y < y_min or target.y > y_max:
             return None
         if any(token in text for token in OCR_UI_BLACKLIST):
             return None
         if ":" in text or "[" in text or "]" in text:
             return None
-        if len(text) > 24:
+            
+        max_len = int(self.config.get("OCR_REVIEW_MAX_LENGTH", 24))
+        if len(text) > max_len:
             return None
 
         compact_text = re.sub(r"[^a-z0-9]+", "", text)
@@ -919,18 +918,24 @@ class DynamicPlanner:
             return None
 
         score = float(target.confidence)
+        
+        resource_bonus = float(self.config.get("OCR_REVIEW_RESOURCE_BONUS", 4.0))
+        level_bonus = float(self.config.get("OCR_REVIEW_LEVEL_BONUS", 2.0))
+        digit_bonus = float(self.config.get("OCR_REVIEW_DIGIT_BONUS", 3.0))
+        min_score = float(self.config.get("OCR_REVIEW_MIN_SCORE", 2.0))
+        
         if any(keyword in text for keyword in RESOURCE_TEXT_KEYWORDS):
-            score += 4.0
+            score += resource_bonus
         if "lv" in text or "level" in text:
-            score += 2.0
+            score += level_bonus
         if digits_only.isdigit() and len(digits_only) <= 2 and 1 <= int(digits_only) <= 8:
-            score += 3.0
+            score += digit_bonus
         if compact_text.isalnum() and len(compact_text) <= 4:
             score += 0.5
 
         distance_from_center = abs(target.x - 0.5) + abs(target.y - 0.5)
         score += max(0.0, 0.75 - distance_from_center)
-        return score if score >= 2.0 else None
+        return score if score >= min_score else None
 
     def _best_ocr_review_target(self, goal, targets):
         if not self._goal_prefers_resource_targets(goal):
@@ -993,6 +998,13 @@ class DynamicPlanner:
 
     @staticmethod
     def _record_planner_rejection(context, decision, reason):
+        if context and hasattr(context, "extracted"):
+            memory_list = context.extracted.get("planner_memory", [])
+            decision_detail = decision.to_dict() if isinstance(decision, PlannerDecision) else {}
+            decision_detail["reason"] = f"REJECTED: {reason}"
+            memory_list.append(decision_detail)
+            context.extracted["planner_memory"] = memory_list[-3:]
+
         session_logger = getattr(context, "session_logger", None)
         if not session_logger or not hasattr(session_logger, "record_planner_rejection"):
             return
@@ -1053,7 +1065,7 @@ class DynamicPlanner:
     @staticmethod
     def _build_prompt(goal, labels, target_payload, ocr_text, history,
                       resource_context=None, stuck_warning="",
-                      screen_changed=True):
+                      screen_changed=True, planner_memory=None, session_summary=None):
         """Build the full planner prompt with all available context.
 
         Args:
@@ -1065,6 +1077,8 @@ class DynamicPlanner:
             resource_context: Optional dict with march_slots, action_points, etc.
             stuck_warning: Warning text from ScreenChangeDetector.
             screen_changed: Whether the screen changed since the last cycle.
+            planner_memory: Recent conversational memory of decisions.
+            session_summary: Summary of the current session.
         """
         parts = [
             "You control a guarded Rise of Kingdoms automation planner. Return one safe next action. "
@@ -1083,7 +1097,7 @@ class DynamicPlanner:
             f"\nGoal: {goal}",
             f"\nVisible detector labels: {labels}",
             f"\nVisible targets: {json.dumps(target_payload, ensure_ascii=True)}",
-            f"\nOCR text: {ocr_text or ''}",
+            f"\nOCR text: {re.sub(r'\\s+', ' ', str(ocr_text or '')).strip()[:500]}",
         ]
 
         if resource_context:
@@ -1095,7 +1109,16 @@ class DynamicPlanner:
         if stuck_warning:
             parts.append(f"\n{stuck_warning}")
 
-        parts.append(f"\nRecent history: {json.dumps(history, ensure_ascii=True)}")
+        if session_summary:
+            parts.append(f"\nMission Briefing:\n"
+                         f"- Duration: {session_summary.get('duration_text', '0s')}\n"
+                         f"- Actions Taken: {session_summary.get('total_actions', 0)}\n"
+                         f"- Errors/Rejections: {session_summary.get('errors', 0)}/{session_summary.get('planner_rejections', 0)}")
+
+        parts.append(f"\nRecent state history: {json.dumps(history, ensure_ascii=True)}")
+
+        if planner_memory:
+            parts.append(f"\nRecent planner conversational memory (DO NOT repeat rejected actions):\n{json.dumps(planner_memory, ensure_ascii=True)}")
 
         return "\n".join(parts)
 
@@ -1126,6 +1149,9 @@ class DynamicPlanner:
         labels = self._visible_labels(detections)
         target_payload = [target.to_prompt_dict() for target in targets]
         history = getattr(context, "state_history", [])[-10:] if context else []
+        session_logger = getattr(context, "session_logger", None)
+        session_summary = session_logger.summary() if session_logger and hasattr(session_logger, "summary") else {}
+        planner_memory = context.extracted.get("planner_memory", []) if context and hasattr(context, "extracted") else []
 
         prompt = self._build_prompt(
             goal=goal,
@@ -1136,7 +1162,20 @@ class DynamicPlanner:
             resource_context=resource_context,
             stuck_warning=stuck_warning,
             screen_changed=screen_changed,
+            planner_memory=planner_memory,
+            session_summary=session_summary,
         )
+
+        session_logger = getattr(context, "session_logger", None)
+        if session_logger and hasattr(session_logger, "summary"):
+            api_calls = session_logger.summary().get("api_calls", 0)
+            budget_limit = self.config.get("PLANNER_BUDGET_LIMIT", 200)
+            if api_calls >= budget_limit:
+                overage = api_calls - budget_limit
+                delay = min(30.0, 2.0 * overage)
+                if overage == 0 or overage % 5 == 0:
+                    LOGGER.warning("Planner budget soft limit reached (%d calls). Applying progressive %ds delay.", api_calls, delay)
+                time.sleep(delay)
 
         started_at = time.perf_counter()
         try:
@@ -1163,7 +1202,7 @@ class DynamicPlanner:
             }
             response = self._request_response_with_retries(context, request_payload)
             if response is None:
-                _record_runtime_timing(context, "planner_request", started_at, detail="cancelled")
+                record_stage_timing(context, "planner_request", started_at, detail="cancelled")
                 return None
             raw = safe_json_loads(response.output_text)
             llm_decision = PlannerLLMDecision.model_validate(raw)
@@ -1171,7 +1210,7 @@ class DynamicPlanner:
                 PlannerDecision.from_llm_decision(llm_decision, source="ai"),
                 targets,
             )
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "planner_request",
                 started_at,
@@ -1192,7 +1231,7 @@ class DynamicPlanner:
             ValidationError,
             ValueError,
         ) as exc:
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "planner_request",
                 started_at,
@@ -1234,7 +1273,7 @@ class DynamicPlanner:
         try:
             memory_entry = self.memory.find(screenshot_path, labels)
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "planner_memory_lookup",
                 memory_started_at,
@@ -1243,7 +1282,7 @@ class DynamicPlanner:
             LOGGER.warning("Dynamic planner memory lookup failed: %s", exc)
             memory_entry = None
         else:
-            _record_runtime_timing(
+            record_stage_timing(
                 context,
                 "planner_memory_lookup",
                 memory_started_at,

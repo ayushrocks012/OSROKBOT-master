@@ -49,7 +49,7 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
     )
     feedback_service = SimpleNamespace(
         ensure_task_graph=lambda context, goal: calls.append(("ensure_task_graph", goal)),
-        advance_progress=lambda labels, text: calls.append(("advance_progress", labels, text)),
+        advance_progress=lambda labels, text, context=None: calls.append(("advance_progress", labels, text)),
         mission_complete=lambda context: False,
         focused_goal=lambda goal: f"focus:{goal}",
         record_no_decision=lambda path, detections: calls.append(("record_no_decision", path, detections)),
@@ -61,7 +61,7 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
         ),
     )
     approval_service = SimpleNamespace(
-        approve_pointer_decision=lambda context, planner_decision, path, rect, detections=None: (
+        approve_pointer_decision=lambda context, planner_decision, path, rect, detections=None, sub_goal=None: (
             planner_decision,
             False,
         )
