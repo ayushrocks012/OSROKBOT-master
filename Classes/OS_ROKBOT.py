@@ -133,6 +133,24 @@ class OSROKBOT:
         if session_logger and hasattr(session_logger, "mark_terminal"):
             session_logger.mark_terminal(status, end_reason, detail=detail)
 
+    def _prepare_context(self, context: Context | None) -> Context:
+        active_context = context or Context(bot=self, window_title=self.window_title)
+        active_context.bot = active_context.bot or self
+        active_context.signal_emitter = active_context.signal_emitter or self.signal_emitter
+        active_context.window_title = active_context.window_title or self.window_title
+        if active_context.window_handler_factory is None:
+            active_context.window_handler_factory = lambda: self.window_handler
+        if active_context.input_controller_factory is None:
+            active_context.input_controller_factory = lambda runtime_context: InputController(context=runtime_context)
+        if active_context.state_monitor_factory is None:
+            def _state_monitor_factory(runtime_context: Context | None) -> Any:
+                from state_monitor import GameStateMonitor
+
+                return GameStateMonitor(context=runtime_context)
+
+            active_context.state_monitor_factory = _state_monitor_factory
+        return active_context
+
     def _hardware_input_ready(self, context: Context | None = None) -> bool:
         if InputController.is_backend_available():
             return True
@@ -231,7 +249,7 @@ class OSROKBOT:
             record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
 
     def _heartbeat_payload(self, context: Context | None, now: float) -> HeartbeatPayload:
-        active_context = context or Context(bot=self, window_title=self.window_title)
+        active_context = self._prepare_context(context)
         window_title = getattr(active_context, "window_title", None) or self.window_title
         return {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -383,10 +401,7 @@ class OSROKBOT:
             LOGGER.warning("State machine cleanup failed: %s", exc)
 
     def run(self, state_machines: Sequence[Any], context: Context | None = None) -> None:
-        context = context or Context(bot=self, window_title=self.window_title)
-        context.bot = context.bot or self
-        context.signal_emitter = context.signal_emitter or self.signal_emitter
-        context.window_title = context.window_title or self.window_title
+        context = self._prepare_context(context)
         self._active_context = context
         base_log_context = self._session_log_context_fields(context)
 
@@ -396,38 +411,50 @@ class OSROKBOT:
             self.write_heartbeat(context, force=True)
 
             def run_single_machine(machine: Any, machine_index: int) -> None:
-                with scoped_log_context(**base_log_context, machine_id=f"machine_{machine_index + 1}"):
-                    while not self.stop_event.is_set():
-                        observation = None
-                        if getattr(machine, "halted", False):
-                            LOGGER.error("Workflow state machine halted; stopping workflow thread.")
-                            break
-                        try:
-                            if self.pause_event.is_set():
-                                self.write_heartbeat(context)
-                                self.stop_event.wait(self.delay)
-                                continue
-                            self.write_heartbeat(context)
-                            if not self._ensure_foreground(context):
-                                continue
-                            observation = self._observe_window(context)
-                            if observation is None:
-                                continue
-                            if self._detect_captcha(context, observation=observation):
-                                continue
-                            if not self._ensure_foreground(context):
-                                continue
-                            step_result = machine.execute(context)
+                machine_id = f"machine_{machine_index + 1}"
+                with scoped_log_context(**base_log_context, machine_id=machine_id):
+                    bind_runtime_machine = getattr(context, "bind_runtime_machine", None)
+                    clear_runtime_machine = getattr(context, "clear_runtime_machine", None)
+                    clear_active_step_scope = getattr(context, "clear_active_step_scope", None)
+                    if callable(bind_runtime_machine):
+                        bind_runtime_machine(machine_id)
+                    try:
+                        while not self.stop_event.is_set():
+                            observation = None
                             if getattr(machine, "halted", False):
-                                LOGGER.error("Workflow state machine halted after execute; stopping workflow thread.")
+                                LOGGER.error("Workflow state machine halted; stopping workflow thread.")
                                 break
-                            if step_result:
-                                self.stop_event.wait(self.delay)
-                        finally:
-                            if hasattr(context, "clear_current_observation_if"):
-                                context.clear_current_observation_if(observation)
-                            elif getattr(context, "current_observation", None) is observation:
-                                context.clear_current_observation()
+                            try:
+                                if self.pause_event.is_set():
+                                    self.write_heartbeat(context)
+                                    self.stop_event.wait(self.delay)
+                                    continue
+                                self.write_heartbeat(context)
+                                if not self._ensure_foreground(context):
+                                    continue
+                                observation = self._observe_window(context)
+                                if observation is None:
+                                    continue
+                                if self._detect_captcha(context, observation=observation):
+                                    continue
+                                if not self._ensure_foreground(context):
+                                    continue
+                                step_result = machine.execute(context)
+                                if getattr(machine, "halted", False):
+                                    LOGGER.error("Workflow state machine halted after execute; stopping workflow thread.")
+                                    break
+                                if step_result:
+                                    self.stop_event.wait(self.delay)
+                            finally:
+                                if hasattr(context, "clear_current_observation_if"):
+                                    context.clear_current_observation_if(observation)
+                                elif getattr(context, "current_observation", None) is observation:
+                                    context.clear_current_observation()
+                    finally:
+                        if callable(clear_active_step_scope):
+                            clear_active_step_scope()
+                        if callable(clear_runtime_machine):
+                            clear_runtime_machine()
 
             try:
                 with ThreadPoolExecutor(
@@ -497,16 +524,17 @@ class OSROKBOT:
             self._active_context = None
 
     def start(self, steps: Sequence[Any], context: Context | None = None) -> bool:
+        prepared_context = self._prepare_context(context) if context is not None else None
         if self.is_running or not self.all_threads_joined:
             return False
-        if not self._hardware_input_ready(context):
+        if not self._hardware_input_ready(prepared_context):
             self.is_running = False
             return False
         if not self.emergency_stop.start_once():
             LOGGER.error("Emergency stop is unavailable; refusing to start live automation.")
-            self._record_session_error(context, "Emergency stop is unavailable.", stage="startup")
-            self._mark_terminal(context, "failed", "emergency_stop_unavailable", detail="Emergency stop is unavailable.")
-            self._emit_state(context, "Emergency stop unavailable")
+            self._record_session_error(prepared_context, "Emergency stop is unavailable.", stage="startup")
+            self._mark_terminal(prepared_context, "failed", "emergency_stop_unavailable", detail="Emergency stop is unavailable.")
+            self._emit_state(prepared_context, "Emergency stop unavailable")
             self.is_running = False
             return False
 
@@ -514,9 +542,9 @@ class OSROKBOT:
         self.pause_event.clear()
         self._ensure_heartbeat_executor()
         self.is_running = True
-        self._active_context = context
+        self._active_context = prepared_context
         self._runner_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-Runner")
-        self._runner_future = self._runner_executor.submit(self.run, steps, context)
+        self._runner_future = self._runner_executor.submit(self.run, steps, prepared_context)
         self._runner_future.add_done_callback(self._runner_done)
         return True
 

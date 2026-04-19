@@ -97,6 +97,55 @@ def test_state_machine_execute_records_success_transition():
     assert context.records[-1][1]["next_state"] == "finish"
 
 
+def test_state_machine_records_runtime_journal_commit():
+    journal_calls = []
+
+    class _SessionLogger:
+        def record_step_started(self, **kwargs):
+            journal_calls.append(("step_started", kwargs))
+            return "step_1"
+
+        def record_transition_committed(self, **kwargs):
+            journal_calls.append(("transition_committed", kwargs))
+
+    class _JournalContext(RecordingContext):
+        def __init__(self):
+            super().__init__()
+            self.session_logger = _SessionLogger()
+            self._scope = None
+
+        def current_runtime_machine_id(self):
+            return "machine_1"
+
+        def set_active_step_scope(self, step_id, state_name, action_name, machine_id=None):
+            self._scope = {
+                "step_id": step_id,
+                "state_name": state_name,
+                "action_name": action_name,
+                "machine_id": machine_id,
+            }
+
+        def active_step_scope(self):
+            return self._scope
+
+        def clear_active_step_scope(self):
+            self._scope = None
+
+    machine = StateMachine()
+    machine.add_state("start", DummyAction(True), next_state_on_success="finish")
+    machine.add_state("finish", DummyAction(True), next_state_on_success="finish")
+    machine.set_initial_state("start")
+    context = _JournalContext()
+
+    assert machine.execute(context) is True
+    assert journal_calls[0][0] == "step_started"
+    assert journal_calls[0][1]["machine_id"] == "machine_1"
+    assert journal_calls[1][0] == "transition_committed"
+    assert journal_calls[1][1]["step_id"] == "step_1"
+    assert journal_calls[1][1]["next_state"] == "finish"
+    assert context._scope is None
+
+
 def test_state_machine_precondition_failure_uses_fallback_state():
     machine = StateMachine()
     machine.add_state(
@@ -205,6 +254,42 @@ def test_global_recovery_uses_first_successful_tier(monkeypatch):
     monkeypatch.setattr(machine, "_recovery_restart_game", lambda *args: False)
 
     assert machine.global_recovery() is True
+
+
+def test_global_recovery_uses_context_runtime_factories(monkeypatch):
+    calls = []
+
+    fake_monitor = type("Monitor", (), {"save_diagnostic_screenshot": lambda self, label: calls.append(("diagnostic", label))})()
+    fake_controller = object()
+    fake_window_handler = type(
+        "Handler",
+        (),
+        {"ensure_foreground": lambda self, title, wait_seconds=0.5: calls.append(("foreground", title, wait_seconds)) or True},
+    )()
+    context = type(
+        "Context",
+        (),
+        {
+            "window_title": "Rise of Kingdoms",
+            "build_state_monitor": lambda self: fake_monitor,
+            "build_input_controller": lambda self: fake_controller,
+            "build_window_handler": lambda self: fake_window_handler,
+            "emit_state": lambda self, text: calls.append(("state", text)),
+        },
+    )()
+    machine = StateMachine()
+    machine.current_state = "start"
+    monkeypatch.setattr(
+        machine,
+        "_recovery_close_menus",
+        lambda monitor, controller, _context, _game_state: calls.append(("close", monitor is fake_monitor, controller is fake_controller)) or True,
+    )
+    monkeypatch.setattr(machine, "_recovery_toggle_view", lambda *args: False)
+    monkeypatch.setattr(machine, "_recovery_restart_game", lambda *args: False)
+
+    assert machine.global_recovery(context) is True
+    assert ("foreground", "Rise of Kingdoms", 0.5) in calls
+    assert ("close", True, True) in calls
 
 
 def test_should_run_guarded_recovery_skips_captcha_and_requires_threshold():

@@ -31,17 +31,35 @@ class ActionSets:
         return StateMachine()
 
     @staticmethod
+    def _build_state_monitor(context: Any | None = None) -> Any | None:
+        if not context:
+            return None
+        build_state_monitor = getattr(context, "build_state_monitor", None)
+        if callable(build_state_monitor):
+            return build_state_monitor()
+        try:
+            from state_monitor import GameStateMonitor
+
+            return GameStateMonitor(context=context)
+        except Exception as exc:
+            LOGGER.warning("State monitor unavailable: %s", exc)
+            return None
+
+    @staticmethod
+    def _state_value(state: Any) -> str:
+        return str(getattr(state, "value", state)).upper()
+
+    @staticmethod
     def map_view_precondition() -> PreconditionCallback:
         """Precondition: game should be on the world map."""
 
         def _check(context: Any | None = None) -> bool:
-            if not context:
+            monitor = ActionSets._build_state_monitor(context)
+            if monitor is None:
                 return True
             try:
-                from state_monitor import GameState, GameStateMonitor
-
-                state = GameStateMonitor(context=context).current_state()
-                return state in {GameState.MAP, GameState.UNKNOWN}
+                state = ActionSets._state_value(monitor.current_state())
+                return state in {"MAP", "UNKNOWN"}
             except Exception as exc:
                 LOGGER.warning("Map-view precondition unavailable: %s", exc)
                 return True
@@ -53,12 +71,11 @@ class ActionSets:
         """Precondition: at least `required` idle march slots."""
 
         def _check(context: Any | None = None) -> bool:
-            if not context:
+            monitor = ActionSets._build_state_monitor(context)
+            if monitor is None:
                 return True
             try:
-                from state_monitor import GameStateMonitor
-
-                return bool(GameStateMonitor(context=context).has_idle_march_slots(required))
+                return bool(monitor.has_idle_march_slots(required))
             except Exception as exc:
                 LOGGER.warning("Idle-march precondition unavailable: %s", exc)
                 return True
@@ -70,12 +87,11 @@ class ActionSets:
         """Precondition: at least `required` action points."""
 
         def _check(context: Any | None = None) -> bool:
-            if not context:
+            monitor = ActionSets._build_state_monitor(context)
+            if monitor is None:
                 return True
             try:
-                from state_monitor import GameStateMonitor
-
-                return bool(GameStateMonitor(context=context).has_action_points(required))
+                return bool(monitor.has_action_points(required))
             except Exception as exc:
                 LOGGER.warning("Action-point precondition unavailable: %s", exc)
                 return True

@@ -135,11 +135,12 @@ they do not use the target approval prompt.
 | `Classes/UI.py` | PyQt Agent Supervisor Console view: shell layout, theming, tabs, state-responsive collapse/expand behavior, tray notifications, and overlay presentation. |
 | `Classes/UIController.py` | View-model/controller for mission history, autonomy selection, session logging, planner approval state, YOLO warmup, and per-run `Context` creation. |
 | `Classes/click_overlay.py` | Non-blocking planner target preview overlay plus the blocking crosshair correction overlay used by `Fix`. |
-| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and signal access. |
+| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, signal access, and per-run runtime collaborator factories. |
 | `Classes/action_sets.py` | Supported workflow factory. `dynamic_planner()` is the current runtime entry point. |
 | `Classes/state_machine.py` | Deterministic action runner, preconditions, transition history, diagnostics, and tiered global recovery. |
-| `Classes/runtime_contracts.py` | Shared Protocols and type aliases for state-machine actions, detector/OCR providers, and window-capture boundaries. |
-| `Classes/runtime_payloads.py` | Shared TypedDict payloads for heartbeat, planner approval, recovery handoff, state history, and resource context. |
+| `Classes/runtime_contracts.py` | Shared Protocols and type aliases for state-machine actions, detector/OCR providers, input/state-monitor factories, and window-capture boundaries. |
+| `Classes/runtime_payloads.py` | Shared TypedDict payloads for heartbeat, planner approval, thread-local step scope, recovery handoff, state history, and resource context. |
+| `Classes/runtime_journal.py` | HMAC-chained runtime journal, atomic committed-state checkpoint, and interrupted-run reconciliation for resumable runtime sessions. |
 | `Classes/artifact_retention.py` | Shared retention policies for diagnostics, session logs, and recovery dataset exports. |
 | `Classes/run_handoff.py` | Canonical per-run artifact builder for runtime sessions and maintainer commands, latest-run handoff refresh, incomplete-run reconciliation, and test-artifact cleanup helpers. |
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat lifecycle, state-machine cleanup, and emergency-stop startup. |
@@ -150,7 +151,7 @@ they do not use the target approval prompt.
 | `Classes/task_graph.py` | One-time mission decomposition into sub-goals through the shared planner transport, cached per mission, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
 | `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract text/region fallback, and normalized OCR targets. |
-| `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, and explicit client restart support. |
+| `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, explicit client restart support, and injectable window/input/detector collaborators. |
 | `Classes/screen_change_detector.py` | Perceptual-hash screen change checks and repeated-action warnings for the planner prompt. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS or NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
 | `Classes/recovery_memory.py` | Bounded atomic persistence for guarded AI recovery outcomes keyed by state/action/screen signatures. |
@@ -183,6 +184,9 @@ flowchart TD
     TG --> DP
     DP --> Gate
     Gate --> IC["InputController"]
+    SM --> J["RuntimeJournal committed transition"]
+    IC --> J
+    J --> HO["latest_run handoff plus checkpoint"]
 ```
 
 ### Run And Recovery States
@@ -202,6 +206,7 @@ stateDiagram-v2
     Running --> Stopped: planner stop or stop event
     Paused --> Stopped: stop event or F12
     Recovery --> Stopped: recovery exhausted
+    Stopped --> Idle: next launch reconciles checkpoint
     Stopped --> [*]
 ```
 
@@ -308,7 +313,9 @@ the code checks:
 
 `Classes/emergency_stop.py` arms a process-level F12 kill switch. It uses the
 `keyboard` package and a polling fallback. Pressing F12 terminates OSROKBOT so
-hardware input stops even if the overlay is unresponsive.
+hardware input stops even if the overlay is unresponsive. The next launch
+reconciles the interrupted run and resumes only from the last committed journal
+checkpoint after re-observing the current screen.
 
 ### CAPTCHA Policy
 
@@ -556,7 +563,7 @@ The watchdog is intentionally conservative:
 | `data/heartbeat.json` | Watchdog heartbeat. |
 | `data/handoff/latest_run.json` | Canonical AI entrypoint for the most recent runtime or maintainer run. |
 | `data/handoff/latest_run.txt` | Fixed-section plain-English companion to `latest_run.json`. |
-| `data/session_logs/` | Per-run grouped history artifacts: `.json`, `.txt`, `.log`, `.err`, and runtime `.ndjson`. |
+| `data/session_logs/` | Per-run grouped history artifacts: `.json`, `.txt`, `.log`, `.err`, runtime `.ndjson`, `.journal.ndjson`, and `.checkpoint.json`. |
 | `data/logs/osrokbot.log` | Full rotating runtime log as structured JSON lines by default, including entries that are no longer printed to PowerShell by default. |
 | `data/planner_latest.png` | Most recent planner screenshot. |
 | `.artifacts/test_runs/` | Centralized pytest temp, cache, and latest-run copies for maintainer test runs. |
@@ -566,9 +573,12 @@ The watchdog is intentionally conservative:
 
 Start every investigation with `data/handoff/latest_run.json` or
 `data/handoff/latest_run.txt`. Those files point to the matching per-run
-history group, diagnostics, heartbeat, planner screenshot, and next actions.
-They are refreshed during active runtime sessions and maintainer commands, so
-an in-progress run may legitimately report `status=partial`.
+history group, diagnostics, heartbeat, planner screenshot, journal checkpoint,
+and next actions. They are refreshed during active runtime sessions and
+maintainer commands, so an in-progress run may legitimately report
+`status=partial`. After interrupted runtime sessions, use the checkpoint to
+resume from the last committed logical state and re-observe the screen before
+allowing any new input.
 
 Runtime artifact retention is bounded by default:
 

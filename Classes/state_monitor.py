@@ -63,15 +63,25 @@ class GameStateMonitor:
         "buildaction",
     }
 
-    def __init__(self, context=None, threshold=0.85):
+    def __init__(
+        self,
+        context=None,
+        threshold=0.85,
+        *,
+        config=None,
+        window_handler=None,
+        input_controller=None,
+        detector=None,
+    ):
         _ = threshold
         self.context = context
-        tesseract_path = ConfigManager().get("TESSERACT_PATH")
+        self.config = config or ConfigManager()
+        tesseract_path = self.config.get("TESSERACT_PATH")
         if tesseract_path:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
-        self.window_handler = WindowHandler()
-        self.input_controller = InputController(context=context)
-        self._detector = None
+        self.window_handler = window_handler or WindowHandler()
+        self.input_controller = input_controller or InputController(context=context)
+        self._detector = detector
 
     def _get_detector(self):
         if self._detector is None:
@@ -113,7 +123,7 @@ class GameStateMonitor:
 
     def _tesseract_timeout(self):
         try:
-            configured = float(ConfigManager().get("TESSERACT_TIMEOUT_SECONDS", self.DEFAULT_TESSERACT_TIMEOUT_SECONDS))
+            configured = float(self.config.get("TESSERACT_TIMEOUT_SECONDS", self.DEFAULT_TESSERACT_TIMEOUT_SECONDS))
         except (TypeError, ValueError):
             configured = self.DEFAULT_TESSERACT_TIMEOUT_SECONDS
         return max(1.0, configured)

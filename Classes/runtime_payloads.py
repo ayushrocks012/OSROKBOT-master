@@ -61,6 +61,18 @@ class RuntimeTimingEntry(TypedDict):
     detail: str
 
 
+class RuntimeStepScope(TypedDict, total=False):
+    """Per-thread logical step scope shared across planner helpers."""
+
+    machine_id: str
+    step_id: str
+    state_name: str
+    action_name: str
+    decision_id: str
+    approval_id: str
+    input_id: str
+
+
 class HeartbeatPayload(TypedDict):
     """Heartbeat payload written for the watchdog."""
 

@@ -272,6 +272,23 @@ class UIController(QtCore.QObject):
             task_graph=TaskGraph(),
         )
 
+    def _create_input_controller_for_context(self, context: Context | None = None) -> InputController:
+        """Return a context-bound input controller for runtime collaborators."""
+
+        return InputController(context=context)
+
+    def _create_state_monitor_for_context(self, context: Context | None = None) -> Any:
+        """Return a context-bound game-state monitor for runtime collaborators."""
+
+        from state_monitor import GameStateMonitor
+
+        return GameStateMonitor(
+            context=context,
+            window_handler=self._window_handler,
+            input_controller=self._create_input_controller_for_context(context),
+            detector=self._detector,
+        )
+
     def _set_status(self, text: str, tone: str, detail: str = "") -> None:
         self._status_text = text
         self._status_tone = tone
@@ -384,6 +401,9 @@ class UIController(QtCore.QObject):
             signal_emitter=self.OS_ROKBOT.signal_emitter,
             window_title=self.target_title,
             session_logger=self._session_logger,
+            window_handler_factory=lambda: self._window_handler,
+            input_controller_factory=self._create_input_controller_for_context,
+            state_monitor_factory=self._create_state_monitor_for_context,
         )
         context.planner_goal = mission
         context.planner_autonomy_level = selected_autonomy

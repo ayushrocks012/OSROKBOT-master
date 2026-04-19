@@ -89,6 +89,90 @@ class WindowCaptureProvider(Protocol):
         """Capture the requested game window and return its client rectangle."""
 
 
+class InputControllerLike(Protocol):
+    """Hardware-input contract used by planner execution and recovery."""
+
+    def wait(self, seconds: float | None = None, context: Any | None = None) -> bool:
+        """Wait while honoring runtime pause and stop signals."""
+
+    def hotkey(self, *keys: str | int, context: Any | None = None) -> bool:
+        """Press a chorded hotkey sequence."""
+
+    def click(
+        self,
+        x: float,
+        y: float,
+        window_rect: ClientRectLike | None = None,
+        remember_position: bool = True,
+        context: Any | None = None,
+    ) -> bool:
+        """Click one point inside the active game window."""
+
+    def long_press(
+        self,
+        x: float,
+        y: float,
+        hold_seconds: float | None = None,
+        window_rect: ClientRectLike | None = None,
+        remember_position: bool = True,
+        context: Any | None = None,
+    ) -> bool:
+        """Hold one point inside the active game window."""
+
+    def drag(
+        self,
+        start_x: float,
+        start_y: float,
+        end_x: float,
+        end_y: float,
+        window_rect: ClientRectLike | None = None,
+        context: Any | None = None,
+    ) -> bool:
+        """Drag from one point to another inside the active game window."""
+
+    def key_press(
+        self,
+        key: str | int,
+        hold_seconds: float | None = None,
+        presses: int = 1,
+        context: Any | None = None,
+    ) -> bool:
+        """Press one keyboard key or character."""
+
+
+class StateMonitorLike(Protocol):
+    """Coarse game-state monitor contract used by preconditions and recovery."""
+
+    def current_state(self) -> Any:
+        """Return the current coarse game state."""
+
+    def clear_blockers(self) -> bool:
+        """Dismiss obvious modal blockers when present."""
+
+    def save_diagnostic_screenshot(self, label: str = "recovery") -> Any:
+        """Persist one diagnostic screenshot when available."""
+
+    def count_idle_march_slots(self, max_age_seconds: float = 30) -> int | None:
+        """Return the observed idle march-slot count."""
+
+    def has_idle_march_slots(self, required: int = 1) -> bool:
+        """Return whether the required march slots are available."""
+
+    def read_action_points(self, max_age_seconds: float = 30) -> int | None:
+        """Return the observed action-point total."""
+
+    def has_action_points(self, required: int = 50) -> bool:
+        """Return whether the required action points are available."""
+
+    def restart_client(self) -> bool:
+        """Attempt to restart the game client conservatively."""
+
+
+type InputControllerFactory = Callable[[Any | None], InputControllerLike]
+type StateMonitorFactory = Callable[[Any | None], StateMonitorLike]
+type WindowHandlerFactory = Callable[[], WindowCaptureProvider]
+
+
 class ConfigProvider(Protocol):
     """Runtime configuration reader contract."""
 

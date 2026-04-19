@@ -31,11 +31,12 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/UI.py` | Agent Supervisor Console view, shell layout, tabs, tray notifications, state-responsive collapse/expand behavior, and overlay presentation. |
 | `Classes/UIController.py` | Mission history, autonomy selection, pending-action evaluation, YOLO warmup, session logging, and per-run `Context` creation for the supervisor console. |
 | `Classes/click_overlay.py` | Non-blocking planner preview overlay plus the blocking crosshair correction overlay used by `Fix`. |
-| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, and UI signal access. |
+| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, UI signal access, and per-run runtime collaborator factories. |
 | `Classes/action_sets.py` | Supported workflow factory. New runtime work should use `dynamic_planner()`. |
 | `Classes/state_machine.py` | Deterministic state execution, preconditions, transition history, diagnostics, and tiered global recovery. |
-| `Classes/runtime_contracts.py` | Shared typed Protocols and aliases for active state/action, detector/OCR, and window-capture boundaries. |
-| `Classes/runtime_payloads.py` | Shared TypedDict payloads for heartbeat, planner approval, recovery handoff, state history, and resource context. |
+| `Classes/runtime_contracts.py` | Shared typed Protocols and aliases for active state/action, detector/OCR, input/state-monitor factories, and window-capture boundaries. |
+| `Classes/runtime_payloads.py` | Shared TypedDict payloads for heartbeat, planner approval, thread-local step scope, recovery handoff, state history, and resource context. |
+| `Classes/runtime_journal.py` | HMAC-chained runtime journal, committed-state checkpoint writes, and interrupted-run journal reconciliation. |
 | `Classes/artifact_retention.py` | Shared retention policies for diagnostics, session logs, and recovery dataset exports. |
 | `Classes/run_handoff.py` | Canonical run-record builder, latest-run handoff refresh, incomplete-run reconciliation, and centralized test-artifact cleanup helpers. |
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat scheduling, state-machine cleanup, and emergency-stop startup. |
@@ -48,7 +49,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract planner text/region reads, and normalized OCR target extraction. |
 | `Classes/recovery_memory.py` | Bounded atomic persistence for guarded recovery outcomes keyed by state/action/screen signatures. |
 | `Classes/screen_change_detector.py` | Stuck-screen and repeated-action warnings for the planner prompt. |
-| `Classes/state_monitor.py` | Coarse game-state checks, blocker clearing, march-slot OCR, action-point OCR, and explicit client restart support. |
+| `Classes/state_monitor.py` | Coarse game-state checks, blocker clearing, march-slot OCR, action-point OCR, explicit client restart support, and injectable window/input/detector collaborators. |
 | `Classes/input_controller.py` | All mouse, keyboard, and scroll execution, including bounded humanization for pointer actions. No other module should call lower-level input APIs. |
 | `Classes/window_handler.py` | Foreground enforcement, client-rect discovery, and named window capture backends. |
 | `Classes/model_manager.py` | Local YOLO weight discovery and optional HTTPS download with timeout, streaming, and size-cap enforcement. |
@@ -73,6 +74,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Keep `dynamic_planner.py` side-effect free. It may propose JSON decisions; it must not execute input.
 - Keep agentic input execution behind `DynamicPlannerAction` and `InputController`.
 - Keep runner-owned dependencies injectable and close planner/action resources during run teardown.
+- Prefer per-run collaborator factories on `Context` for runtime seams that must stay mockable in CI without live Windows dependencies.
 - Keep startup/runtime composition in `UI.py` or another explicit composition root; `OS_ROKBOT` should stay orchestration-focused.
 - Store sensitive configuration in the configured secret provider or process environment, never in `config.json`.
 - Treat `.env` as workstation-grade fallback storage. On Windows, prefer the DPAPI provider when you need local encrypted at-rest secrets without an external vault.
@@ -82,6 +84,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Keep `data/handoff/latest_run.json` and `data/handoff/latest_run.txt` as the canonical AI/operator entrypoint when modifying runtime or maintainer logging behavior.
 - Keep `data/logs/osrokbot.log` machine-ingestable; structured JSON is the default file-log contract unless maintainers intentionally document a replacement.
 - Keep `latest_run.json` and `latest_run.txt` refreshed during active runtime or maintainer sessions when changing handoff/session logging behavior; do not regress them to finalize-only snapshots.
+- Keep the runtime journal checkpoint aligned to the last committed logical transition. Do not advance it on approval waits, raw input start, or other uncommitted side effects.
+- Resume after crashes or F12 from the journal checkpoint only, and re-observe the game window before any new hardware input.
 - Keep runtime timing telemetry for capture, detector, OCR, planner, and input phases flowing into the current grouped session artifacts and latest-run handoff when modifying those paths.
 - When code changes behavior, architecture, configuration, runtime data paths, safety rules, or operator workflow, update the affected documentation in the same change. At minimum, review `README.md`, `AGENTS.md`, `SKILLS.md`, and `MEDIA_MAP.md`.
 - Update operator runbooks under `docs/runbooks/` when watchdog, CAPTCHA, emergency-stop, secret provisioning, telemetry, or failure-triage behavior changes.

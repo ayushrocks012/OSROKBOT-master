@@ -11,15 +11,19 @@ unexpectedly.
 1. Stop or pause the run before inspecting artifacts.
 2. Review `data/handoff/latest_run.txt` first, then open
    `data/handoff/latest_run.json` for structured fields such as `top_errors`,
-   `key_events`, `artifacts`, and `next_actions`.
+   `key_events`, `resume_checkpoint`, `artifacts`, and `next_actions`.
 3. Follow the artifact paths from `latest_run.json` to the matching per-run
-   `.json`, `.log`, `.err`, and runtime `.ndjson` files under
+   `.json`, `.log`, `.err`, runtime `.ndjson`, and runtime `.journal.ndjson`
+   files under
    `data/session_logs/`.
-4. Check `timing` events for slow window capture, YOLO, OCR, planner request,
+4. For interrupted runs, use `resume_checkpoint` to identify the last committed
+   logical state and ignore any uncommitted tail events until the current UI
+   has been re-observed.
+5. Check `timing` events for slow window capture, YOLO, OCR, planner request,
    task-graph decomposition, or guarded input phases.
-5. Inspect `diagnostics/` for failure or CAPTCHA screenshots.
-6. Check whether `data/planner_latest.png` matches the expected game window.
-7. Confirm `ROK_WINDOW_TITLE`, `ROK_YOLO_WEIGHTS`, `OCR_ENGINE`,
+6. Inspect `diagnostics/` for failure or CAPTCHA screenshots.
+7. Check whether `data/planner_latest.png` matches the expected game window.
+8. Confirm `ROK_WINDOW_TITLE`, `ROK_YOLO_WEIGHTS`, `OCR_ENGINE`,
    `TESSERACT_PATH`, `TESSERACT_TIMEOUT_SECONDS`,
    `PLANNER_L1_REVIEW_MIN_CONFIDENCE`, and `OPENAI_KEY` or `OPENAI_API_KEY`
    are configured.

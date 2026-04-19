@@ -50,6 +50,7 @@ class ConfigManager:
         "EMAIL_TO",
         "EMAIL_FROM",
         "EMAIL_PASSWORD",
+        "RUNTIME_JOURNAL_HMAC_KEY",
         "EMAIL_SMTP_SERVER",
         "EMAIL_SMTP_PORT",
         "OCR_ENGINE",

@@ -23,6 +23,23 @@ class _WindowRect:
     height = 200
 
 
+def test_context_runtime_factories_return_injected_collaborators():
+    fake_window_handler = object()
+    fake_controller = object()
+    fake_monitor = object()
+    calls = []
+    context = Context(
+        window_handler_factory=lambda: fake_window_handler,
+        input_controller_factory=lambda runtime_context: calls.append(("input", runtime_context)) or fake_controller,
+        state_monitor_factory=lambda runtime_context: calls.append(("monitor", runtime_context)) or fake_monitor,
+    )
+
+    assert context.build_window_handler() is fake_window_handler
+    assert context.build_input_controller() is fake_controller
+    assert context.build_state_monitor() is fake_monitor
+    assert calls == [("input", context), ("monitor", context)]
+
+
 def test_pending_planner_decision_emits_absolute_coordinates():
     emitter = _FakeEmitter()
     context = Context(signal_emitter=emitter)

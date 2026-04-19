@@ -6,10 +6,19 @@ from pathlib import Path
 from typing import Any, cast
 
 from logging_config import get_logger
+from runtime_contracts import (
+    InputControllerFactory,
+    InputControllerLike,
+    StateMonitorFactory,
+    StateMonitorLike,
+    WindowCaptureProvider,
+    WindowHandlerFactory,
+)
 from runtime_payloads import (
     NormalizedPoint,
     PlannerPendingPayload,
     RuntimeTimingEntry,
+    RuntimeStepScope,
     StateHistoryEntry,
     coerce_decision_payload,
     compute_absolute_point,
@@ -76,8 +85,12 @@ class Context:
     planner_goal: str = "Safely continue the selected Rise of Kingdoms task."
     planner_autonomy_level: int = 1
     session_logger: SessionLogger | None = None
+    window_handler_factory: WindowHandlerFactory | None = None
+    input_controller_factory: InputControllerFactory | None = None
+    state_monitor_factory: StateMonitorFactory | None = None
     current_observation: ObservationSnapshot | None = None
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _thread_local: threading.local = field(default_factory=threading.local, init=False, repr=False)
 
     @property
     def UI(self) -> Any | None:
@@ -143,11 +156,139 @@ class Context:
         if self.session_logger:
             self.session_logger.record_timing(stage, duration_ms, detail=detail)
 
-    def save_failure_diagnostic(self, state_name: str = "unknown") -> Path | None:
-        from diagnostic_screenshot import save_diagnostic_screenshot
+    def bind_runtime_machine(self, machine_id: str) -> None:
+        """Bind the current thread to one workflow machine identifier."""
+
+        self._thread_local.runtime_machine_id = str(machine_id)
+
+    def clear_runtime_machine(self) -> None:
+        """Clear the workflow machine identifier bound to the current thread."""
+
+        if hasattr(self._thread_local, "runtime_machine_id"):
+            delattr(self._thread_local, "runtime_machine_id")
+
+    def current_runtime_machine_id(self) -> str | None:
+        """Return the workflow machine identifier bound to the current thread."""
+
+        value = getattr(self._thread_local, "runtime_machine_id", None)
+        if value in {None, ""}:
+            return None
+        return str(value)
+
+    def set_active_step_scope(
+        self,
+        step_id: str,
+        state_name: str,
+        action_name: str,
+        *,
+        machine_id: str | None = None,
+    ) -> RuntimeStepScope:
+        """Store the active logical step scope for the current thread."""
+
+        scope: RuntimeStepScope = {
+            "step_id": str(step_id),
+            "state_name": str(state_name),
+            "action_name": str(action_name),
+        }
+        resolved_machine_id = machine_id or self.current_runtime_machine_id()
+        if resolved_machine_id:
+            scope["machine_id"] = str(resolved_machine_id)
+        self._thread_local.runtime_step_scope = scope
+        return scope
+
+    def active_step_scope(self) -> RuntimeStepScope | None:
+        """Return the active logical step scope for the current thread."""
+
+        scope = getattr(self._thread_local, "runtime_step_scope", None)
+        if not isinstance(scope, dict):
+            return None
+        return cast(RuntimeStepScope, dict(scope))
+
+    def update_active_step_scope(
+        self,
+        *,
+        machine_id: str | None = None,
+        decision_id: str | None = None,
+        approval_id: str | None = None,
+        input_id: str | None = None,
+    ) -> RuntimeStepScope | None:
+        """Merge additional runtime identifiers into the current thread scope."""
+
+        current_scope = self.active_step_scope()
+        if current_scope is None:
+            return None
+        scope: RuntimeStepScope = {}
+        if current_scope.get("machine_id") not in {None, ""}:
+            scope["machine_id"] = str(current_scope["machine_id"])
+        if current_scope.get("step_id") not in {None, ""}:
+            scope["step_id"] = str(current_scope["step_id"])
+        if current_scope.get("state_name") not in {None, ""}:
+            scope["state_name"] = str(current_scope["state_name"])
+        if current_scope.get("action_name") not in {None, ""}:
+            scope["action_name"] = str(current_scope["action_name"])
+        if current_scope.get("decision_id") not in {None, ""}:
+            scope["decision_id"] = str(current_scope["decision_id"])
+        if current_scope.get("approval_id") not in {None, ""}:
+            scope["approval_id"] = str(current_scope["approval_id"])
+        if current_scope.get("input_id") not in {None, ""}:
+            scope["input_id"] = str(current_scope["input_id"])
+
+        if machine_id in {None, ""}:
+            scope.pop("machine_id", None)
+        else:
+            scope["machine_id"] = str(machine_id)
+        if decision_id in {None, ""}:
+            scope.pop("decision_id", None)
+        else:
+            scope["decision_id"] = str(decision_id)
+        if approval_id in {None, ""}:
+            scope.pop("approval_id", None)
+        else:
+            scope["approval_id"] = str(approval_id)
+        if input_id in {None, ""}:
+            scope.pop("input_id", None)
+        else:
+            scope["input_id"] = str(input_id)
+        self._thread_local.runtime_step_scope = scope
+        return scope
+
+    def clear_active_step_scope(self) -> None:
+        """Remove the active logical step scope from the current thread."""
+
+        if hasattr(self._thread_local, "runtime_step_scope"):
+            delattr(self._thread_local, "runtime_step_scope")
+
+    def build_window_handler(self) -> WindowCaptureProvider:
+        """Return the per-run window handler for runtime-safe UI access."""
+
+        if self.window_handler_factory is not None:
+            return self.window_handler_factory()
         from window_handler import WindowHandler
 
-        screenshot, _ = WindowHandler().screenshot_window(self.window_title)
+        return cast(WindowCaptureProvider, WindowHandler())
+
+    def build_input_controller(self) -> InputControllerLike:
+        """Return the per-run input controller for guarded hardware input."""
+
+        if self.input_controller_factory is not None:
+            return self.input_controller_factory(self)
+        from input_controller import InputController
+
+        return cast(InputControllerLike, InputController(context=self))
+
+    def build_state_monitor(self) -> StateMonitorLike:
+        """Return the per-run coarse state monitor used by recovery and guards."""
+
+        if self.state_monitor_factory is not None:
+            return self.state_monitor_factory(self)
+        from state_monitor import GameStateMonitor
+
+        return cast(StateMonitorLike, GameStateMonitor(context=self))
+
+    def save_failure_diagnostic(self, state_name: str = "unknown") -> Path | None:
+        from diagnostic_screenshot import save_diagnostic_screenshot
+
+        screenshot, _ = self.build_window_handler().screenshot_window(self.window_title)
         if screenshot is None:
             LOGGER.warning("Diagnostic capture skipped: screenshot unavailable.")
             return None

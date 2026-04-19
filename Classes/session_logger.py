@@ -14,6 +14,7 @@ from typing import Any
 
 from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy
 from logging_config import get_logger
+from runtime_journal import RuntimeJournal
 from run_handoff import (
     DEFAULT_LIVE_SNAPSHOT_INTERVAL_SECONDS,
     DEFAULT_SESSION_LOGS_DIR,
@@ -113,6 +114,11 @@ class SessionLogger:
                 else DEFAULT_LIVE_SNAPSHOT_INTERVAL_SECONDS
             ),
         )
+        self._runtime_journal = RuntimeJournal(
+            run_id=self.run_id,
+            output_dir=Path(output_dir),
+        )
+        self._refresh_runtime_journal_metadata()
 
     @property
     def run_id(self) -> str:
@@ -137,6 +143,9 @@ class SessionLogger:
 
     def _record(self, event_type: str, *, detail: str = "", severity: str = "INFO", **fields: Any) -> None:
         self._session.record_event(event_type, detail=detail, severity=severity, **fields)
+
+    def _refresh_runtime_journal_metadata(self) -> None:
+        self._session.update_metadata(**self._runtime_journal.metadata())
 
     def update_metadata(self, **updates: Any) -> None:
         """Merge metadata that should appear in the final handoff payload."""
@@ -255,6 +264,193 @@ class SessionLogger:
             decision=decision,
         )
 
+    def record_step_started(self, *, machine_id: str, state_name: str, action_name: str) -> str:
+        """Record the start of one logical workflow step."""
+
+        return self._runtime_journal.record_step_started(
+            machine_id=machine_id,
+            state_name=state_name,
+            action_name=action_name,
+        )
+
+    def record_step_aborted(
+        self,
+        *,
+        step_id: str,
+        machine_id: str,
+        state_name: str,
+        action_name: str,
+        reason: str,
+        detail: str = "",
+    ) -> None:
+        """Record that a logical step ended without committing a new state."""
+
+        self._runtime_journal.record_step_aborted(
+            step_id=step_id,
+            machine_id=machine_id,
+            state_name=state_name,
+            action_name=action_name,
+            reason=reason,
+            detail=detail,
+        )
+
+    def record_decision_selected(
+        self,
+        *,
+        step_id: str,
+        machine_id: str,
+        state_name: str,
+        action_type: str,
+        label: str = "",
+        target_id: str = "",
+        source: str = "",
+        confidence: float | None = None,
+    ) -> str:
+        """Record the planner decision attached to the active logical step."""
+
+        return self._runtime_journal.record_decision_selected(
+            step_id=step_id,
+            machine_id=machine_id,
+            state_name=state_name,
+            action_type=action_type,
+            label=label,
+            target_id=target_id,
+            source=source,
+            confidence=confidence,
+        )
+
+    def record_approval_requested(
+        self,
+        *,
+        step_id: str,
+        machine_id: str,
+        state_name: str,
+        decision_id: str,
+        action_type: str,
+        label: str = "",
+        target_id: str = "",
+        fix_required: bool = False,
+    ) -> str:
+        """Record that the runtime is waiting for a human approval decision."""
+
+        return self._runtime_journal.record_approval_requested(
+            step_id=step_id,
+            machine_id=machine_id,
+            state_name=state_name,
+            decision_id=decision_id,
+            action_type=action_type,
+            label=label,
+            target_id=target_id,
+            fix_required=fix_required,
+        )
+
+    def record_approval_resolved(
+        self,
+        *,
+        step_id: str,
+        machine_id: str,
+        state_name: str,
+        decision_id: str,
+        approval_id: str,
+        outcome: str,
+        corrected_point: dict[str, float] | None = None,
+    ) -> None:
+        """Record the resolved outcome for a pending approval boundary."""
+
+        self._runtime_journal.record_approval_resolved(
+            step_id=step_id,
+            machine_id=machine_id,
+            state_name=state_name,
+            decision_id=decision_id,
+            approval_id=approval_id,
+            outcome=outcome,
+            corrected_point=corrected_point,
+        )
+
+    def record_input_started(
+        self,
+        *,
+        step_id: str,
+        machine_id: str,
+        state_name: str,
+        decision_id: str,
+        action_type: str,
+        label: str = "",
+        target_id: str = "",
+    ) -> str:
+        """Record the start of one guarded hardware-input dispatch."""
+
+        return self._runtime_journal.record_input_started(
+            step_id=step_id,
+            machine_id=machine_id,
+            state_name=state_name,
+            decision_id=decision_id,
+            action_type=action_type,
+            label=label,
+            target_id=target_id,
+        )
+
+    def record_input_completed(
+        self,
+        *,
+        step_id: str,
+        machine_id: str,
+        state_name: str,
+        decision_id: str,
+        input_id: str,
+        action_type: str,
+        outcome: str,
+        label: str = "",
+        target_id: str = "",
+        detail: str = "",
+    ) -> None:
+        """Record the result of one guarded hardware-input dispatch."""
+
+        self._runtime_journal.record_input_completed(
+            step_id=step_id,
+            machine_id=machine_id,
+            state_name=state_name,
+            decision_id=decision_id,
+            input_id=input_id,
+            action_type=action_type,
+            outcome=outcome,
+            label=label,
+            target_id=target_id,
+            detail=detail,
+        )
+
+    def record_transition_committed(
+        self,
+        *,
+        step_id: str,
+        machine_id: str,
+        state_name: str,
+        action_name: str,
+        event: str,
+        result: bool,
+        next_state: str | None,
+        decision_id: str = "",
+        action_type: str = "",
+        label: str = "",
+        target_id: str = "",
+    ) -> None:
+        """Advance the durable resume boundary to one committed transition."""
+
+        self._runtime_journal.record_transition_committed(
+            step_id=step_id,
+            machine_id=machine_id,
+            state_name=state_name,
+            action_name=action_name,
+            event=event,
+            result=result,
+            next_state=next_state,
+            decision_id=decision_id,
+            action_type=action_type,
+            label=label,
+            target_id=target_id,
+        )
+        self._refresh_runtime_journal_metadata()
+
     def record_timing(self, stage: str, duration_ms: float, detail: str = "") -> None:
         """Record one bounded runtime timing measurement."""
 
@@ -266,9 +462,16 @@ class SessionLogger:
             outcome="observed",
         )
 
-    def mark_terminal(self, status: str, end_reason: str, detail: str = "") -> None:
+    def mark_terminal(self, status: str, end_reason: str, detail: str = "", *, machine_id: str = "") -> None:
         """Record exactly one terminal event for the session."""
 
+        self._runtime_journal.record_terminal(
+            status=status,
+            end_reason=end_reason,
+            detail=detail,
+            machine_id=machine_id,
+        )
+        self._refresh_runtime_journal_metadata()
         self._session.mark_terminal(status, end_reason, detail=detail)
 
     def duration_seconds(self) -> float:
@@ -299,6 +502,11 @@ class SessionLogger:
     def finalize(self, *, status: str | None = None, end_reason: str | None = None, detail: str = "") -> Path:
         """Finalize the runtime session exactly once and return the JSON path."""
 
-        path = self._session.finalize(status=status, end_reason=end_reason, detail=detail)
+        summary = self._session.summary()
+        if status or end_reason:
+            self.mark_terminal(status or str(summary.get("status", "partial")), end_reason or str(summary.get("end_reason", "completed")), detail=detail)
+        elif str(summary.get("status", "partial") or "partial") == "partial":
+            self.mark_terminal("interrupted", "finalized_without_terminal_event", detail=detail)
+        path = self._session.finalize(detail=detail)
         LOGGER.info("Session log saved: %s", path)
         return path

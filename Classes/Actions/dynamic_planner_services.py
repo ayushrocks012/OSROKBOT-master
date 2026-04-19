@@ -23,8 +23,10 @@ from runtime_contracts import (
     ClientRectLike,
     DetectionLike,
     DetectionProvider,
+    InputControllerLike,
     OCRProvider,
     OCRRegionLike,
+    StateMonitorLike,
     WindowCaptureProvider,
 )
 from runtime_payloads import ResourceContext
@@ -45,6 +47,44 @@ def _record_runtime_timing(
     record_timing = getattr(context, "record_runtime_timing", None)
     if callable(record_timing):
         record_timing(stage, (time.perf_counter() - started_at) * 1000.0, detail=detail)
+
+
+def _session_logger(context: Any) -> Any | None:
+    return getattr(context, "session_logger", None)
+
+
+def _step_scope(context: Any) -> dict[str, Any]:
+    active_step_scope = getattr(context, "active_step_scope", None)
+    if callable(active_step_scope):
+        scope = active_step_scope()
+        if isinstance(scope, dict):
+            return {str(key): value for key, value in scope.items()}
+    return {}
+
+
+def _step_identity(context: Any) -> tuple[str, str, str]:
+    scope = _step_scope(context)
+    return (
+        str(scope.get("step_id", "") or ""),
+        str(scope.get("machine_id", "") or ""),
+        str(scope.get("state_name", "") or ""),
+    )
+
+
+def _update_step_scope(
+    context: Any,
+    *,
+    decision_id: str | None = None,
+    approval_id: str | None = None,
+    input_id: str | None = None,
+) -> None:
+    update_active_step_scope = getattr(context, "update_active_step_scope", None)
+    if callable(update_active_step_scope):
+        update_active_step_scope(
+            decision_id=decision_id,
+            approval_id=approval_id,
+            input_id=input_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -71,13 +111,17 @@ class PlannerObservationService:
         self.detector = detector
         self.ocr = ocr
         self.change_detector = change_detector
-        self._state_monitor: Any | None = None
+        self._state_monitor: StateMonitorLike | None = None
 
-    def _get_state_monitor(self, context: Any) -> Any:
+    def _get_state_monitor(self, context: Any) -> StateMonitorLike:
         if self._state_monitor is None:
-            from state_monitor import GameStateMonitor
+            build_state_monitor = getattr(context, "build_state_monitor", None)
+            if callable(build_state_monitor):
+                self._state_monitor = build_state_monitor()
+            else:
+                from state_monitor import GameStateMonitor
 
-            self._state_monitor = GameStateMonitor(context=context)
+                self._state_monitor = GameStateMonitor(context=context)
         return self._state_monitor
 
     def observe(self, context: Any) -> PlannerObservation | None:
@@ -237,6 +281,28 @@ class PlannerApprovalService:
     ) -> dict[str, Any] | None:
         """Block until the UI resolves a pending planner approval event."""
 
+        session_logger = _session_logger(context)
+        step_id, machine_id, state_name = _step_identity(context)
+        decision_id = str(_step_scope(context).get("decision_id", "") or "")
+        fix_required = decision.source == "ai_review" or decision.confidence < MIN_PLANNER_CONFIDENCE
+        if (
+            session_logger
+            and step_id
+            and decision_id
+            and hasattr(session_logger, "record_approval_requested")
+        ):
+            approval_id = session_logger.record_approval_requested(
+                step_id=step_id,
+                machine_id=machine_id or "machine_unknown",
+                state_name=state_name,
+                decision_id=decision_id,
+                action_type=decision.action_type,
+                label=decision.label,
+                target_id=decision.target_id,
+                fix_required=fix_required,
+            )
+            _update_step_scope(context, approval_id=approval_id, input_id=None)
+
         pending = context.set_pending_planner_decision(
             decision,
             screenshot_path=screenshot_path,
@@ -283,11 +349,44 @@ class PlannerApprovalService:
         finally:
             context.clear_pending_planner_decision()
 
+        session_logger = _session_logger(context)
+        scope = _step_scope(context)
+        step_id = str(scope.get("step_id", "") or "")
+        machine_id = str(scope.get("machine_id", "") or "machine_unknown")
+        state_name = str(scope.get("state_name", "") or "")
+        decision_id = str(scope.get("decision_id", "") or "")
+        approval_id = str(scope.get("approval_id", "") or "")
+        corrected_point = pending.get("corrected_point") if pending else None
+        if pending is None:
+            approval_outcome = "interrupted"
+        elif pending.get("result") != "approved":
+            approval_outcome = "rejected"
+        elif corrected_point:
+            approval_outcome = "corrected"
+        else:
+            approval_outcome = "approved"
+        if (
+            session_logger
+            and step_id
+            and decision_id
+            and approval_id
+            and hasattr(session_logger, "record_approval_resolved")
+        ):
+            session_logger.record_approval_resolved(
+                step_id=step_id,
+                machine_id=machine_id,
+                state_name=state_name,
+                decision_id=decision_id,
+                approval_id=approval_id,
+                outcome=approval_outcome,
+                corrected_point=corrected_point,
+            )
+        _update_step_scope(context, approval_id=None)
+
         if not pending or pending.get("result") != "approved":
             LOGGER.warning("Dynamic planner action rejected by user.")
             return None, False
 
-        corrected_point = pending.get("corrected_point")
         if corrected_point:
             corrected = decision.model_copy(
                 update={
@@ -311,6 +410,27 @@ class PlannerExecutionService:
         self._delay_policy = DelayPolicy()
 
     @staticmethod
+    def _input_controller(context: Any) -> InputControllerLike:
+        build_input_controller = getattr(context, "build_input_controller", None)
+        if callable(build_input_controller):
+            return build_input_controller()
+        return InputController(context=context)
+
+    @staticmethod
+    def _validate_bounds(controller: InputControllerLike, x: int, y: int, window_rect: ClientRectLike) -> bool:
+        validator = getattr(controller, "validate_bounds", None)
+        if callable(validator):
+            return bool(validator(x, y, window_rect))
+        return bool(InputController.validate_bounds(x, y, window_rect))
+
+    @staticmethod
+    def _is_allowed(controller: InputControllerLike, context: Any) -> bool:
+        is_allowed = getattr(controller, "is_allowed", None)
+        if callable(is_allowed):
+            return bool(is_allowed(context))
+        return bool(InputController.is_allowed(context))
+
+    @staticmethod
     def _absolute_point(decision: PlannerDecision, window_rect: ClientRectLike) -> tuple[int, int]:
         return (
             int(round(window_rect.left + window_rect.width * decision.x)),
@@ -325,12 +445,13 @@ class PlannerExecutionService:
         )
 
     def _execute_click(self, context: Any, decision: PlannerDecision, window_rect: ClientRectLike) -> bool:
+        controller = self._input_controller(context)
         target_x, target_y = self._absolute_point(decision, window_rect)
-        if not InputController.validate_bounds(target_x, target_y, window_rect):
+        if not self._validate_bounds(controller, target_x, target_y, window_rect):
             LOGGER.error("Dynamic planner target outside window: %s, %s", target_x, target_y)
             return False
         return bool(
-            InputController(context=context).click(
+            controller.click(
                 target_x,
                 target_y,
                 window_rect=window_rect,
@@ -340,12 +461,13 @@ class PlannerExecutionService:
         )
 
     def _execute_long_press(self, context: Any, decision: PlannerDecision, window_rect: ClientRectLike) -> bool:
+        controller = self._input_controller(context)
         target_x, target_y = self._absolute_point(decision, window_rect)
-        if not InputController.validate_bounds(target_x, target_y, window_rect):
+        if not self._validate_bounds(controller, target_x, target_y, window_rect):
             LOGGER.error("Dynamic planner long_press target outside window: %s, %s", target_x, target_y)
             return False
         return bool(
-            InputController(context=context).long_press(
+            controller.long_press(
                 target_x,
                 target_y,
                 window_rect=window_rect,
@@ -355,8 +477,9 @@ class PlannerExecutionService:
         )
 
     def _execute_drag(self, context: Any, decision: PlannerDecision, window_rect: ClientRectLike) -> bool:
+        controller = self._input_controller(context)
         start_x, start_y = self._absolute_point(decision, window_rect)
-        if not InputController.validate_bounds(start_x, start_y, window_rect):
+        if not self._validate_bounds(controller, start_x, start_y, window_rect):
             LOGGER.error("Dynamic planner drag start outside window: %s, %s", start_x, start_y)
             return False
 
@@ -372,12 +495,12 @@ class PlannerExecutionService:
             LOGGER.error("Dynamic planner drag has no end target or direction.")
             return False
 
-        if not InputController.validate_bounds(end_x, end_y, window_rect):
+        if not self._validate_bounds(controller, end_x, end_y, window_rect):
             LOGGER.error("Dynamic planner drag end outside window: %s, %s", end_x, end_y)
             return False
 
         return bool(
-            InputController(context=context).drag(
+            controller.drag(
                 start_x,
                 start_y,
                 end_x,
@@ -389,16 +512,16 @@ class PlannerExecutionService:
 
     @staticmethod
     def _execute_key(context: Any, decision: PlannerDecision, _window_rect: ClientRectLike) -> bool:
-        controller = InputController(context=context)
+        controller = PlannerExecutionService._input_controller(context)
         LOGGER.info("Dynamic planner key press: %s", decision.key_name)
         return bool(controller.key_press(decision.key_name, hold_seconds=0.1, context=context))
 
     @staticmethod
     def _execute_type(context: Any, decision: PlannerDecision, _window_rect: ClientRectLike) -> bool:
-        controller = InputController(context=context)
+        controller = PlannerExecutionService._input_controller(context)
         LOGGER.info("Dynamic planner typing: %s...", decision.text_content[:30])
         for char in decision.text_content:
-            if not InputController.is_allowed(context):
+            if not PlannerExecutionService._is_allowed(controller, context):
                 return False
             if not controller.key_press(char, hold_seconds=0.05, context=context):
                 return False
@@ -413,6 +536,30 @@ class PlannerExecutionService:
         """Dispatch the decision through the correct guarded input path."""
 
         started_at = time.perf_counter()
+        session_logger = _session_logger(context)
+        scope = _step_scope(context)
+        step_id = str(scope.get("step_id", "") or "")
+        machine_id = str(scope.get("machine_id", "") or "machine_unknown")
+        state_name = str(scope.get("state_name", "") or "")
+        decision_id = str(scope.get("decision_id", "") or "")
+        input_id = ""
+        if (
+            decision.action_type not in {"wait", "stop"}
+            and session_logger
+            and step_id
+            and decision_id
+            and hasattr(session_logger, "record_input_started")
+        ):
+            input_id = session_logger.record_input_started(
+                step_id=step_id,
+                machine_id=machine_id,
+                state_name=state_name,
+                decision_id=decision_id,
+                action_type=decision.action_type,
+                label=decision.label,
+                target_id=decision.target_id,
+            )
+            _update_step_scope(context, input_id=input_id)
         if decision.action_type == "wait":
             result = bool(self._delay_policy.wait(decision.delay_seconds, context=context))
             _record_runtime_timing(context, "planner_wait", started_at, detail=f"result={result}")
@@ -434,15 +581,52 @@ class PlannerExecutionService:
             "type": self._execute_type,
         }
         handler = handlers.get(decision.action_type)
-        result = bool(handler(context, decision, window_rect)) if handler else False
+        try:
+            result = bool(handler(context, decision, window_rect)) if handler else False
+        except Exception as exc:
+            if (
+                input_id
+                and session_logger
+                and hasattr(session_logger, "record_input_completed")
+            ):
+                session_logger.record_input_completed(
+                    step_id=step_id,
+                    machine_id=machine_id,
+                    state_name=state_name,
+                    decision_id=decision_id,
+                    input_id=input_id,
+                    action_type=decision.action_type,
+                    outcome="exception",
+                    label=decision.label,
+                    target_id=decision.target_id,
+                    detail=str(exc),
+                )
+            _update_step_scope(context, input_id=None)
+            raise
         _record_runtime_timing(
             context,
             "input_execute",
             started_at,
             detail=f"action={decision.action_type} result={result}",
         )
+        if (
+            input_id
+            and session_logger
+            and hasattr(session_logger, "record_input_completed")
+        ):
+            session_logger.record_input_completed(
+                step_id=step_id,
+                machine_id=machine_id,
+                state_name=state_name,
+                decision_id=decision_id,
+                input_id=input_id,
+                action_type=decision.action_type,
+                outcome="success" if result else "failure",
+                label=decision.label,
+                target_id=decision.target_id,
+            )
+        _update_step_scope(context, input_id=None)
         if not result:
-            session_logger = getattr(context, "session_logger", None)
             if session_logger and hasattr(session_logger, "record_error"):
                 session_logger.record_error(
                     f"Guarded input failed for {decision.action_type}.",
@@ -534,9 +718,26 @@ class PlannerFeedbackService:
             label=decision.label,
         )
         context.extracted["planner_last_decision"] = decision.to_dict()
-        session_logger = getattr(context, "session_logger", None)
+        session_logger = _session_logger(context)
         if session_logger and hasattr(session_logger, "record_decision"):
             session_logger.record_decision(decision.to_dict())
+        step_id, machine_id, state_name = _step_identity(context)
+        if (
+            session_logger
+            and step_id
+            and hasattr(session_logger, "record_decision_selected")
+        ):
+            decision_id = session_logger.record_decision_selected(
+                step_id=step_id,
+                machine_id=machine_id or "machine_unknown",
+                state_name=state_name,
+                action_type=decision.action_type,
+                label=decision.label,
+                target_id=decision.target_id,
+                source=decision.source,
+                confidence=float(decision.confidence),
+            )
+            _update_step_scope(context, decision_id=decision_id, approval_id=None, input_id=None)
         context.emit_state(f"Planner: {decision.action_type}\n{decision.label}")
 
     def record_no_decision(self, screenshot_path: Path, detections: list[DetectionLike]) -> None:

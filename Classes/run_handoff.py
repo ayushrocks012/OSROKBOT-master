@@ -21,6 +21,7 @@ from typing import Any
 
 from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy, policy_from_environment
 from logging_config import get_logger
+from runtime_journal import reconcile_runtime_journal_artifacts
 from security_utils import atomic_write_text, redact_secret
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -345,6 +346,7 @@ def _default_next_actions(record: dict[str, Any]) -> list[str]:
     run_kind = str(record.get("run_kind", ""))
     counts = record.get("counts", {})
     artifacts = record.get("artifacts", {})
+    resume_checkpoint = record.get("resume_checkpoint", {})
     if status == "success":
         if int(counts.get("warnings", 0) or 0):
             actions.append("Review warnings in the handoff text before trusting the run outcome.")
@@ -357,7 +359,16 @@ def _default_next_actions(record: dict[str, Any]) -> list[str]:
         if run_kind == "runtime_session":
             actions.append("Inspect diagnostics and planner_latest.png before changing the mission or approval settings.")
     else:
-        actions.append("Confirm whether the run was stopped intentionally before resuming or starting a new session.")
+        if run_kind == "runtime_session" and isinstance(resume_checkpoint, dict) and resume_checkpoint:
+            if not bool(resume_checkpoint.get("verified", False)):
+                actions.append("Do not resume automatically until the runtime journal checkpoint verifies cleanly.")
+            else:
+                resume_state = str(resume_checkpoint.get("next_state", "") or resume_checkpoint.get("state_name", "") or "the last committed state")
+                actions.append(f"Resume from {resume_state} only after re-observing the screen.")
+                if int(resume_checkpoint.get("pending_tail_count", 0) or 0):
+                    actions.append("Treat the uncommitted journal tail as incomplete work and reacquire the current UI before any new input.")
+        else:
+            actions.append("Confirm whether the run was stopped intentionally before resuming or starting a new session.")
     if artifacts.get("runtime_log"):
         actions.append("Use the aggregate runtime log only for extra context after the per-run artifacts.")
     return actions[:4]
@@ -395,8 +406,12 @@ def build_run_record(
         "diagnostics": str(metadata.get("diagnostics_path", DEFAULT_DIAGNOSTICS_DIR)),
         "heartbeat": str(metadata.get("heartbeat_path", DEFAULT_HEARTBEAT_PATH)),
         "planner_screenshot": str(metadata.get("planner_screenshot_path", DEFAULT_PLANNER_SCREENSHOT_PATH)),
+        "runtime_journal": str(metadata.get("runtime_journal_path", "")),
+        "runtime_checkpoint": str(metadata.get("runtime_checkpoint_path", "")),
     }
     command_summary = metadata.get("command_summary", {})
+    resume_checkpoint = metadata.get("resume_checkpoint")
+    journal_integrity = metadata.get("journal_integrity", {})
     record = {
         "run_id": run_id,
         "run_kind": run_kind,
@@ -416,6 +431,8 @@ def build_run_record(
         "top_errors": _build_top_errors(events),
         "key_events": _build_key_events(events),
         "artifacts": artifacts,
+        "resume_checkpoint": resume_checkpoint if isinstance(resume_checkpoint, dict) else None,
+        "journal_integrity": journal_integrity if isinstance(journal_integrity, dict) else {},
         "command_summary": command_summary,
         "next_actions": [],
         "summary": {
@@ -482,6 +499,22 @@ def render_latest_run_text(record: dict[str, Any]) -> str:
     if final_state:
         lines.append(f"- Final State: {final_state}")
 
+    resume_checkpoint = record.get("resume_checkpoint", {})
+    if isinstance(resume_checkpoint, dict) and resume_checkpoint:
+        lines.extend(["", "Resume Boundary"])
+        lines.append(f"- Verified: {resume_checkpoint.get('verified', False)}")
+        resume_state = str(resume_checkpoint.get("next_state", "") or resume_checkpoint.get("state_name", "") or "")
+        if resume_state:
+            lines.append(f"- Resume From State: {resume_state}")
+        committed_at = str(resume_checkpoint.get("last_committed_at", "") or "")
+        if committed_at:
+            lines.append(f"- Last Commit: {committed_at}")
+        lines.append(f"- Pending Tail Count: {int(resume_checkpoint.get('pending_tail_count', 0) or 0)}")
+        pending_tail_events = resume_checkpoint.get("pending_tail_events", [])
+        if isinstance(pending_tail_events, list) and pending_tail_events:
+            lines.append(f"- Pending Tail Events: {', '.join(str(item) for item in pending_tail_events)}")
+        lines.append("- Policy: Re-observe the screen before any new input.")
+
     lines.extend(["", "Key Events"])
     key_events = record.get("key_events", [])
     if key_events:
@@ -520,7 +553,18 @@ def render_latest_run_text(record: dict[str, Any]) -> str:
 
     lines.extend(["", "Artifacts"])
     artifacts = record.get("artifacts", {})
-    for key in ("summary", "json", "transcript", "stderr", "event_stream", "diagnostics", "heartbeat", "planner_screenshot"):
+    for key in (
+        "summary",
+        "json",
+        "transcript",
+        "stderr",
+        "event_stream",
+        "runtime_journal",
+        "runtime_checkpoint",
+        "diagnostics",
+        "heartbeat",
+        "planner_screenshot",
+    ):
         value = artifacts.get(key)
         if value:
             lines.append(f"- {key}: {value}")
@@ -805,10 +849,45 @@ def reconcile_latest_runtime_run(
             "diagnostics_path": artifacts.get("diagnostics", DEFAULT_DIAGNOSTICS_DIR),
             "heartbeat_path": artifacts.get("heartbeat", DEFAULT_HEARTBEAT_PATH),
             "planner_screenshot_path": artifacts.get("planner_screenshot", DEFAULT_PLANNER_SCREENSHOT_PATH),
+            "runtime_journal_path": artifacts.get("runtime_journal", ""),
+            "runtime_checkpoint_path": artifacts.get("runtime_checkpoint", ""),
+            "resume_checkpoint": payload.get("resume_checkpoint", {}),
+            "journal_integrity": payload.get("journal_integrity", {}),
             "exit_code": payload.get("exit_code"),
             "command_summary": payload.get("command_summary", {}),
         },
     )
+    journal_updates = reconcile_runtime_journal_artifacts(
+        run_id=record["run_id"],
+        journal_path=Path(str(record["artifacts"].get("runtime_journal", ""))),
+        checkpoint_path=Path(str(record["artifacts"].get("runtime_checkpoint", ""))),
+        status="interrupted",
+        end_reason="previous_run_incomplete",
+        detail="Previous runtime session did not finalize cleanly.",
+    )
+    if journal_updates:
+        record = build_run_record(
+            run_id=str(payload.get("run_id", stem)),
+            run_kind="runtime_session",
+            command_or_mission=str(payload.get("command_or_mission", payload.get("mission", ""))),
+            started_at=started_at,
+            ended_at=ended_at,
+            status="interrupted",
+            end_reason="previous_run_incomplete",
+            events=events + [event],
+            artifact_paths=build_run_artifact_paths(base_dir, stem),
+            metadata={
+                "mission": payload.get("mission", ""),
+                "autonomy_level": payload.get("autonomy_level"),
+                "runtime_log_path": artifacts.get("runtime_log", DEFAULT_RUNTIME_LOG_PATH),
+                "diagnostics_path": artifacts.get("diagnostics", DEFAULT_DIAGNOSTICS_DIR),
+                "heartbeat_path": artifacts.get("heartbeat", DEFAULT_HEARTBEAT_PATH),
+                "planner_screenshot_path": artifacts.get("planner_screenshot", DEFAULT_PLANNER_SCREENSHOT_PATH),
+                "exit_code": payload.get("exit_code"),
+                "command_summary": payload.get("command_summary", {}),
+                **journal_updates,
+            },
+        )
     record_path = base_dir / f"{stem}.json"
     text_path = base_dir / f"{stem}.txt"
     atomic_write_text(record_path, json.dumps(record, indent=2, ensure_ascii=False) + "\n")

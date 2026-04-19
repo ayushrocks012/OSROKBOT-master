@@ -64,6 +64,120 @@ class StateMachine:
         self.ai_fallback_threshold = 3
         self.recovery_executor: Any | None = None
 
+    @staticmethod
+    def _session_logger(context: Any | None) -> Any | None:
+        return getattr(context, "session_logger", None) if context is not None else None
+
+    @staticmethod
+    def _machine_id(context: Any | None) -> str:
+        current_runtime_machine_id = getattr(context, "current_runtime_machine_id", None) if context is not None else None
+        if callable(current_runtime_machine_id):
+            value = current_runtime_machine_id()
+            if value:
+                return str(value)
+        return "machine_unknown"
+
+    @staticmethod
+    def _active_step_scope(context: Any | None) -> dict[str, Any]:
+        active_step_scope = getattr(context, "active_step_scope", None) if context is not None else None
+        if callable(active_step_scope):
+            scope = active_step_scope()
+            if isinstance(scope, dict):
+                return {str(key): value for key, value in scope.items()}
+        return {}
+
+    @classmethod
+    def _planner_decision_fields(cls, context: Any | None) -> tuple[str, str, str]:
+        extracted = getattr(context, "extracted", {}) if context is not None else {}
+        if not isinstance(extracted, dict):
+            return "", "", ""
+        decision = extracted.get("planner_last_decision")
+        if not isinstance(decision, dict):
+            return "", "", ""
+        return (
+            str(decision.get("action_type", "") or ""),
+            str(decision.get("label", "") or ""),
+            str(decision.get("target_id", "") or ""),
+        )
+
+    @classmethod
+    def _start_journal_step(cls, context: Any | None, state_name: str, action_name: str) -> None:
+        if context is None:
+            return
+        session_logger = cls._session_logger(context)
+        if not session_logger or not hasattr(session_logger, "record_step_started"):
+            return
+        machine_id = cls._machine_id(context)
+        step_id = session_logger.record_step_started(
+            machine_id=machine_id,
+            state_name=state_name,
+            action_name=action_name,
+        )
+        set_active_step_scope = getattr(context, "set_active_step_scope", None)
+        if callable(set_active_step_scope):
+            set_active_step_scope(step_id, state_name, action_name, machine_id=machine_id)
+
+    @classmethod
+    def _record_transition_commit(
+        cls,
+        context: Any | None,
+        state_name: str,
+        action_name: str,
+        *,
+        event: str,
+        result: bool,
+        next_state: str | None,
+    ) -> None:
+        if context is None:
+            return
+        session_logger = cls._session_logger(context)
+        if not session_logger or not hasattr(session_logger, "record_transition_committed"):
+            return
+        scope = cls._active_step_scope(context)
+        step_id = str(scope.get("step_id", "") or "")
+        if not step_id:
+            return
+        action_type, label, target_id = cls._planner_decision_fields(context)
+        session_logger.record_transition_committed(
+            step_id=step_id,
+            machine_id=str(scope.get("machine_id", cls._machine_id(context)) or cls._machine_id(context)),
+            state_name=state_name,
+            action_name=action_name,
+            event=event,
+            result=result,
+            next_state=next_state,
+            decision_id=str(scope.get("decision_id", "") or ""),
+            action_type=action_type,
+            label=label,
+            target_id=target_id,
+        )
+
+    @classmethod
+    def _abort_journal_step(cls, context: Any | None, *, reason: str, detail: str = "") -> None:
+        if context is None:
+            return
+        session_logger = cls._session_logger(context)
+        if not session_logger or not hasattr(session_logger, "record_step_aborted"):
+            return
+        scope = cls._active_step_scope(context)
+        step_id = str(scope.get("step_id", "") or "")
+        if not step_id:
+            return
+        session_logger.record_step_aborted(
+            step_id=step_id,
+            machine_id=str(scope.get("machine_id", cls._machine_id(context)) or cls._machine_id(context)),
+            state_name=str(scope.get("state_name", "") or ""),
+            action_name=str(scope.get("action_name", "") or ""),
+            reason=reason,
+            detail=detail,
+        )
+
+    @staticmethod
+    def _clear_journal_step(context: Any | None) -> None:
+        clear_active_step_scope = getattr(context, "clear_active_step_scope", None) if context is not None else None
+        if callable(clear_active_step_scope):
+            clear_active_step_scope()
+
     def add_state(
         self,
         name: str,
@@ -139,6 +253,11 @@ class StateMachine:
             label=state_name,
         )
         self._record_transition(context, state_name, status_text, result, next_state=next_state, event=event)
+        self._abort_journal_step(
+            context,
+            reason="invalid_transition",
+            detail=f"{source}:{status_text}",
+        )
         self.halted = True
         return
 
@@ -196,6 +315,14 @@ class StateMachine:
                     next_state=state_name,
                     event="precondition",
                 )
+                self._record_transition_commit(
+                    context,
+                    state_name,
+                    getattr(definition.action, "status_text", definition.action.__class__.__name__),
+                    event="precondition",
+                    result=False,
+                    next_state=state_name,
+                )
                 context.save_failure_diagnostic(f"precondition_{state_name}")
             self.precondition_failures[state_name] = 0
             self.global_recovery(context)
@@ -221,6 +348,14 @@ class StateMachine:
                 next_state=resolved_next_state,
                 event="precondition",
             )
+            self._record_transition_commit(
+                context,
+                state_name,
+                getattr(definition.action, "status_text", definition.action.__class__.__name__),
+                event="precondition",
+                result=False,
+                next_state=resolved_next_state,
+            )
         self.current_state = resolved_next_state
         return False
 
@@ -235,6 +370,14 @@ class StateMachine:
     ) -> None:
         pending_recovery = getattr(context, "extracted", {}).get("pending_ai_recovery")
         context.record_state(state_name, status_text, result, next_state=next_state)
+        self._record_transition_commit(
+            context,
+            state_name,
+            status_text,
+            event="action",
+            result=result,
+            next_state=next_state,
+        )
         if pending_recovery:
             self._verify_pending_recovery(context, state_name, next_state, result)
 
@@ -294,12 +437,19 @@ class StateMachine:
         state_name = self.current_state
         if state_name is None:
             raise RuntimeError("Initial state is not set")
+        action_name = getattr(definition.action, "status_text", definition.action.__class__.__name__)
+        self._start_journal_step(context, state_name, action_name)
+        try:
+            if definition.precondition and not self._precondition_passes(definition.precondition, context):
+                return self._handle_precondition_failure(context, state_name, definition)
 
-        if definition.precondition and not self._precondition_passes(definition.precondition, context):
-            return self._handle_precondition_failure(context, state_name, definition)
-
-        self.precondition_failures[state_name] = 0
-        return self._perform_action(context, state_name, definition)
+            self.precondition_failures[state_name] = 0
+            return self._perform_action(context, state_name, definition)
+        except Exception as exc:
+            self._abort_journal_step(context, reason="exception", detail=str(exc))
+            raise
+        finally:
+            self._clear_journal_step(context)
 
     def close(self) -> None:
         """Release resources owned by registered actions."""
@@ -419,6 +569,33 @@ class StateMachine:
         LOGGER.warning("StateMachine global recovery ended without confirming a known state: %s", state.value)
         return False
 
+    @staticmethod
+    def _build_state_monitor(context: Any | None = None) -> Any:
+        build_state_monitor = getattr(context, "build_state_monitor", None) if context else None
+        if callable(build_state_monitor):
+            return build_state_monitor()
+        from state_monitor import GameStateMonitor
+
+        return GameStateMonitor(context=context)
+
+    @staticmethod
+    def _build_input_controller(context: Any | None = None) -> Any:
+        build_input_controller = getattr(context, "build_input_controller", None) if context else None
+        if callable(build_input_controller):
+            return build_input_controller()
+        from input_controller import InputController
+
+        return InputController(context=context)
+
+    @staticmethod
+    def _build_window_handler(context: Any | None = None) -> Any:
+        build_window_handler = getattr(context, "build_window_handler", None) if context else None
+        if callable(build_window_handler):
+            return build_window_handler()
+        from window_handler import WindowHandler
+
+        return WindowHandler()
+
     def global_recovery(self, context=None):
         """Escalate recovery from UI cleanup to optional client restart.
 
@@ -436,18 +613,16 @@ class StateMachine:
             `InputController`, and may restart the client through
             `GameStateMonitor`.
         """
-        from input_controller import InputController
-        from state_monitor import GameState, GameStateMonitor
-        from window_handler import WindowHandler
+        from state_monitor import GameState
 
-        monitor = GameStateMonitor(context=context)
-        controller = InputController(context=context)
+        monitor = self._build_state_monitor(context)
+        controller = self._build_input_controller(context)
         window_title = context.window_title if context and getattr(context, "window_title", None) else "Rise of Kingdoms"
 
         LOGGER.info("StateMachine global recovery started.")
         self._emit_recovery_state(context, "Global recovery\nclearing UI")
 
-        WindowHandler().ensure_foreground(window_title, wait_seconds=0.5)
+        self._build_window_handler(context).ensure_foreground(window_title, wait_seconds=0.5)
         monitor.save_diagnostic_screenshot(f"recovery_{self.current_state or 'unknown'}")
 
         recovered = (

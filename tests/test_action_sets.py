@@ -21,3 +21,13 @@ def test_dynamic_planner_uses_injected_factory():
     assert len(created) == 1
     assert machine.states["plan_next"].action is created[0]
     assert machine.current_state == "plan_next"
+
+
+def test_map_view_precondition_uses_context_monitor_factory():
+    context = type(
+        "Context",
+        (),
+        {"build_state_monitor": lambda self: type("Monitor", (), {"current_state": lambda _self: "MAP"})()},
+    )()
+
+    assert ActionSets.map_view_precondition()(context) is True
