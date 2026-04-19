@@ -147,9 +147,11 @@ class InputController:
         move_duration: float | None = None,
         move_steps_per_second=60,
         humanization_profile: HumanizationProfile | None = None,
+        window_handler=None,
     ):
         self.delay_policy = delay_policy or DelayPolicy()
         self.context = context
+        self._window_handler = window_handler
         self.humanization_profile = humanization_profile or HumanizationProfile()
         self.coordinate_noise_px = max(
             0,
@@ -243,9 +245,13 @@ class InputController:
         if not window_title:
             return True
         try:
-            from window_handler import WindowHandler
+            handler = self._window_handler
+            if handler is None:
+                from window_handler import WindowHandler
+                handler = WindowHandler()
+                self._window_handler = handler
 
-            if WindowHandler().ensure_foreground(window_title, wait_seconds=0.5):
+            if handler.ensure_foreground(window_title, wait_seconds=0.5):
                 return True
         except Exception as exc:
             LOGGER.error(f"Foreground input guard failed: {exc}")

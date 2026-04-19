@@ -205,20 +205,23 @@ class WindowHandler:
     def _restore_no_activate(hwnd):
         if not WindowHandler._win32_available():
             return
-        if win32gui.IsIconic(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
-            win32gui.SetWindowPos(
-                hwnd,
-                None,
-                0,
-                0,
-                0,
-                0,
-                win32con.SWP_NOMOVE
-                | win32con.SWP_NOSIZE
-                | win32con.SWP_NOZORDER
-                | win32con.SWP_NOACTIVATE,
-            )
+        try:
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
+                win32gui.SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    win32con.SWP_NOMOVE
+                    | win32con.SWP_NOSIZE
+                    | win32con.SWP_NOZORDER
+                    | win32con.SWP_NOACTIVATE,
+                )
+        except WINDOW_HANDLER_EXCEPTIONS as exc:
+            LOGGER.warning("Unable to restore window handle %s: %s", hwnd, exc)
 
     def _print_window_client_image(self, hwnd: int, client_rect: ClientRect) -> Image.Image | None:
         return self._capture_backend.capture_client_image(hwnd, client_rect)
