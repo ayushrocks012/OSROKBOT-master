@@ -1,3 +1,11 @@
+"""Coarse game-state checks and restart support for runtime safety guards.
+
+This module owns low-frequency OCR and detector checks used by recovery and
+workflow guards. It is intentionally separate from the planner's richer
+observation path so coarse state classification, march-slot OCR, and client
+restart handling stay injectable and testable.
+"""
+
 import re
 
 # Restart uses explicit configured executable path without shell=True.
@@ -30,6 +38,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 class GameState(str, Enum):
+    """Supported coarse game-state classifications."""
+
     CITY = "CITY"
     MAP = "MAP"
     BLOCKED = "BLOCKED"
@@ -234,6 +244,8 @@ class GameStateMonitor:
         return GameState.UNKNOWN
 
     def save_diagnostic_screenshot(self, label="recovery"):
+        """Capture one diagnostic screenshot using the monitor window source."""
+
         screenshot, _ = self._screenshot()
         if screenshot is None:
             LOGGER.warning("Diagnostic screenshot skipped: screenshot unavailable.")
@@ -261,12 +273,18 @@ class GameStateMonitor:
         )
 
     def is_known_state(self):
+        """Return whether the current screen is confidently CITY or MAP."""
+
         return self.current_state() in {GameState.CITY, GameState.MAP}
 
     def is_map_view(self):
+        """Return whether the current screen is the world-map view."""
+
         return self.current_state() == GameState.MAP
 
     def count_idle_march_slots(self, max_age_seconds=OCR_CACHE_SECONDS):
+        """Return the cached or OCR-derived number of idle march slots."""
+
         cached = self._cache_get("idle_march_slots", max_age_seconds)
         if cached is not None:
             return cached
@@ -292,12 +310,16 @@ class GameStateMonitor:
             return None
 
     def has_idle_march_slots(self, required=1):
+        """Return whether enough idle march slots appear to be available."""
+
         idle_slots = self.count_idle_march_slots()
         if idle_slots is None:
             return True
         return idle_slots >= required
 
     def read_action_points(self, max_age_seconds=OCR_CACHE_SECONDS):
+        """Return the cached or OCR-derived action-point count."""
+
         cached = self._cache_get("action_points", max_age_seconds)
         if cached is not None:
             return cached
@@ -321,6 +343,8 @@ class GameStateMonitor:
             return None
 
     def has_action_points(self, required=DEFAULT_BARBARIAN_AP_COST):
+        """Return whether the account appears to have enough action points."""
+
         action_points = self.read_action_points()
         if action_points is None:
             return True

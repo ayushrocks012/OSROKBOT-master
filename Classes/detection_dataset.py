@@ -19,6 +19,8 @@ DEFAULT_DATASET_RETENTION = policy_from_environment(
 
 
 class DetectionDataset:
+    """Export bounded recovery-training stubs from runtime screenshots."""
+
     def __init__(
         self,
         output_dir=DEFAULT_DATASET_DIR,
@@ -32,6 +34,8 @@ class DetectionDataset:
         return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in str(value))
 
     def export_stub(self, screenshot_path, state_name, action_image=None, detections=None):
+        """Export one dataset stub image plus metadata for offline labeling."""
+
         if not screenshot_path:
             return None
 
@@ -70,6 +74,8 @@ class DetectionDataset:
         return image_path
 
     def export_correction(self, screenshot_path, decision, corrected_point, detections=None):
+        """Export one planner-correction sample alongside the corrected point."""
+
         image_path = self.export_stub(
             screenshot_path,
             "planner_correction",

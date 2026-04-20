@@ -13,7 +13,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-_SESSION_TEMP_ROOT = Path(tempfile.gettempdir()) / "osrokbot-pytest"
+_SESSION_TEMP_ROOT = Path(tempfile.gettempdir()) / "orb"
 
 
 def _safe_name(value: str) -> str:

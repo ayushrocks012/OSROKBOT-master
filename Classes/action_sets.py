@@ -28,6 +28,8 @@ class ActionSets:
         self._dynamic_planner_factory = dynamic_planner_factory or DynamicPlannerAction
 
     def create_machine(self) -> StateMachine:
+        """Return a fresh state machine for one supported workflow."""
+
         return StateMachine()
 
     @staticmethod
@@ -133,6 +135,8 @@ class ActionSets:
         return _check
 
     def dynamic_planner(self) -> StateMachine:
+        """Build the supported planner-first workflow state machine."""
+
         machine = self.create_machine()
         machine.add_state("plan_next", self._dynamic_planner_factory(), "plan_next", "plan_next")
         machine.set_initial_state("plan_next")

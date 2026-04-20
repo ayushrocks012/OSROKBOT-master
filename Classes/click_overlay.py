@@ -198,6 +198,8 @@ class ClickOverlay(QtWidgets.QWidget):
         self.hide()
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        """Reposition the intent tooltip when the overlay size changes."""
+
         super().resizeEvent(event)
         self._update_intent_tooltip()
 
@@ -387,11 +389,15 @@ class PlannerCorrectionOverlay(QtWidgets.QWidget):
         self.point_selected.emit(normalized)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Track the live cursor position while the Fix overlay is active."""
+
         self._cursor_pos = event.pos()
         self.update()
         super().mouseMoveEvent(event)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        """Confirm or cancel the corrected point from one mouse click."""
+
         if not self._active:
             return
         if event.button() == QtCore.Qt.LeftButton:
@@ -406,6 +412,8 @@ class PlannerCorrectionOverlay(QtWidgets.QWidget):
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        """Cancel the correction overlay when Escape is pressed."""
+
         if event.key() == QtCore.Qt.Key_Escape:
             self.dismiss()
             self.selection_cancelled.emit()
@@ -413,6 +421,8 @@ class PlannerCorrectionOverlay(QtWidgets.QWidget):
         super().keyPressEvent(event)
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        """Draw the blocking Fix overlay crosshair and window guidance."""
+
         if not self._active:
             return
 

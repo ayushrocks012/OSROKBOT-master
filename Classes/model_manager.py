@@ -24,6 +24,8 @@ def _resolve_configured_path(value):
 
 
 class ModelManager:
+    """Locate and optionally download local YOLO model weights safely."""
+
     def __init__(self, config=None, models_dir=MODELS_DIR):
         self.config = config or ConfigManager()
         self.models_dir = Path(models_dir)
@@ -72,6 +74,8 @@ class ModelManager:
             raise ValueError("YOLO weights download produced an empty file")
 
     def find_yolo_weights(self):
+        """Return the configured or already-downloaded YOLO weights path."""
+
         configured_path = self.config.get("ROK_YOLO_WEIGHTS")
         if configured_path:
             resolved = _resolve_configured_path(configured_path)
@@ -90,9 +94,13 @@ class ModelManager:
         return None
 
     def has_configured_download(self):
+        """Return whether an HTTPS download URL is configured for YOLO weights."""
+
         return bool(self.config.get("ROK_YOLO_WEIGHTS_URL"))
 
     def ensure_yolo_weights(self):
+        """Return local YOLO weights, downloading them when configured."""
+
         weights_path = self.find_yolo_weights()
         if weights_path:
             return weights_path
@@ -129,5 +137,7 @@ class ModelManager:
 
 
 def yolo_download_required(config=None):
+    """Return whether startup still needs to download YOLO weights."""
+
     manager = ModelManager(config)
     return manager.find_yolo_weights() is None and manager.has_configured_download()

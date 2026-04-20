@@ -22,6 +22,8 @@ DEFAULT_OCR_MAX_IMAGE_SIDE = 1280
 
 @dataclass(frozen=True)
 class OCRRegion:
+    """Normalized OCR region returned by EasyOCR or Tesseract helpers."""
+
     text: str
     x: float
     y: float
@@ -30,6 +32,8 @@ class OCRRegion:
     confidence: float
 
     def to_dict(self):
+        """Return this OCR region as a plain JSON-serializable dictionary."""
+
         return asdict(self)
 
 
@@ -265,6 +269,8 @@ class OCRService:
         return regions
 
     def read(self, image_or_roi, purpose=None):
+        """Read OCR text from one image or ROI using the configured engine order."""
+
         LOGGER.debug("OCR read purpose: %s", purpose or "general")
         image = self._image(image_or_roi)
         for engine in self._engine_order():
@@ -274,6 +280,8 @@ class OCRService:
         return ""
 
     def read_regions(self, image_or_roi, purpose=None):
+        """Read OCR regions from one image or ROI using the configured engine order."""
+
         LOGGER.debug("OCR region read purpose: %s", purpose or "general")
         image = self._image(image_or_roi)
         for engine in self._engine_order():

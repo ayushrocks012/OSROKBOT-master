@@ -124,6 +124,8 @@ def scoped_log_context(**fields: Any) -> Iterator[None]:
 
 
 class ColoredFormatter(logging.Formatter):
+    """Render console log lines with severity-based terminal colors."""
+
     COLORS = {
         logging.DEBUG: "cyan",
         logging.INFO: "green",
@@ -133,6 +135,8 @@ class ColoredFormatter(logging.Formatter):
     }
 
     def format(self, record: logging.LogRecord) -> str:
+        """Return one colored console log line for the supplied record."""
+
         message = super().format(record)
         color = self.COLORS.get(record.levelno)
         return colored(message, color) if color else message
@@ -142,6 +146,8 @@ class JsonFormatter(logging.Formatter):
     """Render one structured log entry per line for external ingestion."""
 
     def format(self, record: logging.LogRecord) -> str:
+        """Return one JSON log line with redacted structured fields."""
+
         message = redact_secret(record.getMessage())
         payload: dict[str, Any] = {
             "timestamp": _utc_timestamp(record.created),
@@ -178,6 +184,8 @@ class RedactingFilter(logging.Filter):
     """Remove local secrets and inject structured log context into records."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Redact the log record message and attach bound context fields."""
+
         rendered = record.getMessage()
         redacted = redact_secret(rendered)
         if redacted != rendered:
@@ -192,6 +200,8 @@ class RedactingFilter(logging.Filter):
 
 
 def configure_logging(log_path: Path | str = DEFAULT_LOG_PATH) -> logging.Logger:
+    """Configure and return the shared OSROKBOT root logger."""
+
     logger = logging.getLogger(LOGGER_NAME)
     if logger.handlers:
         return logger
@@ -232,6 +242,8 @@ def configure_logging(log_path: Path | str = DEFAULT_LOG_PATH) -> logging.Logger
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
+    """Return the shared root logger or one of its children."""
+
     logger = configure_logging()
     if not name:
         return logger

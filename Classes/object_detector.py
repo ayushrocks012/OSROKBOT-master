@@ -10,6 +10,8 @@ LOGGER = get_logger(__name__)
 
 @dataclass
 class Detection:
+    """Normalized detector output for one visible UI target."""
+
     label: str
     x: float
     y: float
@@ -18,15 +20,23 @@ class Detection:
     confidence: float
 
     def to_dict(self):
+        """Return a JSON-serializable dictionary copy of the detection."""
+
         return asdict(self)
 
 
 class NoOpDetector:
+    """Fallback detector that reports no detections."""
+
     def detect(self, screenshot):
+        """Return no detections for the supplied screenshot."""
+
         return []
 
 
 class YOLODetector:
+    """Ultralytics-backed detector that emits normalized UI detections."""
+
     def __init__(self, weights_path):
         try:
             from ultralytics import YOLO
@@ -36,6 +46,8 @@ class YOLODetector:
         self.model = YOLO(str(weights_path))
 
     def detect(self, screenshot):
+        """Run YOLO on one screenshot and return normalized detections."""
+
         image = screenshot
         if isinstance(screenshot, str | Path):
             image = Image.open(screenshot).convert("RGB")
@@ -68,6 +80,8 @@ class YOLODetector:
 
 
 def create_detector():
+    """Return the configured YOLO detector or a no-op fallback."""
+
     weights_path = ModelManager().find_yolo_weights()
     if not weights_path:
         return NoOpDetector()

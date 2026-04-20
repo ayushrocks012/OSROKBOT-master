@@ -117,6 +117,8 @@ class PlannerTarget:
     source: str
 
     def to_prompt_dict(self):
+        """Return the model-facing target payload for planner prompts."""
+
         return {
             "id": self.target_id,
             "source": self.source,
@@ -943,6 +945,8 @@ class DynamicPlanner:
 
     @staticmethod
     def request_interrupted(context):
+        """Return whether the active runtime paused or stopped a planner request."""
+
         bot = getattr(context, "bot", None) if context else None
         if not bot:
             return False

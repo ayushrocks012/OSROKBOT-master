@@ -50,9 +50,13 @@ class EnvironmentSecretProvider:
     name = "environment"
 
     def get(self, key: str) -> str | None:
+        """Return one secret from the current process environment."""
+
         return os.getenv(key)
 
     def set_many(self, values: Mapping[str, str | None]) -> None:
+        """Apply secret updates to the current process environment."""
+
         for key, value in values.items():
             if value in {None, ""}:
                 os.environ.pop(key, None)
@@ -69,10 +73,14 @@ class DotenvSecretProvider:
         self.path = Path(path)
 
     def get(self, key: str) -> str | None:
+        """Return one secret from the configured dotenv file."""
+
         value = parse_env_file(self.path).get(key)
         return value if value not in {None, ""} else None
 
     def set_many(self, values: Mapping[str, str | None]) -> None:
+        """Persist one or more secret updates to the dotenv file."""
+
         update_env_file(self.path, dict(values))
 
 
@@ -92,6 +100,8 @@ class ChainSecretProvider:
         return getattr(self.primary, "name", "unknown")
 
     def get(self, key: str) -> str | None:
+        """Resolve one secret by reading the primary provider then fallbacks."""
+
         for provider in (self.primary, *self.fallbacks):
             value = provider.get(key)
             if value not in {None, ""}:
@@ -99,6 +109,8 @@ class ChainSecretProvider:
         return None
 
     def set_many(self, values: Mapping[str, str | None]) -> None:
+        """Write secrets to the primary provider and clear configured fallbacks."""
+
         updates = dict(values)
         self.primary.set_many(updates)
         cleanup = {key: None for key in updates}
@@ -212,6 +224,8 @@ class DpapiSecretProvider:
         return f"OSROKBOT::{key}".encode()
 
     def get(self, key: str) -> str | None:
+        """Return one decrypted secret from the DPAPI-backed local store."""
+
         secrets = self._load_payload().get("secrets", {})
         if not isinstance(secrets, dict):
             return None
@@ -226,6 +240,8 @@ class DpapiSecretProvider:
             return None
 
     def set_many(self, values: Mapping[str, str | None]) -> None:
+        """Persist one or more encrypted secrets to the DPAPI local store."""
+
         payload = self._load_payload()
         secrets = payload.get("secrets", {})
         if not isinstance(secrets, dict):

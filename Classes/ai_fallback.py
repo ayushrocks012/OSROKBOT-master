@@ -106,6 +106,8 @@ class AIFallback:
             return None
 
     def analyze_failure(self, context, screenshot_path, state_history):
+        """Request structured recovery guidance for one failed screenshot state."""
+
         if not screenshot_path:
             return None
 
@@ -138,6 +140,8 @@ class AIFallback:
         return result
 
     def answer_lyceum(self, question, options):
+        """Return a structured answer for one Lyceum multiple-choice prompt."""
+
         if not question or len(options) != 4:
             return None
 

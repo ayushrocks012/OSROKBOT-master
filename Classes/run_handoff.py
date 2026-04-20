@@ -78,22 +78,54 @@ _LEGACY_TEST_ARTIFACT_PATTERNS = (
     "data/pytest-cache-files-*",
     "data/smoke_config_tests",
 )
+_ARTIFACT_TEXT_KEYS = (
+    "summary",
+    "json",
+    "transcript",
+    "stderr",
+    "event_stream",
+    "runtime_journal",
+    "runtime_checkpoint",
+    "diagnostics",
+    "heartbeat",
+    "planner_screenshot",
+)
+_DIRECT_COUNT_FIELDS = {
+    "approval": "approvals",
+    "correction": "corrections",
+    "warning": "warnings",
+    "error": "errors",
+    "captcha": "captchas",
+    "timing": "timings",
+}
+_WARNING_COUNT_FIELDS = {
+    "planner_rejection": "planner_rejections",
+    "rejection": "rejections",
+}
 
 
 def _now() -> datetime:
+    """Return the current wall-clock timestamp for run artifacts."""
+
     return datetime.now()
 
 
 def _isoformat(value: datetime) -> str:
+    """Serialize timestamps using second precision for operator-facing artifacts."""
+
     return value.isoformat(timespec="seconds")
 
 
 def _safe_run_fragment(value: str) -> str:
+    """Normalize an arbitrary run identifier fragment for safe filesystem use."""
+
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "").strip())
     return cleaned.strip("_") or "run"
 
 
 def _duration_text(duration_seconds: float) -> str:
+    """Render a compact duration string for text handoff output."""
+
     total_seconds = max(0, int(round(duration_seconds)))
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -105,16 +137,22 @@ def _duration_text(duration_seconds: float) -> str:
 
 
 def _append_text(path: Path, text: str) -> None:
+    """Append text to one artifact file, creating parent directories as needed."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(text)
 
 
 def _append_json_line(path: Path, payload: dict[str, Any]) -> None:
+    """Append one JSON object as NDJSON to an artifact stream."""
+
     _append_text(path, json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
+    """Read one JSON file, returning `None` for missing or invalid payloads."""
+
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -123,6 +161,8 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _read_events(path: Path) -> list[dict[str, Any]]:
+    """Read a per-run NDJSON event stream into structured event dicts."""
+
     events: list[dict[str, Any]] = []
     if not path.is_file():
         return events
@@ -187,13 +227,15 @@ def prepare_test_run_paths(run_id: str, base_dir: Path = DEFAULT_TEST_RUNS_DIR) 
     root = Path(base_dir) / run_id
     return TestRunPaths(
         root=root,
-        temp_root=root / "tmp",
-        pytest_temp=root / "pytest_temp",
-        pytest_cache=root / "pytest_cache",
+        temp_root=root / "t",
+        pytest_temp=root / "pt",
+        pytest_cache=root / "pc",
     )
 
 
 def _event_log_line(event: dict[str, Any]) -> str:
+    """Render one structured event as a single plain-text log line."""
+
     elapsed = float(event.get("elapsed_seconds", 0.0) or 0.0)
     bits = [
         str(event.get("timestamp", "")),
@@ -210,15 +252,43 @@ def _event_log_line(event: dict[str, Any]) -> str:
 
 
 def _coerce_status(value: str | None) -> str:
+    """Normalize handoff status values to the supported terminal set."""
+
     text = str(value or "partial").strip().lower()
     return text if text in _TERMINAL_STATUSES else "partial"
 
 
 def _is_blank(value: Any) -> bool:
+    """Return whether one event or metadata value should be treated as empty."""
+
     return value is None or value == ""
 
 
+def _update_action_counts(counts: dict[str, int], event: dict[str, Any]) -> None:
+    """Update action, API-call, and memory-hit counters for one action event."""
+
+    counts["actions"] += 1
+    source = str(event.get("source", ""))
+    if source == "memory":
+        counts["memory_hits"] += 1
+    elif source:
+        counts["api_calls"] += 1
+
+
+def _increment_event_counts(counts: dict[str, int], event_type: str) -> None:
+    """Apply direct per-event counter increments for one event type."""
+
+    if event_type in _DIRECT_COUNT_FIELDS:
+        counts[_DIRECT_COUNT_FIELDS[event_type]] += 1
+        return
+    if event_type in _WARNING_COUNT_FIELDS:
+        counts[_WARNING_COUNT_FIELDS[event_type]] += 1
+        counts["warnings"] += 1
+
+
 def _build_counts(events: list[dict[str, Any]]) -> dict[str, int]:
+    """Aggregate the event counters shown in structured and text handoff output."""
+
     counts = {
         "actions": 0,
         "approvals": 0,
@@ -235,34 +305,15 @@ def _build_counts(events: list[dict[str, Any]]) -> dict[str, int]:
     for event in events:
         event_type = str(event.get("event_type", ""))
         if event_type == "action":
-            counts["actions"] += 1
-            source = str(event.get("source", ""))
-            if source == "memory":
-                counts["memory_hits"] += 1
-            elif source:
-                counts["api_calls"] += 1
-        elif event_type == "approval":
-            counts["approvals"] += 1
-        elif event_type == "correction":
-            counts["corrections"] += 1
-        elif event_type == "planner_rejection":
-            counts["planner_rejections"] += 1
-            counts["warnings"] += 1
-        elif event_type == "rejection":
-            counts["rejections"] += 1
-            counts["warnings"] += 1
-        elif event_type == "warning":
-            counts["warnings"] += 1
-        elif event_type == "error":
-            counts["errors"] += 1
-        elif event_type == "captcha":
-            counts["captchas"] += 1
-        elif event_type == "timing":
-            counts["timings"] += 1
+            _update_action_counts(counts, event)
+            continue
+        _increment_event_counts(counts, event_type)
     return counts
 
 
 def _build_top_errors(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the most common error details for concise operator handoff."""
+
     grouped: Counter[tuple[str, str]] = Counter()
     last_seen: dict[tuple[str, str], str] = {}
     for event in events:
@@ -287,6 +338,8 @@ def _build_top_errors(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _build_key_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select the most recent operator-relevant events for text handoff output."""
+
     key_events: list[dict[str, Any]] = []
     for event in events:
         event_type = str(event.get("event_type", ""))
@@ -308,6 +361,8 @@ def _build_key_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _latest_event_of_type(events: list[dict[str, Any]], event_type: str) -> dict[str, Any] | None:
+    """Return the newest event of one type from the event stream."""
+
     for event in reversed(events):
         if str(event.get("event_type", "")) == event_type:
             return event
@@ -315,6 +370,8 @@ def _latest_event_of_type(events: list[dict[str, Any]], event_type: str) -> dict
 
 
 def _last_successful_action(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the last successful action summary for quick operator context."""
+
     for event in reversed(events):
         if str(event.get("event_type", "")) != "action":
             continue
@@ -331,6 +388,8 @@ def _last_successful_action(events: list[dict[str, Any]]) -> dict[str, Any] | No
 
 
 def _final_state(events: list[dict[str, Any]]) -> str:
+    """Resolve the last meaningful state description for one run record."""
+
     latest_state = _latest_event_of_type(events, "state")
     if latest_state:
         return str(latest_state.get("state_text", "") or "")
@@ -340,7 +399,43 @@ def _final_state(events: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _success_next_actions(counts: dict[str, Any]) -> list[str]:
+    """Return follow-up guidance for a successful run."""
+
+    if int(counts.get("warnings", 0) or 0):
+        return ["Review warnings in the handoff text before trusting the run outcome."]
+    return ["Read latest_run.txt for the concise handoff, then inspect the history files only if needed."]
+
+
+def _failed_next_actions(record: dict[str, Any], run_kind: str) -> list[str]:
+    """Return follow-up guidance for a failed run."""
+
+    actions = ["Open the stderr artifact first, then inspect the structured JSON for the failing boundary."]
+    if run_kind == "maintainer_command" and record.get("command_summary", {}).get("failing_tests"):
+        actions.append("Start with the failing pytest node ids listed in command_summary.failing_tests.")
+    if run_kind == "runtime_session":
+        actions.append("Inspect diagnostics and planner_latest.png before changing the mission or approval settings.")
+    return actions
+
+
+def _resume_boundary_actions(resume_checkpoint: dict[str, Any]) -> list[str]:
+    """Return follow-up guidance for interrupted runs with journal resume data."""
+
+    if not bool(resume_checkpoint.get("verified", False)):
+        return ["Do not resume automatically until the runtime journal checkpoint verifies cleanly."]
+
+    resume_state = str(
+        resume_checkpoint.get("next_state", "") or resume_checkpoint.get("state_name", "") or "the last committed state"
+    )
+    actions = [f"Resume from {resume_state} only after re-observing the screen."]
+    if int(resume_checkpoint.get("pending_tail_count", 0) or 0):
+        actions.append("Treat the uncommitted journal tail as incomplete work and reacquire the current UI before any new input.")
+    return actions
+
+
 def _default_next_actions(record: dict[str, Any]) -> list[str]:
+    """Return the operator next-action checklist for one run record."""
+
     actions: list[str] = []
     status = str(record.get("status", "partial"))
     run_kind = str(record.get("run_kind", ""))
@@ -348,30 +443,171 @@ def _default_next_actions(record: dict[str, Any]) -> list[str]:
     artifacts = record.get("artifacts", {})
     resume_checkpoint = record.get("resume_checkpoint", {})
     if status == "success":
-        if int(counts.get("warnings", 0) or 0):
-            actions.append("Review warnings in the handoff text before trusting the run outcome.")
-        else:
-            actions.append("Read latest_run.txt for the concise handoff, then inspect the history files only if needed.")
+        actions.extend(_success_next_actions(counts))
     elif status == "failed":
-        actions.append("Open the stderr artifact first, then inspect the structured JSON for the failing boundary.")
-        if run_kind == "maintainer_command" and record.get("command_summary", {}).get("failing_tests"):
-            actions.append("Start with the failing pytest node ids listed in command_summary.failing_tests.")
-        if run_kind == "runtime_session":
-            actions.append("Inspect diagnostics and planner_latest.png before changing the mission or approval settings.")
+        actions.extend(_failed_next_actions(record, run_kind))
     else:
         if run_kind == "runtime_session" and isinstance(resume_checkpoint, dict) and resume_checkpoint:
-            if not bool(resume_checkpoint.get("verified", False)):
-                actions.append("Do not resume automatically until the runtime journal checkpoint verifies cleanly.")
-            else:
-                resume_state = str(resume_checkpoint.get("next_state", "") or resume_checkpoint.get("state_name", "") or "the last committed state")
-                actions.append(f"Resume from {resume_state} only after re-observing the screen.")
-                if int(resume_checkpoint.get("pending_tail_count", 0) or 0):
-                    actions.append("Treat the uncommitted journal tail as incomplete work and reacquire the current UI before any new input.")
+            actions.extend(_resume_boundary_actions(resume_checkpoint))
         else:
             actions.append("Confirm whether the run was stopped intentionally before resuming or starting a new session.")
     if artifacts.get("runtime_log"):
         actions.append("Use the aggregate runtime log only for extra context after the per-run artifacts.")
     return actions[:4]
+
+
+def _what_ran_lines(record: dict[str, Any]) -> list[str]:
+    """Render the stable 'What Ran' section of the latest-run text report."""
+
+    lines = [
+        "What Ran",
+        f"- Run ID: {record.get('run_id', '')}",
+        f"- Kind: {record.get('run_kind', '')}",
+        f"- Command Or Mission: {record.get('command_or_mission', '')}",
+    ]
+    mission = str(record.get("mission", "") or "")
+    autonomy_level = record.get("autonomy_level")
+    if mission:
+        lines.append(f"- Mission: {mission}")
+    if not _is_blank(autonomy_level):
+        lines.append(f"- Autonomy: L{autonomy_level}")
+    return lines
+
+
+def _outcome_lines(record: dict[str, Any]) -> list[str]:
+    """Render the stable 'Outcome' section of the latest-run text report."""
+
+    lines = [
+        "",
+        "Outcome",
+        f"- Status: {record.get('status', '')}",
+        f"- End Reason: {record.get('end_reason', '')}",
+        f"- Started: {record.get('started_at', '')}",
+        f"- Ended: {record.get('ended_at', '')}",
+        f"- Duration: {_duration_text(float(record.get('duration_seconds', 0.0) or 0.0))}",
+    ]
+    exit_code = record.get("exit_code")
+    if exit_code is not None:
+        lines.append(f"- Exit Code: {exit_code}")
+    final_state = str(record.get("final_state", "") or "")
+    if final_state:
+        lines.append(f"- Final State: {final_state}")
+    return lines
+
+
+def _resume_boundary_lines(record: dict[str, Any]) -> list[str]:
+    """Render the optional runtime resume-boundary section for latest-run text."""
+
+    resume_checkpoint = record.get("resume_checkpoint", {})
+    if not isinstance(resume_checkpoint, dict) or not resume_checkpoint:
+        return []
+
+    return [
+        "",
+        "Resume Boundary",
+        f"- Verified: {resume_checkpoint.get('verified', False)}",
+        *_resume_boundary_detail_lines(resume_checkpoint),
+        "- Policy: Re-observe the screen before any new input.",
+    ]
+
+
+def _resume_boundary_detail_lines(resume_checkpoint: dict[str, Any]) -> list[str]:
+    """Return the non-header detail lines for the resume-boundary section."""
+
+    lines: list[str] = []
+    resume_state = _resume_boundary_state(resume_checkpoint)
+    if resume_state:
+        lines.append(f"- Resume From State: {resume_state}")
+    committed_at = str(resume_checkpoint.get("last_committed_at", "") or "")
+    if committed_at:
+        lines.append(f"- Last Commit: {committed_at}")
+    lines.append(f"- Pending Tail Count: {int(resume_checkpoint.get('pending_tail_count', 0) or 0)}")
+    pending_events_line = _resume_boundary_pending_events_line(resume_checkpoint)
+    if pending_events_line:
+        lines.append(pending_events_line)
+    return lines
+
+
+def _resume_boundary_state(resume_checkpoint: dict[str, Any]) -> str:
+    """Return the state name shown in the resume-boundary section."""
+
+    return str(resume_checkpoint.get("next_state", "") or resume_checkpoint.get("state_name", "") or "")
+
+
+def _resume_boundary_pending_events_line(resume_checkpoint: dict[str, Any]) -> str:
+    """Return the formatted pending-tail event line for the resume boundary."""
+
+    pending_tail_events = resume_checkpoint.get("pending_tail_events", [])
+    if not isinstance(pending_tail_events, list) or not pending_tail_events:
+        return ""
+    return f"- Pending Tail Events: {', '.join(str(item) for item in pending_tail_events)}"
+
+
+def _key_event_lines(record: dict[str, Any]) -> list[str]:
+    """Render the condensed event timeline section for latest-run text."""
+
+    lines = ["", "Key Events"]
+    key_events = record.get("key_events", [])
+    if not key_events:
+        lines.append("- No key events recorded.")
+        return lines
+
+    for event in key_events:
+        detail_bits = [
+            str(event.get("event_type", "")),
+            str(event.get("action_type", "") or ""),
+            str(event.get("label", "") or ""),
+            str(event.get("detail", "") or ""),
+            str(event.get("status", "") or ""),
+            str(event.get("end_reason", "") or ""),
+        ]
+        detail = " | ".join(bit for bit in detail_bits if bit)
+        lines.append(f"- {event.get('timestamp', '')}: {detail}")
+    return lines
+
+
+def _error_warning_lines(record: dict[str, Any]) -> list[str]:
+    """Render the error and warning summary section for latest-run text."""
+
+    lines = ["", "Errors / Warnings"]
+    top_errors = record.get("top_errors", [])
+    if top_errors:
+        for item in top_errors:
+            stage_prefix = f"[{item.get('stage', '')}] " if item.get("stage") else ""
+            lines.append(f"- {stage_prefix}{item.get('detail', '')} (count={item.get('count', 1)})")
+    else:
+        lines.append("- No error events recorded.")
+    lines.append(f"- Warning Count: {int(record.get('counts', {}).get('warnings', 0) or 0)}")
+
+    command_summary = record.get("command_summary", {})
+    failing_tests = command_summary.get("failing_tests", [])
+    if failing_tests:
+        lines.append(f"- Failing Tests: {', '.join(failing_tests)}")
+    failed_checks = command_summary.get("failed_checks", [])
+    if failed_checks:
+        lines.append(f"- Failed Checks: {', '.join(failed_checks)}")
+    return lines
+
+
+def _artifact_lines(record: dict[str, Any]) -> list[str]:
+    """Render the artifact-path section for latest-run text."""
+
+    lines = ["", "Artifacts"]
+    artifacts = record.get("artifacts", {})
+    for key in _ARTIFACT_TEXT_KEYS:
+        value = artifacts.get(key)
+        if value:
+            lines.append(f"- {key}: {value}")
+    return lines
+
+
+def _next_action_lines(record: dict[str, Any]) -> list[str]:
+    """Render the operator checklist section for latest-run text."""
+
+    lines = ["", "Next Actions"]
+    for action in record.get("next_actions", []):
+        lines.append(f"- {action}")
+    return lines
 
 
 def build_run_record(
@@ -468,111 +704,52 @@ def build_run_record(
 def render_latest_run_text(record: dict[str, Any]) -> str:
     """Render the fixed-section handoff text for one run record."""
 
-    lines = [
-        "What Ran",
-        f"- Run ID: {record.get('run_id', '')}",
-        f"- Kind: {record.get('run_kind', '')}",
-        f"- Command Or Mission: {record.get('command_or_mission', '')}",
-    ]
-    mission = str(record.get("mission", "") or "")
-    autonomy_level = record.get("autonomy_level")
-    if mission:
-        lines.append(f"- Mission: {mission}")
-    if not _is_blank(autonomy_level):
-        lines.append(f"- Autonomy: L{autonomy_level}")
-
-    lines.extend(
-        [
-            "",
-            "Outcome",
-            f"- Status: {record.get('status', '')}",
-            f"- End Reason: {record.get('end_reason', '')}",
-            f"- Started: {record.get('started_at', '')}",
-            f"- Ended: {record.get('ended_at', '')}",
-            f"- Duration: {_duration_text(float(record.get('duration_seconds', 0.0) or 0.0))}",
-        ]
-    )
-    exit_code = record.get("exit_code")
-    if exit_code is not None:
-        lines.append(f"- Exit Code: {exit_code}")
-    final_state = str(record.get("final_state", "") or "")
-    if final_state:
-        lines.append(f"- Final State: {final_state}")
-
-    resume_checkpoint = record.get("resume_checkpoint", {})
-    if isinstance(resume_checkpoint, dict) and resume_checkpoint:
-        lines.extend(["", "Resume Boundary"])
-        lines.append(f"- Verified: {resume_checkpoint.get('verified', False)}")
-        resume_state = str(resume_checkpoint.get("next_state", "") or resume_checkpoint.get("state_name", "") or "")
-        if resume_state:
-            lines.append(f"- Resume From State: {resume_state}")
-        committed_at = str(resume_checkpoint.get("last_committed_at", "") or "")
-        if committed_at:
-            lines.append(f"- Last Commit: {committed_at}")
-        lines.append(f"- Pending Tail Count: {int(resume_checkpoint.get('pending_tail_count', 0) or 0)}")
-        pending_tail_events = resume_checkpoint.get("pending_tail_events", [])
-        if isinstance(pending_tail_events, list) and pending_tail_events:
-            lines.append(f"- Pending Tail Events: {', '.join(str(item) for item in pending_tail_events)}")
-        lines.append("- Policy: Re-observe the screen before any new input.")
-
-    lines.extend(["", "Key Events"])
-    key_events = record.get("key_events", [])
-    if key_events:
-        for event in key_events:
-            detail_bits = [
-                str(event.get("event_type", "")),
-                str(event.get("action_type", "") or ""),
-                str(event.get("label", "") or ""),
-                str(event.get("detail", "") or ""),
-                str(event.get("status", "") or ""),
-                str(event.get("end_reason", "") or ""),
-            ]
-            detail = " | ".join(bit for bit in detail_bits if bit)
-            lines.append(f"- {event.get('timestamp', '')}: {detail}")
-    else:
-        lines.append("- No key events recorded.")
-
-    lines.extend(["", "Errors / Warnings"])
-    top_errors = record.get("top_errors", [])
-    if top_errors:
-        for item in top_errors:
-            stage_prefix = f"[{item.get('stage', '')}] " if item.get("stage") else ""
-            lines.append(f"- {stage_prefix}{item.get('detail', '')} (count={item.get('count', 1)})")
-    else:
-        lines.append("- No error events recorded.")
-    warning_count = int(record.get("counts", {}).get("warnings", 0) or 0)
-    lines.append(f"- Warning Count: {warning_count}")
-
-    command_summary = record.get("command_summary", {})
-    failing_tests = command_summary.get("failing_tests", [])
-    if failing_tests:
-        lines.append(f"- Failing Tests: {', '.join(failing_tests)}")
-    failed_checks = command_summary.get("failed_checks", [])
-    if failed_checks:
-        lines.append(f"- Failed Checks: {', '.join(failed_checks)}")
-
-    lines.extend(["", "Artifacts"])
-    artifacts = record.get("artifacts", {})
-    for key in (
-        "summary",
-        "json",
-        "transcript",
-        "stderr",
-        "event_stream",
-        "runtime_journal",
-        "runtime_checkpoint",
-        "diagnostics",
-        "heartbeat",
-        "planner_screenshot",
+    lines: list[str] = []
+    for section in (
+        _what_ran_lines(record),
+        _outcome_lines(record),
+        _resume_boundary_lines(record),
+        _key_event_lines(record),
+        _error_warning_lines(record),
+        _artifact_lines(record),
+        _next_action_lines(record),
     ):
-        value = artifacts.get(key)
-        if value:
-            lines.append(f"- {key}: {value}")
-
-    lines.extend(["", "Next Actions"])
-    for action in record.get("next_actions", []):
-        lines.append(f"- {action}")
+        lines.extend(section)
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _group_test_run_directories(target_dir: Path) -> dict[str, list[Path]]:
+    """Group contained pytest run directories by their latest recorded status."""
+
+    grouped: dict[str, list[Path]] = {"success": [], "failed": [], "other": []}
+    for path in (candidate for candidate in target_dir.iterdir() if candidate.is_dir()):
+        latest_json = path / "latest_run.json"
+        payload = _read_json(latest_json) or {}
+        status = str(payload.get("status", "other"))
+        group_key = status if status in {"success", "failed"} else "other"
+        grouped[group_key].append(path)
+    return grouped
+
+
+def _prune_test_run_group(
+    paths: list[Path],
+    *,
+    policy: ArtifactRetentionPolicy,
+    current_time: float,
+) -> list[Path]:
+    """Remove one status bucket of contained pytest runs according to retention policy."""
+
+    cutoff = None if policy.max_age_days is None else current_time - policy.max_age_days * 86400.0
+    removed: list[Path] = []
+    kept = 0
+    for path in sorted(paths, key=lambda candidate: candidate.stat().st_mtime, reverse=True):
+        mtime = path.stat().st_mtime
+        if kept < policy.max_groups and (cutoff is None or mtime >= cutoff):
+            kept += 1
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed.append(path)
+    return removed
 
 
 class RunRecordSession:
@@ -912,32 +1089,12 @@ def prune_test_run_artifacts(
     if not target_dir.is_dir():
         return []
     current_time = time.time() if now is None else now
-    run_directories = [path for path in target_dir.iterdir() if path.is_dir()]
-    grouped: dict[str, list[Path]] = {"success": [], "failed": [], "other": []}
-    for path in run_directories:
-        latest_json = path / "latest_run.json"
-        payload = _read_json(latest_json) or {}
-        status = str(payload.get("status", "other"))
-        if status == "success":
-            grouped["success"].append(path)
-        elif status == "failed":
-            grouped["failed"].append(path)
-        else:
-            grouped["other"].append(path)
+    grouped = _group_test_run_directories(target_dir)
 
     removed: list[Path] = []
     for status, paths in grouped.items():
         policy = success_policy if status == "success" else failure_policy
-        cutoff = None if policy.max_age_days is None else current_time - policy.max_age_days * 86400.0
-        sorted_paths = sorted(paths, key=lambda path: path.stat().st_mtime, reverse=True)
-        kept = 0
-        for path in sorted_paths:
-            mtime = path.stat().st_mtime
-            if kept < policy.max_groups and (cutoff is None or mtime >= cutoff):
-                kept += 1
-                continue
-            shutil.rmtree(path, ignore_errors=True)
-            removed.append(path)
+        removed.extend(_prune_test_run_group(paths, policy=policy, current_time=current_time))
     return removed
 
 

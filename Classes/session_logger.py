@@ -47,6 +47,8 @@ class SessionEvent:
     end_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the compatibility event payload used by legacy call sites."""
+
         payload = {
             "timestamp": self.timestamp,
             "elapsed_seconds": round(self.elapsed_seconds, 1),

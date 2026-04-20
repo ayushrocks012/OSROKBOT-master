@@ -212,6 +212,8 @@ class StateMachine:
         )
 
     def set_initial_state(self, name: str) -> None:
+        """Set the starting state for the workflow and clear any halt flag."""
+
         if name not in self.states:
             raise ValueError(f"Unknown initial state: {name}")
         self.current_state = name

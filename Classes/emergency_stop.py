@@ -27,6 +27,8 @@ class EmergencyStop:
 
     @classmethod
     def start_once(cls):
+        """Arm the process-level F12 kill switch exactly once."""
+
         with cls._lock:
             if cls._started:
                 return True

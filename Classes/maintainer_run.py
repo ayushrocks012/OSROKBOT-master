@@ -33,6 +33,8 @@ LOGGER = get_logger(__name__)
 
 
 def _format_milestone(prefix: str, run_id: str, run_kind: str, **fields: Any) -> str:
+    """Render one machine-readable milestone line for stdout streaming."""
+
     parts = [prefix, f"run_id={json.dumps(run_id)}", f"run_kind={json.dumps(run_kind)}"]
     for key, value in fields.items():
         if value is None or value == "":
@@ -42,10 +44,14 @@ def _format_milestone(prefix: str, run_id: str, run_kind: str, **fields: Any) ->
 
 
 def _print_milestone(prefix: str, session: RunRecordSession, **fields: Any) -> None:
+    """Print one milestone line for the active maintainer command session."""
+
     print(_format_milestone(prefix, session.run_id, session.run_kind, **fields), flush=True)
 
 
 def _parse_failing_tests(lines: list[str]) -> list[str]:
+    """Extract failing pytest node ids from captured process output."""
+
     pattern = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)")
     failures: list[str] = []
     for line in lines:
@@ -56,6 +62,8 @@ def _parse_failing_tests(lines: list[str]) -> list[str]:
 
 
 def _parse_failed_checks(lines: list[str]) -> list[str]:
+    """Extract failed check lines from maintainer helper output."""
+
     failed_checks: list[str] = []
     for line in lines:
         stripped = line.strip()
@@ -65,6 +73,8 @@ def _parse_failed_checks(lines: list[str]) -> list[str]:
 
 
 def _copy_run_summary_to_test_root(run_path: Path, test_root: Path) -> None:
+    """Copy the latest maintainer run summary into the centralized pytest root."""
+
     payload = run_path.read_text(encoding="utf-8")
     summary_text = run_path.with_suffix(".txt").read_text(encoding="utf-8")
     atomic_write_text(test_root / "latest_run.json", payload)
@@ -72,33 +82,46 @@ def _copy_run_summary_to_test_root(run_path: Path, test_root: Path) -> None:
 
 
 def _has_option(arguments: list[str], option: str) -> bool:
+    """Return whether an option is present in plain or assignment form."""
+
     return any(argument == option or argument.startswith(f"{option}=") for argument in arguments)
 
 
+def _pytest_preset_command(extra_args: list[str], run_id: str) -> tuple[list[str], dict[str, str], dict[str, Any]]:
+    """Build the pytest preset command and its contained artifact layout."""
+
+    env = os.environ.copy()
+    metadata: dict[str, Any] = {"preset": "pytest"}
+    test_paths = prepare_test_run_paths(run_id, base_dir=DEFAULT_TEST_RUNS_DIR)
+    test_paths.temp_root.mkdir(parents=True, exist_ok=True)
+    test_paths.pytest_temp.mkdir(parents=True, exist_ok=True)
+    test_paths.pytest_cache.mkdir(parents=True, exist_ok=True)
+    env.update(
+        {
+            "TMP": str(test_paths.temp_root),
+            "TEMP": str(test_paths.temp_root),
+            "TMPDIR": str(test_paths.temp_root),
+        }
+    )
+    command = [sys.executable, "-m", "pytest", *extra_args]
+    if not _has_option(extra_args, "--basetemp"):
+        command.extend(["--basetemp", str(test_paths.pytest_temp)])
+    if not any(argument.startswith("cache_dir=") for argument in extra_args):
+        command.extend(["-o", f"cache_dir={test_paths.pytest_cache}"])
+    metadata["test_run_root"] = str(test_paths.root)
+    metadata["pytest_temp"] = str(test_paths.pytest_temp)
+    metadata["pytest_cache"] = str(test_paths.pytest_cache)
+    return command, env, metadata
+
+
 def _build_preset_command(preset: str, extra_args: list[str], run_id: str) -> tuple[list[str], dict[str, str], dict[str, Any]]:
+    """Build the executable command, environment, and metadata for one preset."""
+
+    if preset == "pytest":
+        return _pytest_preset_command(extra_args, run_id)
+
     env = os.environ.copy()
     metadata: dict[str, Any] = {"preset": preset}
-    if preset == "pytest":
-        test_paths = prepare_test_run_paths(run_id, base_dir=DEFAULT_TEST_RUNS_DIR)
-        test_paths.temp_root.mkdir(parents=True, exist_ok=True)
-        test_paths.pytest_temp.mkdir(parents=True, exist_ok=True)
-        test_paths.pytest_cache.mkdir(parents=True, exist_ok=True)
-        env.update(
-            {
-                "TMP": str(test_paths.temp_root),
-                "TEMP": str(test_paths.temp_root),
-                "TMPDIR": str(test_paths.temp_root),
-            }
-        )
-        command = [sys.executable, "-m", "pytest", *extra_args]
-        if not _has_option(extra_args, "--basetemp"):
-            command.extend(["--basetemp", str(test_paths.pytest_temp)])
-        if not any(argument.startswith("cache_dir=") for argument in extra_args):
-            command.extend(["-o", f"cache_dir={test_paths.pytest_cache}"])
-        metadata["test_run_root"] = str(test_paths.root)
-        metadata["pytest_temp"] = str(test_paths.pytest_temp)
-        metadata["pytest_cache"] = str(test_paths.pytest_cache)
-        return command, env, metadata
     if preset == "verify-integrity":
         return [sys.executable, "verify_integrity.py", *extra_args], env, metadata
     if preset == "verify-docs":
@@ -115,6 +138,8 @@ def _build_preset_command(preset: str, extra_args: list[str], run_id: str) -> tu
 
 
 def _stream_output(session: RunRecordSession, stream_name: str, handle, sink: list[str]) -> None:
+    """Mirror one subprocess stream into run artifacts and stdout milestones."""
+
     prefix = "RUN ERROR" if stream_name == "stderr" else "RUN EVENT"
     for raw_line in iter(handle.readline, ""):
         clean_line = redact_secret(raw_line.rstrip("\n"))
@@ -127,6 +152,8 @@ def _stream_output(session: RunRecordSession, stream_name: str, handle, sink: li
 
 
 def _run_subprocess(session: RunRecordSession, command: list[str], env: dict[str, str]) -> tuple[int, list[str], list[str]]:
+    """Run one maintainer command while streaming stdout and stderr into artifacts."""
+
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     process = subprocess.Popen(
@@ -161,6 +188,8 @@ def _run_subprocess(session: RunRecordSession, command: list[str], env: dict[str
 
 
 def _cleanup_command(session: RunRecordSession) -> int:
+    """Remove legacy pytest artifacts and finalize the cleanup session."""
+
     removed = cleanup_legacy_test_artifacts()
     pruned = prune_test_run_artifacts()
     session.record_event(

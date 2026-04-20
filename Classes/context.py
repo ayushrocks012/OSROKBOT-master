@@ -1,3 +1,11 @@
+"""Thread-safe shared runtime state for one supervised automation run.
+
+The context is the supported data bus between UI, planner orchestration,
+state-machine execution, and runtime seams such as input, OCR, and recovery.
+It owns per-run collaborator factories plus the current observation and
+approval state so process-wide mutable globals are not required.
+"""
+
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -114,6 +122,8 @@ class Context:
     _thread_local: threading.local = field(default_factory=threading.local, init=False, repr=False)
 
     def get_signal_emitter(self) -> Any | None:
+        """Return the active signal emitter for UI-facing runtime events."""
+
         if self.signal_emitter:
             return self.signal_emitter
         if self.bot and hasattr(self.bot, "signal_emitter"):
@@ -121,12 +131,16 @@ class Context:
         return None
 
     def emit_state(self, state_text: str) -> None:
+        """Publish one runtime state update through the configured signal bridge."""
+
         emitter = self.get_signal_emitter()
         if emitter:
             emitter.state_changed.emit(state_text)
 
     @staticmethod
     def normalize_coordinate(value: float | int | str) -> float:
+        """Normalize percent-style planner coordinates to the 0-1 range."""
+
         value = float(value)
         if value > 1.0:
             return value / 100.0
@@ -140,6 +154,8 @@ class Context:
         next_state: str | None = None,
         event: str = "action",
     ) -> None:
+        """Append one bounded state-history entry for diagnostics and handoff."""
+
         with self._lock:
             self.state_history.append(
                 state_history_entry(
@@ -318,6 +334,8 @@ class Context:
         return cast(RecoveryExecutorLike, AIRecoveryExecutor())
 
     def save_failure_diagnostic(self, state_name: str = "unknown") -> Path | None:
+        """Capture a diagnostic screenshot and paired state-history log."""
+
         from diagnostic_screenshot import save_diagnostic_screenshot
 
         screenshot, _ = self.build_window_handler().screenshot_window(self.window_title)
@@ -332,6 +350,8 @@ class Context:
         return screenshot_path
 
     def export_state_history(self, path: Path) -> Path | None:
+        """Write the bounded state history to a plain-text diagnostic file."""
+
         try:
             lines = ["OSROKBOT state history", ""]
             with self._lock:
@@ -361,6 +381,8 @@ class Context:
         window_rect: Any,
         detections: Iterable[Any] | None = None,
     ) -> ObservationSnapshot:
+        """Store the current per-step observation for reuse across the runtime."""
+
         with self._lock:
             self.current_observation = ObservationSnapshot(
                 screenshot=screenshot,
@@ -370,14 +392,20 @@ class Context:
             return self.current_observation
 
     def clear_current_observation(self) -> None:
+        """Clear the cached per-step observation for the active run."""
+
         with self._lock:
             self.current_observation = None
 
     def get_current_observation(self) -> ObservationSnapshot | None:
+        """Return the currently cached per-step observation, if any."""
+
         with self._lock:
             return self.current_observation
 
     def clear_current_observation_if(self, observation: ObservationSnapshot | None) -> bool:
+        """Clear the cached observation only when it matches the expected object."""
+
         with self._lock:
             if self.current_observation is observation:
                 self.current_observation = None
@@ -392,6 +420,8 @@ class Context:
         window_rect: Any,
         reference_normalized: tuple[float, float] | None = None,
     ) -> None:
+        """Store one UI anchor for later anchor-relative point resolution."""
+
         normalized_x = (int(screen_x) - int(window_rect.left)) / max(1, int(window_rect.width))
         normalized_y = (int(screen_y) - int(window_rect.top)) / max(1, int(window_rect.height))
         reference = reference_normalized or (normalized_x, normalized_y)
@@ -413,6 +443,8 @@ class Context:
         anchor_name: str | None = None,
         reference_normalized: tuple[float, float] | None = None,
     ) -> tuple[int, int]:
+        """Resolve one normalized point relative to the chosen UI anchor."""
+
         anchor_key = anchor_name or self.primary_ui_anchor
         anchor = self.ui_anchors.get(anchor_key)
         normalized_x = self.normalize_coordinate(normalized_x)
@@ -438,6 +470,8 @@ class Context:
         detections: Iterable[object] | None = None,
         sub_goal: str = "",
     ) -> PlannerPendingPayload:
+        """Store the planner decision currently waiting for human review."""
+
         decision_data = coerce_decision_payload(decision)
         rect_data = serialize_window_rect(window_rect)
         detection_data = serialize_detections(detections)
@@ -465,6 +499,8 @@ class Context:
         return pending
 
     def pending_planner_decision(self) -> PlannerPendingPayload | None:
+        """Return the planner decision currently waiting for approval."""
+
         with self._lock:
             pending = self.extracted.get("planner_pending")
         if not isinstance(pending, dict):
@@ -476,6 +512,8 @@ class Context:
         approved: bool,
         corrected_point: NormalizedPoint | None = None,
     ) -> bool:
+        """Resolve the pending planner decision and release any waiter."""
+
         with self._lock:
             pending = self.extracted.get("planner_pending")
             if not pending:
@@ -489,6 +527,8 @@ class Context:
         return True
 
     def clear_pending_planner_decision(self) -> PlannerPendingPayload | None:
+        """Remove and return the pending planner decision payload, if any."""
+
         with self._lock:
             pending = self.extracted.pop("planner_pending", None)
         if not isinstance(pending, dict):
@@ -496,6 +536,8 @@ class Context:
         return cast(PlannerPendingPayload, pending)
 
     def set_extracted_text(self, description: str, value: str) -> None:
+        """Persist one OCR or extracted-text value on the shared context."""
+
         cleaned_value = value.replace(",", "").replace("\"", "")
         if description in {"Q", "A", "B", "C", "D"}:
             setattr(self, description, cleaned_value)

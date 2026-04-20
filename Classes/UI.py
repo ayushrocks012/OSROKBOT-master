@@ -458,6 +458,8 @@ class SettingsDialog(QtWidgets.QDialog):
         return row
 
     def browse_tesseract(self) -> None:
+        """Prompt for the local `tesseract.exe` path and update the field."""
+
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Select tesseract.exe",
@@ -468,6 +470,8 @@ class SettingsDialog(QtWidgets.QDialog):
             self.tesseract_input.setText(path)
 
     def browse_yolo_weights(self) -> None:
+        """Prompt for the local YOLO weights file and update the field."""
+
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Select YOLO weights",
@@ -478,6 +482,8 @@ class SettingsDialog(QtWidgets.QDialog):
             self.yolo_weights_input.setText(path)
 
     def save_settings(self) -> None:
+        """Persist the editable runtime settings through the configured providers."""
+
         self.config.set_many(
             {
                 "OPENAI_KEY": self.openai_key_input.text(),
@@ -515,6 +521,8 @@ class MetricCard(QtWidgets.QFrame):
         layout.addStretch()
 
     def set_value(self, value: str) -> None:
+        """Update the dashboard card value text."""
+
         self.value_label.setText(value)
 
 
@@ -565,6 +573,8 @@ class IntentCard(QtWidgets.QFrame):
         layout.addWidget(self.shortcuts_label)
 
     def apply_state(self, state: object) -> None:
+        """Render one approval-card state payload on the console."""
+
         if not hasattr(state, "visible") or not state.visible:
             self.title_label.setText("Awaiting approval")
             self.action_label.setText("No pending action")
@@ -622,6 +632,8 @@ class AutonomySelector(QtWidgets.QWidget):
             layout.addWidget(button)
 
     def set_level(self, level: int) -> None:
+        """Update the segmented autonomy control to the selected level."""
+
         for value, button in self._buttons.items():
             button.blockSignals(True)
             button.setChecked(value == level)
@@ -673,6 +685,8 @@ class DashboardTab(QtWidgets.QWidget):
         layout.addWidget(self.timeline_list, 1)
 
     def apply_snapshot(self, snapshot: SupervisorSnapshot) -> None:
+        """Render one supervisor snapshot into the dashboard widgets."""
+
         for title in self.CARD_ORDER:
             self._cards[title].set_value(snapshot.dashboard_summary.get(title, "--"))
 
@@ -737,6 +751,8 @@ class UI(QtWidgets.QWidget):
 
     @property
     def current_context(self):
+        """Return the controller's current runtime context."""
+
         return self.controller.current_context
 
     def _setup_shell(self) -> None:
@@ -1063,6 +1079,8 @@ class UI(QtWidgets.QWidget):
 
     @QtCore.pyqtSlot(object)
     def apply_snapshot(self, snapshot: object) -> None:
+        """Render one controller snapshot into the supervisor console."""
+
         if not isinstance(snapshot, SupervisorSnapshot):
             return
 
@@ -1145,6 +1163,8 @@ class UI(QtWidgets.QWidget):
         self._correction_overlay.dismiss()
 
     def update_position(self) -> None:
+        """Anchor the supervisor console near the target game window."""
+
         try:
             target_windows = gw.getWindowsWithTitle(self.target_title)
             self._cached_target_window = target_windows[0] if target_windows else None
@@ -1174,33 +1194,53 @@ class UI(QtWidgets.QWidget):
                 self.show()
 
     def start_automation(self) -> None:
+        """Start the selected mission with the current autonomy level."""
+
         self.controller.start_automation(self.mission_input.currentText(), self._selected_autonomy_level())
 
     def stop_automation(self) -> None:
+        """Request shutdown of the active automation session."""
+
         self.controller.stop_automation()
 
     def toggle_pause(self) -> None:
+        """Toggle the active session pause state."""
+
         self.controller.toggle_pause()
 
     def approve_planner_action(self) -> None:
+        """Approve the currently pending planner action."""
+
         self.controller.approve_pending_action()
 
     def reject_planner_action(self) -> None:
+        """Reject the currently pending planner action."""
+
         self.controller.reject_pending_action()
 
     def correct_planner_action(self) -> None:
+        """Begin the blocking Fix workflow for the pending planner action."""
+
         self.controller.begin_fix_capture()
 
     def currentState(self, state_text: str) -> None:
+        """Receive a runtime state update from the shared signal emitter."""
+
         self.controller.handle_runtime_state_changed(state_text)
 
     def on_pause_toggled(self, is_paused: bool) -> None:
+        """Receive a pause-state update from the shared signal emitter."""
+
         self.controller.handle_pause_toggled(is_paused)
 
     def on_planner_decision(self, payload: dict) -> None:
+        """Receive a planner-decision payload from the shared signal emitter."""
+
         self.controller.handle_planner_decision(payload)
 
     def on_yolo_weights_ready(self, success: bool, message: str) -> None:
+        """Receive the completion result of the background YOLO warmup."""
+
         self.controller.handle_yolo_weights_ready(success, message)
 
     def _selected_autonomy_level(self) -> int:
@@ -1215,12 +1255,16 @@ class UI(QtWidgets.QWidget):
             webbrowser.open(readme_path.as_uri())
 
     def open_settings(self) -> None:
+        """Open the runtime settings dialog and refresh the console on save."""
+
         dialog = SettingsDialog(self)
         if dialog.exec_():
             self.controller.refresh_after_settings()
             self.apply_snapshot(self.controller.snapshot())
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Dismiss overlays, stop the controller, and accept the window close."""
+
         self._clear_fix_overlay()
         self._clear_planner_overlay()
         if self._tray:

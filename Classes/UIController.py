@@ -57,6 +57,29 @@ ERROR_GUIDANCE = {
         "The configured YOLO weights are unavailable. Check Settings and warmup status."
     ),
 }
+_RUNTIME_STATUS_PATTERNS = (
+    ("ai recovering", ("AI recovering", "accent", "")),
+    ("learning", ("Learning from feedback", "success", "")),
+    ("using memory", ("Using trusted memory", "success", "")),
+    ("game not foreground", ("Game not foreground - paused", "warning", ERROR_GUIDANCE["Game not foreground"])),
+    ("planner approval needed", ("Agent awaiting approval", "accent", "")),
+    ("planner trusted", ("Trusted action auto-approved", "success", "")),
+)
+_TIMELINE_ICON_MAP = {
+    "action": "RUN",
+    "approval": "OK",
+    "rejection": "NO",
+    "correction": "FIX",
+    "error": "ERR",
+    "warning": "WARN",
+    "captcha": "CAP",
+    "planner_rejection": "DROP",
+    "info": "INFO",
+    "timing": "TIME",
+    "state": "STATE",
+    "decision": "PLAN",
+    "terminal": "END",
+}
 
 
 @dataclass(slots=True)
@@ -104,12 +127,62 @@ class SupervisorSnapshot:
 
 
 def _format_elapsed(seconds: float) -> str:
+    """Render one elapsed-duration value for the supervisor snapshot."""
+
     total_seconds = max(0, int(seconds))
     minutes, secs = divmod(total_seconds, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def _bounded_autonomy(level: int) -> int:
+    """Clamp autonomy selection to the supported `L1`-`L3` range."""
+
+    return max(1, min(3, int(level)))
+
+
+def _history_entries(raw: str) -> list[str]:
+    """Decode persisted mission history into normalized strings."""
+
+    try:
+        decoded = json.loads(raw) if raw else []
+    except Exception:
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [str(item).strip() for item in decoded if str(item).strip()]
+
+
+def _unique_options(items: list[str]) -> list[str]:
+    """Preserve order while deduplicating mission-option strings."""
+
+    seen: set[str] = set()
+    options: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            options.append(item)
+    return options
+
+
+def _confidence_tone(confidence: float) -> str:
+    """Map planner confidence to the intent card tone."""
+
+    if confidence >= 0.85:
+        return "success"
+    if confidence >= 0.70:
+        return "warning"
+    return "danger"
+
+
+def _coordinates_text(absolute_x: Any, absolute_y: Any) -> str:
+    """Render pending-approval absolute coordinates for the intent card."""
+
+    if absolute_x is None or absolute_y is None:
+        return "Screen target unavailable"
+    return f"Screen target: {int(absolute_x)}, {int(absolute_y)}"
 
 
 class UIController(QtCore.QObject):
@@ -192,53 +265,52 @@ class UIController(QtCore.QObject):
 
         return yolo_download_required(config)
 
+    @staticmethod
+    def _mission_history(config: ConfigManager) -> list[str]:
+        """Return the persisted mission history for the supervisor console."""
+
+        return _history_entries(str(config.get("MISSION_HISTORY", "") or ""))
+
+    @staticmethod
+    def _resolved_mission_options(history: list[str]) -> list[str]:
+        """Merge persisted mission history with shipped presets."""
+
+        return _unique_options(history + MISSION_PRESETS)
+
     def _load_mission_options(self) -> list[str]:
+        """Load configured mission history and resolve the current default mission."""
+
         config = ConfigManager()
-        history: list[str] = []
-        try:
-            raw = config.get("MISSION_HISTORY", "")
-            decoded = json.loads(raw) if raw else []
-            if isinstance(decoded, list):
-                history = [str(item).strip() for item in decoded if str(item).strip()]
-        except Exception:
-            history = []
-
-        seen: set[str] = set()
-        options: list[str] = []
-        for item in history + MISSION_PRESETS:
-            if item and item not in seen:
-                seen.add(item)
-                options.append(item)
-
+        history = self._mission_history(config)
+        options = self._resolved_mission_options(history)
         configured_goal = str(config.get("PLANNER_GOAL", "") or "").strip()
         self._mission_text = configured_goal or (options[0] if options else DEFAULT_MISSION)
         return options
 
     def _save_mission_to_history(self, mission: str) -> None:
+        """Persist one mission at the top of the bounded mission-history list."""
+
         clean_mission = str(mission).strip()
         if not clean_mission:
             return
 
-        try:
-            raw = ConfigManager().get("MISSION_HISTORY", "")
-            history = json.loads(raw) if raw else []
-            if not isinstance(history, list):
-                history = []
-        except Exception:
-            history = []
+        config = ConfigManager()
+        history = self._mission_history(config)
 
         filtered = [str(item).strip() for item in history if str(item).strip() and str(item).strip() != clean_mission]
         filtered.insert(0, clean_mission)
-        ConfigManager().set_many({"MISSION_HISTORY": json.dumps(filtered[:MAX_MISSION_HISTORY])})
+        config.set_many({"MISSION_HISTORY": json.dumps(filtered[:MAX_MISSION_HISTORY])})
         self._mission_options = self._load_mission_options()
 
     @staticmethod
     def _load_autonomy_level() -> int:
+        """Load the persisted autonomy level and clamp it to the supported range."""
+
         try:
             configured = int(ConfigManager().get("PLANNER_AUTONOMY_LEVEL", "1"))
         except (TypeError, ValueError):
             configured = 1
-        return max(1, min(3, configured))
+        return _bounded_autonomy(configured)
 
     def set_autonomy_level(self, level: int) -> None:
         """Update and persist the selected autonomy level."""
@@ -248,6 +320,8 @@ class UIController(QtCore.QObject):
         self._emit_snapshot()
 
     def _set_status(self, text: str, tone: str, detail: str = "") -> None:
+        """Store the latest operator-facing status banner payload."""
+
         self._status_text = text
         self._status_tone = tone
         self._status_detail = detail
@@ -316,22 +390,31 @@ class UIController(QtCore.QObject):
         self.begin_yolo_warmup()
         self._emit_snapshot()
 
-    def start_automation(self, mission_text: str | None = None, autonomy_level: int | None = None) -> None:
-        """Start a planner-first automation run from the selected mission."""
+    def _start_selection(self, mission_text: str | None, autonomy_level: int | None) -> tuple[str, int]:
+        """Normalize the mission text and autonomy level selected for a new run."""
 
         mission = str(mission_text or self._mission_text or DEFAULT_MISSION).strip() or DEFAULT_MISSION
-        selected_autonomy = max(1, min(3, int(autonomy_level or self._autonomy_level)))
-        self._mission_text = mission
-        self._autonomy_level = selected_autonomy
+        selected_autonomy = _bounded_autonomy(autonomy_level or self._autonomy_level)
+        return mission, selected_autonomy
+
+    def _start_blocker(self) -> tuple[str, str, str] | None:
+        """Return the status payload describing why a new run cannot start yet."""
 
         if not self._yolo_ready:
-            self._set_status("YOLO weights unavailable", "danger", ERROR_GUIDANCE["YOLO weights unavailable"])
-            self._emit_snapshot()
-            return
+            return "YOLO weights unavailable", "danger", ERROR_GUIDANCE["YOLO weights unavailable"]
         if self.OS_ROKBOT.is_running or not self.OS_ROKBOT.all_threads_joined:
-            self._set_status("Finishing previous run", "warning", "Wait for the current worker thread to join before restarting.")
-            self._emit_snapshot()
-            return
+            return (
+                "Finishing previous run",
+                "warning",
+                "Wait for the current worker thread to join before restarting.",
+            )
+        return None
+
+    def _persist_start_selection(self, mission: str, autonomy_level: int) -> None:
+        """Persist one accepted start selection and prepare the game window."""
+
+        self._mission_text = mission
+        self._autonomy_level = autonomy_level
         if self.OS_ROKBOT.is_paused():
             self.OS_ROKBOT.toggle_pause()
 
@@ -339,18 +422,15 @@ class UIController(QtCore.QObject):
         ConfigManager().set_many(
             {
                 "PLANNER_GOAL": mission,
-                "PLANNER_AUTONOMY_LEVEL": str(selected_autonomy),
+                "PLANNER_AUTONOMY_LEVEL": str(autonomy_level),
             }
         )
         self._save_mission_to_history(mission)
 
-        action_group = self.action_sets.dynamic_planner()
-        if not action_group:
-            self._set_status("Planner startup failed", "danger", "The dynamic planner action set could not be created.")
-            self._emit_snapshot()
-            return
+    def _prepare_runtime_session(self, mission: str, autonomy_level: int) -> Context:
+        """Create the per-run session logger, logging context, and runtime `Context`."""
 
-        self._session_logger = SessionLogger(mission=mission, autonomy_level=selected_autonomy)
+        self._session_logger = SessionLogger(mission=mission, autonomy_level=autonomy_level)
         if self._logging_context_token is not None:
             reset_log_context(self._logging_context_token)
         self._logging_context_token = bind_log_context(**self._session_logger.log_context_fields())
@@ -358,25 +438,51 @@ class UIController(QtCore.QObject):
             bot=self.OS_ROKBOT,
             session_logger=self._session_logger,
             planner_goal=mission,
-            planner_autonomy_level=selected_autonomy,
+            planner_autonomy_level=autonomy_level,
         )
         self._current_context = context
         self._pending_payload = None
         self._fix_capture_active = False
         self._session_finalized = False
+        return context
 
-        if self.OS_ROKBOT.start([action_group], context):
+    def _set_start_result(self, *, started: bool, mission: str) -> None:
+        """Update controller state after the runner accepts or rejects start."""
+
+        if started:
             self._session_logger.record_info(f"Session started: {mission}")
             self._session_active = True
             self._finalized_summary = None
             self._finalized_timeline = None
             self._last_runtime_state = "Running"
             self._set_status("Running", "success", "")
-        else:
-            self._set_status("Unable to start automation", "danger", "OSROKBOT refused to start the run.")
-            self._current_context = None
-            self._session_active = True
-            self._finalize_session(status="failed", end_reason="start_refused", detail="OSROKBOT refused to start the run.")
+            return
+
+        self._set_status("Unable to start automation", "danger", "OSROKBOT refused to start the run.")
+        self._current_context = None
+        self._session_active = True
+        self._finalize_session(status="failed", end_reason="start_refused", detail="OSROKBOT refused to start the run.")
+
+    def start_automation(self, mission_text: str | None = None, autonomy_level: int | None = None) -> None:
+        """Start a planner-first automation run from the selected mission."""
+
+        mission, selected_autonomy = self._start_selection(mission_text, autonomy_level)
+        blocker = self._start_blocker()
+        if blocker is not None:
+            self._set_status(*blocker)
+            self._emit_snapshot()
+            return
+
+        self._persist_start_selection(mission, selected_autonomy)
+
+        action_group = self.action_sets.dynamic_planner()
+        if not action_group:
+            self._set_status("Planner startup failed", "danger", "The dynamic planner action set could not be created.")
+            self._emit_snapshot()
+            return
+
+        context = self._prepare_runtime_session(mission, selected_autonomy)
+        self._set_start_result(started=self.OS_ROKBOT.start([action_group], context), mission=mission)
         self._emit_snapshot()
 
     def _finalize_session(self, *, status: str | None = None, end_reason: str | None = None, detail: str = "") -> None:
@@ -398,10 +504,14 @@ class UIController(QtCore.QObject):
             )
 
     def _record_runtime_state(self, state_text: str) -> None:
+        """Mirror the latest runtime state into the active grouped session log."""
+
         if self._session_logger and self._session_active:
             self._session_logger.record_state(state_text)
 
     def _mark_session_terminal(self, status: str, end_reason: str, detail: str = "") -> None:
+        """Mark the active session terminal without finalizing artifacts twice."""
+
         if self._session_logger and self._session_active and not self._session_finalized:
             self._session_logger.mark_terminal(status, end_reason, detail=detail)
 
@@ -419,6 +529,43 @@ class UIController(QtCore.QObject):
         if "fix_required" in pending:
             return bool(pending.get("fix_required"))
         return decision_requires_manual_fix(pending.get("decision", {}))
+
+    def _runtime_status_from_patterns(self, lowered: str) -> tuple[str, str, str] | None:
+        """Return one generic status mapping for a runtime-state substring match."""
+
+        for needle, status_payload in _RUNTIME_STATUS_PATTERNS:
+            if needle in lowered:
+                return status_payload
+        return None
+
+    def _handle_captcha_state(self, previous_lowered: str) -> None:
+        """Apply CAPTCHA pause status and emit a one-time operator notification."""
+
+        self._set_status("Captcha detected - paused", "warning", ERROR_GUIDANCE["Captcha detected"])
+        if "captcha detected" not in previous_lowered:
+            self.notification_requested.emit(
+                "OSROKBOT - CAPTCHA",
+                "A CAPTCHA was detected. Solve it manually before resuming.",
+                QtWidgets.QSystemTrayIcon.Warning,
+            )
+
+    def _handle_interception_unavailable(self) -> None:
+        """Apply the interception failure status and mark the session terminal."""
+
+        self._set_status("Interception unavailable", "danger", ERROR_GUIDANCE["Interception unavailable"])
+        self._mark_session_terminal("failed", "interception_unavailable", ERROR_GUIDANCE["Interception unavailable"])
+
+    def _handle_mission_complete(self, previous_lowered: str) -> None:
+        """Apply mission-complete status and emit a one-time completion notification."""
+
+        self._set_status("Mission complete", "success", "")
+        self._mark_session_terminal("success", "mission_complete", "The task graph reported mission completion.")
+        if "mission complete" not in previous_lowered:
+            self.notification_requested.emit(
+                "OSROKBOT - Complete",
+                "The current mission has completed.",
+                QtWidgets.QSystemTrayIcon.Information,
+            )
 
     def approve_pending_action(self) -> None:
         """Approve the pending planner action if it is execution-ready."""
@@ -582,44 +729,59 @@ class UIController(QtCore.QObject):
         self._last_runtime_state = text
         self._record_runtime_state(text)
         lowered = text.lower()
+        previous_lowered = previous_state.lower()
 
-        if "ai recovering" in lowered:
-            self._set_status("AI recovering", "accent", "")
-        elif "learning" in lowered:
-            self._set_status("Learning from feedback", "success", "")
-        elif "using memory" in lowered:
-            self._set_status("Using trusted memory", "success", "")
-        elif "captcha detected" in lowered:
-            self._set_status("Captcha detected - paused", "warning", ERROR_GUIDANCE["Captcha detected"])
-            if "captcha detected" not in previous_state.lower():
-                self.notification_requested.emit(
-                    "OSROKBOT - CAPTCHA",
-                    "A CAPTCHA was detected. Solve it manually before resuming.",
-                    QtWidgets.QSystemTrayIcon.Warning,
-                )
-        elif "game not foreground" in lowered:
-            self._set_status("Game not foreground - paused", "warning", ERROR_GUIDANCE["Game not foreground"])
+        if "captcha detected" in lowered:
+            self._handle_captcha_state(previous_lowered)
         elif "interception unavailable" in lowered:
-            self._set_status("Interception unavailable", "danger", ERROR_GUIDANCE["Interception unavailable"])
-            self._mark_session_terminal("failed", "interception_unavailable", ERROR_GUIDANCE["Interception unavailable"])
-        elif "planner approval needed" in lowered:
-            self._set_status("Agent awaiting approval", "accent", "")
-        elif "planner trusted" in lowered:
-            self._set_status("Trusted action auto-approved", "success", "")
+            self._handle_interception_unavailable()
         elif "mission complete" in lowered:
-            self._set_status("Mission complete", "success", "")
-            self._mark_session_terminal("success", "mission_complete", "The task graph reported mission completion.")
-            if "mission complete" not in previous_state.lower():
-                self.notification_requested.emit(
-                    "OSROKBOT - Complete",
-                    "The current mission has completed.",
-                    QtWidgets.QSystemTrayIcon.Information,
-                )
-        elif self.OS_ROKBOT.is_running:
-            self._set_status("Running", "success", "")
+            self._handle_mission_complete(previous_lowered)
         else:
-            self._set_status("Ready", "info", "")
+            status_payload = self._runtime_status_from_patterns(lowered)
+            if status_payload is not None:
+                self._set_status(*status_payload)
+            elif self.OS_ROKBOT.is_running:
+                self._set_status("Running", "success", "")
+            else:
+                self._set_status("Ready", "info", "")
         self._emit_snapshot()
+
+    def _intent_shortcut_hint(self, fix_required: bool) -> str:
+        """Return the shortcut hint shown on the planner intent card."""
+
+        return "OK disabled until Fix or No" if fix_required else "F8 OK   F9 No   F10 Fix"
+
+    def _pending_target_text(self, decision: dict[str, Any]) -> str:
+        """Render the label/target-id text shown on the planner intent card."""
+
+        return f"{decision.get('label', 'target')} ({decision.get('target_id', 'manual') or 'manual'})"
+
+    def _timeline(self) -> list[dict[str, Any]]:
+        """Return the active or finalized timeline used by the dashboard."""
+
+        if self._session_active or self._finalized_timeline is None:
+            return self._session_logger.timeline()
+        return self._finalized_timeline
+
+    def _elapsed_seconds(self) -> float:
+        """Return the current elapsed duration for the supervisor snapshot."""
+
+        if self._session_logger and self._session_active:
+            return self._session_logger.duration_seconds()
+        if self._finalized_summary is not None:
+            return float(self._finalized_summary.get("duration_seconds", 0.0))
+        return 0.0
+
+    def _snapshot_flags(self) -> tuple[bool, bool, bool, bool, bool]:
+        """Return the running/pause control flags for the supervisor snapshot."""
+
+        is_running = bool(self.OS_ROKBOT.is_running)
+        is_paused = bool(self.OS_ROKBOT.is_paused())
+        can_start = self._yolo_ready and not is_running and bool(self.OS_ROKBOT.all_threads_joined)
+        can_pause = is_running or is_paused
+        can_stop = is_running or is_paused or self._current_context is not None
+        return is_running, is_paused, can_start, can_pause, can_stop
 
     @QtCore.pyqtSlot(dict)
     def handle_planner_decision(self, payload: dict[str, Any]) -> None:
@@ -699,37 +861,26 @@ class UIController(QtCore.QObject):
         return "command"
 
     def _intent_state(self) -> IntentCardState:
+        """Return the planner intent card state for the current pending action."""
+
         if not self._pending_payload:
             return IntentCardState()
 
         pending = self._pending_payload
         decision = pending.get("decision", {})
         confidence = float(decision.get("confidence", 0.0) or 0.0)
-        if confidence >= 0.85:
-            confidence_tone = "success"
-        elif confidence >= 0.70:
-            confidence_tone = "warning"
-        else:
-            confidence_tone = "danger"
-
         fix_required = self._pending_requires_fix_payload(pending)
-        absolute_x = pending.get("absolute_x")
-        absolute_y = pending.get("absolute_y")
         return IntentCardState(
             visible=True,
             title="Fix required" if fix_required else "Awaiting approval",
             action_text=str(decision.get("action_type", "click") or "click").title(),
-            target_text=f"{decision.get('label', 'target')} ({decision.get('target_id', 'manual') or 'manual'})",
+            target_text=self._pending_target_text(decision),
             confidence=confidence,
-            confidence_tone=confidence_tone,
+            confidence_tone=_confidence_tone(confidence),
             confidence_caption=f"{confidence:.0%} confidence",
             reason_text=str(decision.get("reason", "") or "No planner reason supplied."),
-            coordinates_text=(
-                f"Screen target: {int(absolute_x)}, {int(absolute_y)}"
-                if absolute_x is not None and absolute_y is not None
-                else "Screen target unavailable"
-            ),
-            shortcut_hint="OK disabled until Fix or No" if fix_required else "F8 OK   F9 No   F10 Fix",
+            coordinates_text=_coordinates_text(pending.get("absolute_x"), pending.get("absolute_y")),
+            shortcut_hint=self._intent_shortcut_hint(fix_required),
             fix_required=fix_required,
         )
 
@@ -761,28 +912,14 @@ class UIController(QtCore.QObject):
         }
 
     def _timeline_lines(self) -> list[str]:
+        """Render the dashboard timeline lines for the active or finalized session."""
+
         if not self._session_logger:
             return ["No session activity yet."]
 
-        icon_map = {
-            "action": "RUN",
-            "approval": "OK",
-            "rejection": "NO",
-            "correction": "FIX",
-            "error": "ERR",
-            "warning": "WARN",
-            "captcha": "CAP",
-            "planner_rejection": "DROP",
-            "info": "INFO",
-            "timing": "TIME",
-            "state": "STATE",
-            "decision": "PLAN",
-            "terminal": "END",
-        }
         lines: list[str] = []
-        timeline = self._session_logger.timeline() if self._session_active or self._finalized_timeline is None else self._finalized_timeline
-        for event in timeline:
-            icon = icon_map.get(str(event.get("event_type", "")), "LOG")
+        for event in self._timeline():
+            icon = _TIMELINE_ICON_MAP.get(str(event.get("event_type", "")), "LOG")
             elapsed = f"+{float(event.get('elapsed_seconds', 0.0)):>4.0f}s"
             detail = str(event.get("label") or event.get("detail") or event.get("action_type") or "").strip()
             lines.append(f"{elapsed}  {icon:<4}  {detail or '(no detail)'}")
@@ -791,17 +928,8 @@ class UIController(QtCore.QObject):
     def snapshot(self) -> SupervisorSnapshot:
         """Return the latest view-model snapshot."""
 
-        if self._session_logger and self._session_active:
-            elapsed = self._session_logger.duration_seconds()
-        elif self._finalized_summary is not None:
-            elapsed = float(self._finalized_summary.get("duration_seconds", 0.0))
-        else:
-            elapsed = 0.0
-        is_running = bool(self.OS_ROKBOT.is_running)
-        is_paused = bool(self.OS_ROKBOT.is_paused())
-        can_start = self._yolo_ready and not is_running and bool(self.OS_ROKBOT.all_threads_joined)
-        can_pause = is_running or is_paused
-        can_stop = is_running or is_paused or self._current_context is not None
+        elapsed = self._elapsed_seconds()
+        is_running, is_paused, can_start, can_pause, can_stop = self._snapshot_flags()
         return SupervisorSnapshot(
             mode=self._ui_mode(),
             state_text=self._last_runtime_state,

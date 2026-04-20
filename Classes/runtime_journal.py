@@ -30,17 +30,36 @@ LOGGER = get_logger(__name__)
 JOURNAL_SCHEMA_VERSION = 1
 JOURNAL_SECRET_KEY_NAME = "RUNTIME_JOURNAL_HMAC_KEY"
 RESUME_POLICY = "reobserve_before_input"
+_RESUME_COMMITTED_FIELDS = (
+    ("last_committed_at", "timestamp"),
+    ("machine_id", "machine_id"),
+    ("step_id", "step_id"),
+    ("state_name", "state_name"),
+    ("next_state", "next_state"),
+    ("event", "event"),
+    ("action_name", "action_name"),
+    ("action_type", "action_type"),
+    ("label", "label"),
+    ("target_id", "target_id"),
+    ("decision_id", "decision_id"),
+)
 
 
 def _now() -> datetime:
+    """Return the current wall-clock timestamp for journal artifacts."""
+
     return datetime.now()
 
 
 def _isoformat(value: datetime) -> str:
+    """Serialize journal timestamps using second precision."""
+
     return value.isoformat(timespec="seconds")
 
 
 def _normalize_secret_key(secret_key: str) -> bytes:
+    """Normalize operator-provided journal secret text into raw bytes."""
+
     text = str(secret_key).strip()
     if not text:
         raise ValueError("Runtime journal secret key must not be empty.")
@@ -59,6 +78,8 @@ def _resolve_secret_bytes(
     config: ConfigManager | None = None,
     create_if_missing: bool,
 ) -> bytes | None:
+    """Resolve the HMAC key from explicit input or configured secret storage."""
+
     if secret_key not in {None, ""}:
         return _normalize_secret_key(str(secret_key))
 
@@ -78,6 +99,8 @@ def _resolve_secret_bytes(
 
 
 def _append_json_line(path: Path, payload: dict[str, Any]) -> None:
+    """Append one runtime-journal event as NDJSON with fsync semantics."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
     with path.open("a", encoding="utf-8") as handle:
@@ -87,6 +110,8 @@ def _append_json_line(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
+    """Read one JSON artifact, returning `None` for missing or invalid files."""
+
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -115,21 +140,67 @@ def build_runtime_journal_paths(output_dir: Path, run_id: str) -> RuntimeJournal
 
 
 def _canonical_payload(payload: dict[str, Any]) -> str:
+    """Return the canonical serialized payload used for journal HMACs."""
+
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _compute_entry_hmac(secret: bytes, previous_hmac: str, payload: dict[str, Any]) -> str:
+    """Compute the chained HMAC for one journal payload."""
+
     message = f"{previous_hmac}\n{_canonical_payload(payload)}".encode()
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
 
 
 def _coerce_bool(value: Any) -> bool | None:
+    """Return boolean values unchanged and reject non-boolean inputs."""
+
     if isinstance(value, bool):
         return value
     return None
 
 
+def _base_event_payload(*, run_id: str, sequence: int, event_type: str) -> dict[str, Any]:
+    """Build the common payload fields shared by all journal entries."""
+
+    return {
+        "version": JOURNAL_SCHEMA_VERSION,
+        "run_id": run_id,
+        "sequence": sequence,
+        "timestamp": _isoformat(_now()),
+        "event_type": str(event_type),
+    }
+
+
+def _sanitized_event_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """Return event fields with empty values removed and secrets redacted."""
+
+    payload: dict[str, Any] = {}
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        payload[key] = redact_secret(value) if isinstance(value, str) else value
+    return payload
+
+
+def _signed_entry(*, secret: bytes, previous_hmac: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Return one journal entry with chained HMAC bookkeeping fields added."""
+
+    entry = dict(payload)
+    entry["previous_hmac"] = previous_hmac
+    entry["entry_hmac"] = _compute_entry_hmac(secret, previous_hmac, payload)
+    return entry
+
+
+def _should_refresh_checkpoint(*, event_type: str, commit_boundary: bool) -> bool:
+    """Return whether a journal append should also refresh the checkpoint."""
+
+    return commit_boundary or event_type == "terminal"
+
+
 def _tail_event_types(entries: list[dict[str, Any]], committed_sequence: int) -> list[str]:
+    """Return uncommitted non-terminal event types after the last durable checkpoint."""
+
     event_types: list[str] = []
     for entry in entries:
         sequence = int(entry.get("sequence", 0) or 0)
@@ -143,10 +214,26 @@ def _tail_event_types(entries: list[dict[str, Any]], committed_sequence: int) ->
 
 
 def _last_event(entries: list[dict[str, Any]], event_type: str) -> dict[str, Any] | None:
+    """Return the newest event of a given type from the journal stream."""
+
     for entry in reversed(entries):
         if str(entry.get("event_type", "")) == event_type:
             return entry
     return None
+
+
+def _entry_text(entry: dict[str, Any] | None, key: str) -> str:
+    """Return one journal-entry field as normalized text."""
+
+    return str(entry.get(key, "") or "") if entry else ""
+
+
+def _resume_committed_fields(last_committed: dict[str, Any] | None) -> dict[str, Any]:
+    """Extract the last committed transition fields used by resume metadata."""
+
+    payload = {output_key: _entry_text(last_committed, source_key) for output_key, source_key in _RESUME_COMMITTED_FIELDS}
+    payload["result"] = _coerce_bool(last_committed.get("result")) if last_committed else None
+    return payload
 
 
 def _resume_summary_from_entries(
@@ -156,32 +243,128 @@ def _resume_summary_from_entries(
     verified: bool,
     terminal_event: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """Build the resume summary payload from verified journal entries."""
+
     last_committed = _last_event(entries, "transition_committed")
     committed_sequence = int(last_committed.get("sequence", 0) or 0) if last_committed else 0
     pending_tail_events = _tail_event_types(entries, committed_sequence)
-    return {
+    payload = {
         "run_id": run_id,
         "verified": bool(verified),
         "resume_policy": RESUME_POLICY,
         "last_sequence": int(entries[-1].get("sequence", 0) or 0) if entries else 0,
         "last_committed_sequence": committed_sequence,
-        "last_committed_at": str(last_committed.get("timestamp", "") or "") if last_committed else "",
-        "machine_id": str(last_committed.get("machine_id", "") or "") if last_committed else "",
-        "step_id": str(last_committed.get("step_id", "") or "") if last_committed else "",
-        "state_name": str(last_committed.get("state_name", "") or "") if last_committed else "",
-        "next_state": str(last_committed.get("next_state", "") or "") if last_committed else "",
-        "event": str(last_committed.get("event", "") or "") if last_committed else "",
-        "action_name": str(last_committed.get("action_name", "") or "") if last_committed else "",
-        "action_type": str(last_committed.get("action_type", "") or "") if last_committed else "",
-        "label": str(last_committed.get("label", "") or "") if last_committed else "",
-        "target_id": str(last_committed.get("target_id", "") or "") if last_committed else "",
-        "decision_id": str(last_committed.get("decision_id", "") or "") if last_committed else "",
-        "result": _coerce_bool(last_committed.get("result")) if last_committed else None,
         "pending_tail_count": len(pending_tail_events),
         "pending_tail_events": pending_tail_events[-8:],
-        "terminal_status": str(terminal_event.get("status", "") or "") if terminal_event else "",
-        "terminal_reason": str(terminal_event.get("end_reason", "") or "") if terminal_event else "",
+        "terminal_status": _entry_text(terminal_event, "status"),
+        "terminal_reason": _entry_text(terminal_event, "end_reason"),
     }
+    payload.update(_resume_committed_fields(last_committed))
+    return payload
+
+
+def _journal_integrity_payload(
+    entries: list[dict[str, Any]],
+    *,
+    verified: bool,
+    last_committed: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the integrity subsection for one checkpoint payload."""
+
+    last_entry = entries[-1] if entries else {}
+    return {
+        "verified": bool(verified),
+        "algorithm": "hmac-sha256",
+        "last_sequence": int(last_entry.get("sequence", 0) or 0),
+        "last_entry_hmac": str(last_entry.get("entry_hmac", "") or ""),
+        "last_committed_sequence": int(last_committed.get("sequence", 0) or 0) if last_committed else 0,
+        "last_committed_entry_hmac": str(last_committed.get("entry_hmac", "") or "") if last_committed else "",
+    }
+
+
+def _terminal_payload(terminal_event: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Build the terminal subsection for one checkpoint payload."""
+
+    if terminal_event is None:
+        return None
+    return {
+        "timestamp": _entry_text(terminal_event, "timestamp"),
+        "status": _entry_text(terminal_event, "status"),
+        "end_reason": _entry_text(terminal_event, "end_reason"),
+        "detail": _entry_text(terminal_event, "detail"),
+    }
+
+
+def _terminal_event_payload(
+    *,
+    run_id: str,
+    sequence: int,
+    status: str,
+    end_reason: str,
+    detail: str,
+) -> dict[str, Any]:
+    """Build the payload used when reconciling a missing terminal event."""
+
+    payload = _base_event_payload(run_id=run_id, sequence=sequence, event_type="terminal")
+    payload.update(
+        _sanitized_event_fields(
+            {
+                "status": str(status),
+                "end_reason": str(end_reason),
+                "detail": detail or end_reason,
+            }
+        )
+    )
+    return payload
+
+
+def _reconcile_checkpoint_payload(run_id: str, checkpoint_path: Path) -> dict[str, Any]:
+    """Return the best-effort checkpoint payload when the journal secret is unavailable."""
+
+    return _read_json(checkpoint_path) or {
+        "resume_checkpoint": {
+            "run_id": run_id,
+            "verified": False,
+            "resume_policy": RESUME_POLICY,
+            "pending_tail_count": 0,
+            "pending_tail_events": [],
+        },
+        "journal_integrity": {
+            "verified": False,
+            "algorithm": "hmac-sha256",
+            "last_sequence": 0,
+            "last_entry_hmac": "",
+            "last_committed_sequence": 0,
+            "last_committed_entry_hmac": "",
+        },
+    }
+
+
+def _journal_metadata(
+    *,
+    journal_path: Path,
+    checkpoint_path: Path,
+    checkpoint_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the handoff metadata emitted after journal reconciliation."""
+
+    return {
+        "runtime_journal_path": str(journal_path),
+        "runtime_checkpoint_path": str(checkpoint_path),
+        "resume_checkpoint": checkpoint_payload.get("resume_checkpoint", {}),
+        "journal_integrity": checkpoint_payload.get("journal_integrity", {}),
+    }
+
+
+def _should_append_terminal_event(
+    *,
+    verified: bool,
+    status: str,
+    terminal_event: dict[str, Any] | None,
+) -> bool:
+    """Return whether reconciliation should append a terminal journal marker."""
+
+    return verified and bool(status) and status != "partial" and terminal_event is None
 
 
 def _checkpoint_payload(
@@ -191,43 +374,58 @@ def _checkpoint_payload(
     verified: bool,
     terminal_event: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    last_entry = entries[-1] if entries else {}
+    """Build the durable checkpoint document for the current journal state."""
+
     last_committed = _last_event(entries, "transition_committed")
     return {
         "version": JOURNAL_SCHEMA_VERSION,
         "run_id": run_id,
         "updated_at": _isoformat(_now()),
         "resume_policy": RESUME_POLICY,
-        "journal_integrity": {
-            "verified": bool(verified),
-            "algorithm": "hmac-sha256",
-            "last_sequence": int(last_entry.get("sequence", 0) or 0),
-            "last_entry_hmac": str(last_entry.get("entry_hmac", "") or ""),
-            "last_committed_sequence": int(last_committed.get("sequence", 0) or 0) if last_committed else 0,
-            "last_committed_entry_hmac": str(last_committed.get("entry_hmac", "") or "") if last_committed else "",
-        },
+        "journal_integrity": _journal_integrity_payload(entries, verified=verified, last_committed=last_committed),
         "resume_checkpoint": _resume_summary_from_entries(
             run_id=run_id,
             entries=entries,
             verified=verified,
             terminal_event=terminal_event,
         ),
-        "terminal": (
-            {
-                "timestamp": str(terminal_event.get("timestamp", "") or ""),
-                "status": str(terminal_event.get("status", "") or ""),
-                "end_reason": str(terminal_event.get("end_reason", "") or ""),
-                "detail": str(terminal_event.get("detail", "") or ""),
-            }
-            if terminal_event
-            else None
-        ),
+        "terminal": _terminal_payload(terminal_event),
     }
 
 
+def _entry_payload_for_hmac(entry: dict[str, Any]) -> dict[str, Any]:
+    """Return the journal entry payload with HMAC bookkeeping fields removed."""
+
+    return {key: value for key, value in entry.items() if key not in {"previous_hmac", "entry_hmac"}}
+
+
+def _validated_journal_entry(
+    raw_line: str,
+    *,
+    previous_hmac: str,
+    secret: bytes,
+) -> tuple[dict[str, Any] | None, str]:
+    """Parse and validate one raw journal line against the chained HMAC."""
+
+    try:
+        entry = json.loads(raw_line)
+    except json.JSONDecodeError:
+        return None, previous_hmac
+    if not isinstance(entry, dict):
+        return None, previous_hmac
+
+    expected_previous_hmac = str(entry.get("previous_hmac", "") or "")
+    expected_entry_hmac = str(entry.get("entry_hmac", "") or "")
+    computed_entry_hmac = _compute_entry_hmac(secret, previous_hmac, _entry_payload_for_hmac(entry))
+    if expected_previous_hmac != previous_hmac or expected_entry_hmac != computed_entry_hmac:
+        return None, previous_hmac
+    return entry, expected_entry_hmac
+
+
 def _verified_entries(journal_path: Path, secret: bytes) -> tuple[list[dict[str, Any]], bool]:
+    """Read journal entries until the first decode or HMAC validation failure."""
+
     entries: list[dict[str, Any]] = []
-    verified = True
     previous_hmac = ""
 
     if not journal_path.is_file():
@@ -242,24 +440,12 @@ def _verified_entries(journal_path: Path, secret: bytes) -> tuple[list[dict[str,
     for raw_line in lines:
         if not raw_line.strip():
             continue
-        try:
-            entry = json.loads(raw_line)
-        except json.JSONDecodeError:
-            verified = False
-            break
-        if not isinstance(entry, dict):
-            verified = False
-            break
-        expected_previous_hmac = str(entry.get("previous_hmac", "") or "")
-        expected_entry_hmac = str(entry.get("entry_hmac", "") or "")
-        payload = {key: value for key, value in entry.items() if key not in {"previous_hmac", "entry_hmac"}}
-        computed_entry_hmac = _compute_entry_hmac(secret, previous_hmac, payload)
-        if expected_previous_hmac != previous_hmac or expected_entry_hmac != computed_entry_hmac:
-            verified = False
-            break
+        entry, next_hmac = _validated_journal_entry(raw_line, previous_hmac=previous_hmac, secret=secret)
+        if entry is None:
+            return entries, False
         entries.append(entry)
-        previous_hmac = expected_entry_hmac
-    return entries, verified
+        previous_hmac = next_hmac
+    return entries, True
 
 
 class RuntimeJournal:
@@ -300,30 +486,28 @@ class RuntimeJournal:
     def _next_identifier_locked(self, prefix: str) -> str:
         return f"{prefix}_{len(self._entries) + 1:06d}"
 
+    def _record_entry_locked(self, entry: dict[str, Any]) -> None:
+        """Store one signed entry in memory and update terminal bookkeeping."""
+
+        self._entries.append(entry)
+        self._previous_hmac = str(entry["entry_hmac"])
+        if str(entry.get("event_type", "")) == "terminal":
+            self._terminal_recorded = True
+
     def _append_event_locked(self, event_type: str, *, commit_boundary: bool = False, **fields: Any) -> dict[str, Any]:
         if self._terminal_recorded and event_type != "terminal":
             return dict(self._entries[-1]) if self._entries else {}
 
-        payload = {
-            "version": JOURNAL_SCHEMA_VERSION,
-            "run_id": self.run_id,
-            "sequence": len(self._entries) + 1,
-            "timestamp": _isoformat(_now()),
-            "event_type": str(event_type),
-        }
-        for key, value in fields.items():
-            if value is None or value == "":
-                continue
-            payload[key] = redact_secret(value) if isinstance(value, str) else value
-        entry = dict(payload)
-        entry["previous_hmac"] = self._previous_hmac
-        entry["entry_hmac"] = _compute_entry_hmac(self._secret, self._previous_hmac, payload)
+        payload = _base_event_payload(
+            run_id=self.run_id,
+            sequence=len(self._entries) + 1,
+            event_type=event_type,
+        )
+        payload.update(_sanitized_event_fields(fields))
+        entry = _signed_entry(secret=self._secret, previous_hmac=self._previous_hmac, payload=payload)
         _append_json_line(self.paths.journal_path, entry)
-        self._entries.append(entry)
-        self._previous_hmac = str(entry["entry_hmac"])
-        if event_type == "terminal":
-            self._terminal_recorded = True
-        if commit_boundary or event_type == "terminal":
+        self._record_entry_locked(entry)
+        if _should_refresh_checkpoint(event_type=event_type, commit_boundary=commit_boundary):
             self._write_checkpoint_locked(verified=True)
         return dict(entry)
 
@@ -611,47 +795,25 @@ def reconcile_runtime_journal_artifacts(
         create_if_missing=False,
     )
     if secret is None:
-        checkpoint_payload = _read_json(checkpoint_path) or {
-            "resume_checkpoint": {
-                "run_id": run_id,
-                "verified": False,
-                "resume_policy": RESUME_POLICY,
-                "pending_tail_count": 0,
-                "pending_tail_events": [],
-            },
-            "journal_integrity": {
-                "verified": False,
-                "algorithm": "hmac-sha256",
-                "last_sequence": 0,
-                "last_entry_hmac": "",
-                "last_committed_sequence": 0,
-                "last_committed_entry_hmac": "",
-            },
-        }
-        return {
-            "runtime_journal_path": str(journal_path),
-            "runtime_checkpoint_path": str(checkpoint_path),
-            "resume_checkpoint": checkpoint_payload.get("resume_checkpoint", {}),
-            "journal_integrity": checkpoint_payload.get("journal_integrity", {}),
-        }
+        checkpoint_payload = _reconcile_checkpoint_payload(run_id, checkpoint_path)
+        return _journal_metadata(
+            journal_path=journal_path,
+            checkpoint_path=checkpoint_path,
+            checkpoint_payload=checkpoint_payload,
+        )
 
     entries, verified = _verified_entries(journal_path, secret)
     terminal_event = _last_event(entries, "terminal")
-    if verified and status and status != "partial" and terminal_event is None:
-        payload = {
-            "version": JOURNAL_SCHEMA_VERSION,
-            "run_id": run_id,
-            "sequence": len(entries) + 1,
-            "timestamp": _isoformat(_now()),
-            "event_type": "terminal",
-            "status": str(status),
-            "end_reason": str(end_reason),
-            "detail": redact_secret(detail or end_reason),
-        }
-        entry = dict(payload)
+    if _should_append_terminal_event(verified=verified, status=status, terminal_event=terminal_event):
         previous_hmac = str(entries[-1].get("entry_hmac", "") or "") if entries else ""
-        entry["previous_hmac"] = previous_hmac
-        entry["entry_hmac"] = _compute_entry_hmac(secret, previous_hmac, payload)
+        payload = _terminal_event_payload(
+            run_id=run_id,
+            sequence=len(entries) + 1,
+            status=status,
+            end_reason=end_reason,
+            detail=detail,
+        )
+        entry = _signed_entry(secret=secret, previous_hmac=previous_hmac, payload=payload)
         _append_json_line(journal_path, entry)
         entries.append(entry)
         terminal_event = entry
@@ -666,9 +828,8 @@ def reconcile_runtime_journal_artifacts(
         checkpoint_path,
         json.dumps(checkpoint_payload, indent=2, ensure_ascii=False) + "\n",
     )
-    return {
-        "runtime_journal_path": str(journal_path),
-        "runtime_checkpoint_path": str(checkpoint_path),
-        "resume_checkpoint": checkpoint_payload["resume_checkpoint"],
-        "journal_integrity": checkpoint_payload["journal_integrity"],
-    }
+    return _journal_metadata(
+        journal_path=journal_path,
+        checkpoint_path=checkpoint_path,
+        checkpoint_payload=checkpoint_payload,
+    )

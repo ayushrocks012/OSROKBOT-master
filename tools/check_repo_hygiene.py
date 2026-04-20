@@ -20,6 +20,7 @@ FORBIDDEN_TRACKED_PATTERNS = (
     "data/secrets/**",
     "data/session_logs/**",
 )
+FORBIDDEN_LEGACY_IMPORT = ".".join(("Actions", "legacy"))
 SOURCE_SUFFIXES = {".py"}
 
 
@@ -54,7 +55,7 @@ def _legacy_import_failures(paths: list[Path]) -> list[str]:
         if not absolute_path.exists():
             continue
         text = absolute_path.read_text(encoding="utf-8", errors="ignore")
-        if "Actions.legacy" in text:
+        if FORBIDDEN_LEGACY_IMPORT in text:
             failures.append(f"Unsupported legacy import reference found: {path.as_posix()}")
     return failures
 

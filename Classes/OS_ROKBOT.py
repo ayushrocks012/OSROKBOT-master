@@ -1,3 +1,11 @@
+"""Runtime runner for supervised OSROKBOT automation sessions.
+
+This module owns the executor-backed run loop, heartbeat emission, foreground
+and CAPTCHA safety gates, and shared observation reuse across workflow state
+machines. It coordinates the runtime but delegates input execution,
+observation, and planner logic to injected collaborators.
+"""
+
 from __future__ import annotations
 
 import json
@@ -332,6 +340,18 @@ class OSROKBOT:
             LOGGER.warning("Background heartbeat write failed: %s", exc)
 
     def write_heartbeat(self, context: Context | None = None, force: bool = False) -> bool:
+        """Schedule a best-effort heartbeat refresh for watchdog consumers.
+
+        Args:
+            context: Optional active runtime context used to populate mission
+                and autonomy metadata.
+            force: When `True`, bypass the normal minimum write interval.
+
+        Returns:
+            bool: `True` when the heartbeat was already fresh or a background
+            write was successfully scheduled.
+        """
+
         now = time.time()
         with self._heartbeat_lock:
             if not force and now - self._last_heartbeat_at < 5:
@@ -424,6 +444,13 @@ class OSROKBOT:
             LOGGER.warning("State machine cleanup failed: %s", exc)
 
     def run(self, state_machines: Sequence[Any], context: Context | None = None) -> None:
+        """Run one or more workflow state machines until stop or failure.
+
+        Args:
+            state_machines: The prepared workflow machines to execute.
+            context: Optional pre-built runtime context for the session.
+        """
+
         context = self._prepare_context(context)
         self._active_context = context
         base_log_context = self._session_log_context_fields(context)
@@ -547,6 +574,16 @@ class OSROKBOT:
             self._active_context = None
 
     def start(self, steps: Sequence[Any], context: Context | None = None) -> bool:
+        """Start the runner asynchronously after startup safety checks pass.
+
+        Args:
+            steps: Workflow machines to execute on background worker threads.
+            context: Optional runtime context to reuse for the session.
+
+        Returns:
+            bool: `True` when the run started, otherwise `False`.
+        """
+
         prepared_context = self._prepare_context(context) if context is not None else None
         if self.is_running or not self.all_threads_joined:
             return False
@@ -572,12 +609,16 @@ class OSROKBOT:
         return True
 
     def stop(self) -> None:
+        """Request runner shutdown and stop all background executors."""
+
         self.stop_event.set()
         self.is_running = False
         self._shutdown_runner_executor()
         self._shutdown_heartbeat_executor()
 
     def toggle_pause(self) -> None:
+        """Toggle the runtime pause flag and emit the updated pause state."""
+
         if self.pause_event.is_set():
             self.pause_event.clear()
         else:
@@ -585,4 +626,6 @@ class OSROKBOT:
         self.signal_emitter.pause_toggled.emit(self.pause_event.is_set())
 
     def is_paused(self) -> bool:
+        """Return whether the runtime is currently paused."""
+
         return self.pause_event.is_set()

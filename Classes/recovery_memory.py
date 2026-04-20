@@ -1,3 +1,11 @@
+"""Bounded persistence for guarded recovery outcomes.
+
+This module stores successful and failed recovery attempts keyed by stable
+state/action signatures plus a coarse screenshot hash. The runtime uses it as
+an advisory memory layer for repeated failure states; it is not allowed to
+override the planner or input safety model.
+"""
+
 import json
 import threading
 from datetime import datetime
@@ -15,6 +23,8 @@ DEFAULT_MAX_ENTRIES = 500
 
 
 class RecoveryMemory:
+    """Store bounded recovery outcomes keyed by stable workflow signatures."""
+
     def __init__(self, path=DEFAULT_MEMORY_PATH, hash_tolerance=4, max_entries=DEFAULT_MAX_ENTRIES):
         self.path = Path(path)
         self.hash_tolerance = int(hash_tolerance)
@@ -24,6 +34,8 @@ class RecoveryMemory:
 
     @classmethod
     def load(cls, path=DEFAULT_MEMORY_PATH, max_entries=DEFAULT_MAX_ENTRIES):
+        """Load recovery memory from disk, ignoring unreadable payloads."""
+
         memory = cls(path, max_entries=max_entries)
         if not memory.path.is_file():
             return memory
@@ -47,6 +59,8 @@ class RecoveryMemory:
 
     @staticmethod
     def screenshot_hash(screenshot_path):
+        """Return a coarse perceptual hash for one screenshot path."""
+
         try:
             image = Image.open(screenshot_path).convert("L").resize((8, 8))
         except Exception:
@@ -59,10 +73,14 @@ class RecoveryMemory:
 
     @staticmethod
     def action_image(action):
+        """Return the legacy action image identifier for one action object."""
+
         return str(getattr(action, "image", "") or "")
 
     @staticmethod
     def visible_label_values(visible_labels):
+        """Normalize visible detector labels into a sorted list of strings."""
+
         labels = []
         for item in visible_labels or []:
             if isinstance(item, str):
@@ -75,6 +93,8 @@ class RecoveryMemory:
 
     @classmethod
     def signature_parts(cls, state_name, action, screenshot_path, visible_labels=None):
+        """Build the structured signature parts for one recovery scenario."""
+
         labels = cls.visible_label_values(visible_labels)
         return {
             "state_name": str(state_name),
@@ -86,6 +106,8 @@ class RecoveryMemory:
 
     @staticmethod
     def stable_signature(parts):
+        """Return the stable non-hash signature string for memory lookup."""
+
         labels = ",".join(parts.get("visible_labels", []))
         return "|".join(
             [
@@ -98,10 +120,14 @@ class RecoveryMemory:
 
     @classmethod
     def build_signature(cls, state_name, action, screenshot_path, visible_labels=None):
+        """Build the stable signature string for one recovery scenario."""
+
         return cls.stable_signature(cls.signature_parts(state_name, action, screenshot_path, visible_labels))
 
     @staticmethod
     def hamming_distance(left_hash, right_hash):
+        """Return the Hamming distance between two coarse screenshot hashes."""
+
         if not left_hash or not right_hash or left_hash == "no_screenshot" or right_hash == "no_screenshot":
             return 999
         try:
@@ -122,6 +148,8 @@ class RecoveryMemory:
                 yield distance, entry
 
     def find(self, signature, screenshot_hash=None):
+        """Return the best compatible recovery-memory entry, if any."""
+
         if screenshot_hash is None and isinstance(signature, dict):
             parts = signature
             stable_signature = self.stable_signature(parts)
@@ -154,6 +182,8 @@ class RecoveryMemory:
         return entry
 
     def save(self):
+        """Persist the bounded recovery-memory payload atomically."""
+
         with self._lock:
             self._evict_if_needed()
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +230,8 @@ class RecoveryMemory:
         action_class="",
         visible_labels=None,
     ):
+        """Record one successful recovery outcome and persist the memory store."""
+
         now = datetime.now().isoformat(timespec="seconds")
         with self._lock:
             stable_signature = signature
@@ -235,6 +267,8 @@ class RecoveryMemory:
         return entry
 
     def record_failure(self, signature):
+        """Record one failed recovery attempt and persist the memory store."""
+
         now = datetime.now().isoformat(timespec="seconds")
         with self._lock:
             entry = self.entries.get(signature) or {

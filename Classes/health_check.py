@@ -59,14 +59,20 @@ _SPINNER = "..."
 
 
 class _YoloDownloadWorker(QtCore.QObject):
+    """Move YOLO download work off the UI thread and report the outcome."""
+
     finished = QtCore.pyqtSignal(bool, str)
 
     def __init__(self, config):
+        """Store the shared config object used by the download worker."""
+
         super().__init__()
         self.config = config
 
     @QtCore.pyqtSlot()
     def run(self):
+        """Download or validate YOLO weights and emit the result back to the dialog."""
+
         try:
             path = ModelManager(self.config).ensure_yolo_weights()
         except Exception as exc:

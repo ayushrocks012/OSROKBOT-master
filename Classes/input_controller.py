@@ -1,3 +1,11 @@
+"""Guarded hardware input boundary for mouse, keyboard, and scroll actions.
+
+This module is the only supported place for low-level input execution. It
+keeps pause/stop interlocks, foreground guards, and pointer bounds validation
+close to the hardware backend so planner and workflow code cannot bypass the
+runtime safety model.
+"""
+
 import ctypes
 import math
 import secrets
@@ -20,6 +28,8 @@ else:
 
 
 class WindowRect(Protocol):
+    """Protocol describing the absolute screen bounds of one target window."""
+
     hwnd: int
     left: int
     top: int
@@ -55,6 +65,16 @@ class DelayPolicy:
     jitter_ratio: float = 0.15
 
     def adjusted_delay(self, seconds: float | None = None):
+        """Return one bounded jittered delay value.
+
+        Args:
+            seconds: Optional explicit delay override. When omitted, the
+                policy's default delay is used.
+
+        Returns:
+            float: The non-negative delay after bounded jitter is applied.
+        """
+
         delay = self.default_delay if seconds is None else seconds
         if delay <= 0:
             return 0.0
@@ -62,6 +82,17 @@ class DelayPolicy:
         return max(0.0, _bounded_gaussian(delay, max(0.001, jitter / 3.0), delay - jitter, delay + jitter))
 
     def wait(self, seconds: float | None = None, context=None):
+        """Sleep for one bounded interval while honoring runtime interlocks.
+
+        Args:
+            seconds: Optional explicit delay override.
+            context: Optional runtime context carrying pause and stop events.
+
+        Returns:
+            bool: `True` when the wait finished normally, or `False` when the
+            runtime paused or stopped during the wait.
+        """
+
         delay = self.adjusted_delay(seconds)
         if delay <= 0:
             return True
@@ -101,13 +132,19 @@ class HumanizationProfile:
         return _bounded_gaussian(mean, sigma, lower, upper)
 
     def sample_move_duration(self, base: float | None = None) -> float:
+        """Return one bounded pointer-move duration sample."""
+
         duration = self.move_duration if base is None else base
         return self._sample_duration(duration, self.move_duration_jitter_ratio, self.move_duration_bounds)
 
     def sample_click_hold_seconds(self) -> float:
+        """Return one bounded click-hold duration sample."""
+
         return self._sample_duration(self.click_hold_seconds, self.click_hold_jitter_ratio, self.click_hold_bounds)
 
     def sample_long_press_seconds(self, base: float | None = None) -> float:
+        """Return one bounded long-press duration sample."""
+
         duration = self.long_press_seconds if base is None else base
         return self._sample_duration(duration, self.long_press_jitter_ratio, self.long_press_bounds)
 
@@ -117,6 +154,13 @@ class _Point(ctypes.Structure):
 
 
 class InputController:
+    """Execute runtime-approved mouse and keyboard actions through Interception.
+
+    The controller centralizes pause/stop interlocks, target-window foreground
+    checks, and window-bounds validation so planner and workflow code cannot
+    issue raw hardware input outside the runtime safety model.
+    """
+
     KEY_ALIASES = {
         "escape": "esc",
         "esc": "esc",
@@ -166,6 +210,8 @@ class InputController:
 
     @classmethod
     def ensure_interception_ready(cls):
+        """Initialize the Interception backend once and cache the result."""
+
         if cls._capture_attempted:
             return cls._capture_ready
 
@@ -194,15 +240,21 @@ class InputController:
 
     @classmethod
     def is_backend_available(cls):
+        """Return whether the hardware input backend is available."""
+
         return cls.ensure_interception_ready()
 
     @classmethod
     def backend_error(cls):
+        """Return the last backend initialization error, if any."""
+
         cls.ensure_interception_ready()
         return cls._capture_error or ""
 
     @staticmethod
     def is_allowed(context=None):
+        """Return whether the active runtime still permits new input."""
+
         if not context or not getattr(context, "bot", None):
             return True
         bot = context.bot
@@ -216,6 +268,8 @@ class InputController:
         return context or self.context
 
     def check_interlock(self, context=None):
+        """Fail closed when the runtime is paused or stopping."""
+
         active_context = self._context(context)
         if self.is_allowed(active_context):
             return True
@@ -223,6 +277,8 @@ class InputController:
         return False
 
     def check_backend(self):
+        """Ensure the Interception backend is ready before sending input."""
+
         if self.ensure_interception_ready():
             return True
         LOGGER.error(f"Hardware input blocked: {self.backend_error()}")
@@ -240,6 +296,16 @@ class InputController:
                 bot.signal_emitter.pause_toggled.emit(True)
 
     def check_foreground(self, context=None):
+        """Ensure the target game window is foreground before input.
+
+        Args:
+            context: Optional runtime context carrying the target window title.
+
+        Returns:
+            bool: `True` when the target window is foreground or no title is
+            configured, otherwise `False`.
+        """
+
         active_context = self._context(context)
         window_title = getattr(active_context, "window_title", None) if active_context else None
         if not window_title:
@@ -262,6 +328,8 @@ class InputController:
 
     @staticmethod
     def validate_bounds(x, y, window_rect):
+        """Return whether one absolute point lies inside the target window."""
+
         if not window_rect:
             return False
         return (
@@ -270,6 +338,8 @@ class InputController:
         )
 
     def wait(self, seconds=0, context=None):
+        """Delegate to the shared delay policy with the active context."""
+
         return self.delay_policy.wait(seconds, self._context(context))
 
     @staticmethod
@@ -352,6 +422,8 @@ class InputController:
         raise AttributeError(f"interception-python is missing required function: {names[0]}")
 
     def sample_click_target(self, x, y, window_rect=None):
+        """Return a humanized pointer target bounded to the active window."""
+
         noise = self.coordinate_noise_px
         if noise:
             sigma = max(0.1, noise / 2)
@@ -385,6 +457,8 @@ class InputController:
         self._call_interception(("key_up", "keyup"), key)
 
     def hotkey(self, *keys: str | int, context: Any | None = None) -> bool:
+        """Press a key chord through the guarded hardware backend."""
+
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -408,6 +482,8 @@ class InputController:
         return self.delay_policy.wait(self.delay_policy.click_settle_delay, active_context)
 
     def smooth_move_to(self, x: float, y: float, context: Any | None = None, duration: float | None = None, window_rect: WindowRect | None = None) -> bool:
+        """Move the pointer along a bounded bezier path to one point."""
+
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -456,6 +532,8 @@ class InputController:
         return True
 
     def click(self, x: float, y: float, window_rect: WindowRect | None = None, remember_position: bool = True, context: Any | None = None) -> bool:
+        """Perform one guarded click inside the target window."""
+
         _ = remember_position  # Compatibility parameter; pointer restoration is intentionally disabled.
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
@@ -497,6 +575,8 @@ class InputController:
         context: Any | None = None,
         hold_seconds: float | None = None,
     ) -> bool:
+        """Perform one guarded long-press inside the target window."""
+
         _ = remember_position  # Compatibility parameter; pointer restoration is intentionally disabled.
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
@@ -543,6 +623,8 @@ class InputController:
         window_rect: WindowRect | None = None,
         context: Any | None = None,
     ) -> bool:
+        """Perform one guarded drag gesture within the target window."""
+
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -581,6 +663,8 @@ class InputController:
                     InputController._pause_for_foreground_failure(active_context)
 
     def move_to(self, x: float, y: float, window_rect: WindowRect | None = None, remember_position: bool = False, context: Any | None = None) -> bool:
+        """Move the pointer without pressing any buttons."""
+
         _ = remember_position  # Compatibility parameter; pointer restoration is intentionally disabled.
         active_context = self._context(context)
         if not self.check_interlock(active_context):
@@ -596,6 +680,8 @@ class InputController:
             return False
 
     def key_press(self, key: str | int, hold_seconds: float | None = None, presses: int = 1, context: Any | None = None) -> bool:
+        """Press one key a bounded number of times through Interception."""
+
         active_context = self._context(context)
         if not self.check_backend() or not self.check_foreground(active_context):
             return False
@@ -626,6 +712,8 @@ class InputController:
         return True
 
     def scroll(self, y_scroll: int = 0, context: Any | None = None) -> bool:
+        """Scroll the mouse wheel with guarded pacing and interlocks."""
+
         active_context = self._context(context)
         if not self.check_interlock(active_context) or not self.check_backend() or not self.check_foreground(active_context):
             return False

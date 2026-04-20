@@ -208,6 +208,8 @@ class AIRecoveryExecutor:
         action: object,
         screenshot_path: str | Path | None,
     ) -> bool:
+        """Attempt one guarded recovery click from memory or AI guidance."""
+
         if not context or not screenshot_path:
             return False
         if self._is_manual_or_captcha(state_name, action):
@@ -261,6 +263,8 @@ class AIRecoveryExecutor:
         next_state: str | None,
         result: bool,
     ) -> None:
+        """Commit or penalize the pending recovery hint after one workflow step."""
+
         del previous_state
         if context is None:
             return

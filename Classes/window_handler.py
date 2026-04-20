@@ -89,6 +89,8 @@ class _WindowCaptureBackend:
     name = "unknown"
 
     def capture_client_image(self, hwnd: int, client_rect: ClientRect) -> Image.Image | None:
+        """Capture one client-area image for the target window handle."""
+
         raise NotImplementedError
 
 
@@ -165,13 +167,19 @@ class _Win32WindowCaptureBackend(_WindowCaptureBackend):
 
 
 class WindowHandler:
+    """Own game-window lookup, client-rect discovery, and capture/foreground guards."""
+
     ASPECT_RATIO_16_9 = 16 / 9
     ASPECT_RATIO_EPSILON = 0.02
 
     def __init__(self, capture_backend: _WindowCaptureBackend | None = None) -> None:
+        """Create a window handler with the configured capture backend."""
+
         self._capture_backend = capture_backend or _Win32WindowCaptureBackend()
 
     def get_window(self, title: str) -> Any:
+        """Return the first matching top-level window for the configured game title."""
+
         windows = gw.getWindowsWithTitle(title)
 
         if not windows:
@@ -227,6 +235,8 @@ class WindowHandler:
         return self._capture_backend.capture_client_image(hwnd, client_rect)
 
     def screenshot_window(self, title: str) -> tuple[Image.Image | None, ClientRect | None]:
+        """Capture the target window and return its RGB image plus client rectangle."""
+
         win = self.get_window(title)
         if not win:
             return None, None
@@ -256,6 +266,8 @@ class WindowHandler:
         return screenshot.convert("RGB"), client_rect
 
     def get_client_window_rect(self, title: str) -> ClientRect | None:
+        """Return the current client-area rectangle for the target window."""
+
         win = self.get_window(title)
         if not win:
             return None
@@ -267,6 +279,8 @@ class WindowHandler:
             return None
 
     def enforce_aspect_ratio(self, title: str = "Rise of Kingdoms") -> bool:
+        """Resize the target window to the supported 16:9 ratio when needed."""
+
         win = self.get_window(title)
         if not win:
             return False
@@ -291,6 +305,8 @@ class WindowHandler:
             return False
 
     def activate_window(self, title: str = "Rise of Kingdoms") -> None:
+        """Prepare the target window for interaction without forcing foreground focus."""
+
         try:
             win = self.get_window(title)
             if win:
@@ -301,6 +317,8 @@ class WindowHandler:
         return
 
     def ensure_foreground(self, title: str = "Rise of Kingdoms", wait_seconds: float = 0.5) -> bool:
+        """Bring the target window to the foreground and verify it became active."""
+
         if not self._win32_available():
             LOGGER.error("pywin32 is required to enforce the foreground game window.")
             return False
