@@ -114,6 +114,9 @@ class DynamicPlannerAction(Action):
 
         screenshot_path = self.observation_service.save_latest_screenshot(self.planner.memory.path, observation.screenshot)
         screen_changed, stuck_warning = self.observation_service.screen_change_context(observation.screenshot)
+        record_no_progress_feedback = getattr(self.feedback_service, "record_no_progress_feedback", None)
+        if callable(record_no_progress_feedback):
+            record_no_progress_feedback(context, screen_changed=screen_changed)
         if _runtime_interrupted(context):
             return False
         self.feedback_service.ensure_task_graph(context, goal)

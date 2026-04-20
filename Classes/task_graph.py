@@ -80,9 +80,11 @@ class SubGoal:
     ) -> bool:
         """Check if current observations satisfy this sub-goal's post-conditions.
 
-        A sub-goal is considered complete when at least one expected label is
-        visible OR at least one expected OCR keyword is found in the screen text.
-        If no post-conditions are set, the sub-goal is never auto-completed.
+        When detector labels are configured for the step, they are treated as
+        the authoritative completion signal. OCR keywords are used only for
+        OCR-only steps without expected labels. This intentionally biases the
+        graph toward false negatives instead of unsafe false positives when
+        detector coverage is temporarily missing.
         """
         if not self.expected_labels and not self.expected_ocr_keywords:
             return False
@@ -90,9 +92,8 @@ class SubGoal:
         labels = {str(label).lower() for label in (visible_labels or [])}
         lower_ocr = str(ocr_text or "").lower()
 
-        for expected in self.expected_labels:
-            if expected.lower() in labels:
-                return True
+        if self.expected_labels:
+            return any(expected.lower() in labels for expected in self.expected_labels)
 
         return any(keyword.lower() in lower_ocr for keyword in self.expected_ocr_keywords)
 

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from task_graph import TaskGraph
+from task_graph import SubGoal, TaskGraph
 
 
 class _FakeResponse:
@@ -79,3 +79,15 @@ def test_task_graph_decompose_falls_back_to_single_goal_on_transport_error():
 
     assert len(sub_goals) == 1
     assert sub_goals[0].description == "Gather wood safely."
+
+
+def test_subgoal_with_expected_labels_does_not_complete_from_ocr_only_match():
+    sub_goal = SubGoal(
+        step=1,
+        description="Open the world map",
+        expected_labels=["map"],
+        expected_ocr_keywords=["world map"],
+    )
+
+    assert sub_goal.is_completed_by([], "world map") is False
+    assert sub_goal.is_completed_by(["map"], "") is True

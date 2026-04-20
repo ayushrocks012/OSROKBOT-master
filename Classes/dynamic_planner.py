@@ -85,6 +85,43 @@ OCR_UI_BLACKLIST = (
     "mission",
     "vip",
 )
+PLANNER_MEMORY_LIMIT = 5
+MAP_GOAL_KEYWORDS = ("open the world map", "world map", "map view", "switch to map")
+MAP_LABEL_HINTS = {
+    "searchaction",
+    "gatheraction",
+    "attackaction",
+    "marchaction",
+    "smallmarchaction",
+    "scoutaction",
+    "rallyaction",
+}
+CITY_LABEL_HINTS = {
+    "newtroopaction",
+    "useaction",
+    "trainaction",
+    "upgradeaction",
+    "buildaction",
+}
+BLOCKER_LABEL_HINTS = {"confirm", "escx", "captcha", "captchachest", "captcha_chest"}
+RESOURCE_REVIEW_SCREEN_KEYWORDS = (
+    "search",
+    "gather",
+    "march",
+    "resource point",
+    "alliance resource",
+    "occupy",
+)
+CITY_SCREEN_TEXT_KEYWORDS = (
+    "technology research",
+    "blacksmith apprentice",
+    "land of civilization",
+    "feudal age",
+    "machinery",
+    "battering ram",
+    "heavy cavalry",
+    "spearman",
+)
 
 
 def _safe_float(value, default=math.nan):
@@ -468,7 +505,10 @@ class AsyncPlannerTransport:
         while time.monotonic() < deadline:
             if should_cancel():
                 return False
-            time.sleep(min(poll_seconds, deadline - time.monotonic()))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_seconds, remaining))
         return not should_cancel()
 
     def _check_circuit_breaker(self) -> None:
@@ -819,6 +859,81 @@ class DynamicPlanner:
         goal_text = str(goal or "").lower()
         return any(keyword in goal_text for keyword in RESOURCE_GOAL_KEYWORDS)
 
+    @staticmethod
+    def _goal_requests_world_map(goal):
+        goal_text = str(goal or "").lower()
+        return any(keyword in goal_text for keyword in MAP_GOAL_KEYWORDS)
+
+    @staticmethod
+    def _normalized_text(text):
+        return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+    @classmethod
+    def _text_contains_keyword(cls, text, keyword):
+        normalized_text = cls._normalized_text(text)
+        normalized_keyword = cls._normalized_text(keyword)
+        if not normalized_text or not normalized_keyword:
+            return False
+        return f" {normalized_keyword} " in f" {normalized_text} "
+
+    @classmethod
+    def _matching_keywords(cls, text, keywords):
+        return {
+            keyword for keyword in keywords
+            if cls._text_contains_keyword(text, keyword)
+        }
+
+    @staticmethod
+    def _normalized_labels(labels):
+        return {
+            str(label or "").strip().lower().replace(" ", "_")
+            for label in (labels or [])
+            if str(label or "").strip()
+        }
+
+    @classmethod
+    def _screen_looks_like_city(cls, labels, ocr_text):
+        normalized_labels = cls._normalized_labels(labels)
+        if normalized_labels.intersection(CITY_LABEL_HINTS):
+            return True
+        city_hits = len(cls._matching_keywords(ocr_text, CITY_SCREEN_TEXT_KEYWORDS))
+        map_hits = len(cls._matching_keywords(ocr_text, RESOURCE_REVIEW_SCREEN_KEYWORDS))
+        return city_hits >= 1 and map_hits == 0
+
+    @classmethod
+    def _deterministic_map_transition_decision(cls, goal, labels, ocr_text):
+        if not cls._goal_requests_world_map(goal):
+            return None
+
+        normalized_labels = cls._normalized_labels(labels)
+        if normalized_labels.intersection(MAP_LABEL_HINTS):
+            return None
+        if normalized_labels.intersection(BLOCKER_LABEL_HINTS):
+            return PlannerDecision.from_mapping(
+                {
+                    "thought_process": "A blocker is visible while the current goal is to reach world map.",
+                    "action_type": "key",
+                    "label": "escape",
+                    "confidence": 0.99,
+                    "delay_seconds": 0.8,
+                    "reason": "Dismiss the visible blocker before opening the world map.",
+                    "key_name": "escape",
+                }
+            )
+        if not cls._screen_looks_like_city(labels, ocr_text):
+            return None
+        return PlannerDecision.from_mapping(
+            {
+                "thought_process": "The focused goal is to open the world map and the screen still looks like city view.",
+                "action_type": "key",
+                "label": "world map toggle",
+                "confidence": 0.99,
+                "delay_seconds": 0.8,
+                "reason": "Use the guarded world-map hotkey instead of guessing an OCR target from city view.",
+                "key_name": "space",
+            }
+        )
+
     def _ocr_review_candidate_score(self, target):
         if not isinstance(target, PlannerTarget) or target.source != "ocr":
             return None
@@ -846,23 +961,32 @@ class DynamicPlanner:
 
         compact_text = re.sub(r"[^a-z0-9]+", "", text)
         digits_only = re.sub(r"\D+", "", text)
+        if compact_text.isdigit():
+            return None
         if digits_only.isdigit() and len(digits_only) >= 4:
             return None
 
         score = float(target.confidence)
-        
+
         resource_bonus = float(self.config.get("OCR_REVIEW_RESOURCE_BONUS", 4.0))
         level_bonus = float(self.config.get("OCR_REVIEW_LEVEL_BONUS", 2.0))
         digit_bonus = float(self.config.get("OCR_REVIEW_DIGIT_BONUS", 3.0))
         min_score = float(self.config.get("OCR_REVIEW_MIN_SCORE", 2.0))
-        
-        if any(keyword in text for keyword in RESOURCE_TEXT_KEYWORDS):
+        has_resource_keyword = any(keyword in text for keyword in RESOURCE_TEXT_KEYWORDS)
+        has_level_hint = "lv" in text or "level" in text
+
+        if has_resource_keyword:
             score += resource_bonus
-        if "lv" in text or "level" in text:
+        if has_level_hint:
             score += level_bonus
-        if digits_only.isdigit() and len(digits_only) <= 2 and 1 <= int(digits_only) <= 8:
+        if (
+            digits_only.isdigit()
+            and len(digits_only) <= 2
+            and 1 <= int(digits_only) <= 8
+            and (has_resource_keyword or has_level_hint)
+        ):
             score += digit_bonus
-        if compact_text.isalnum() and len(compact_text) <= 4:
+        if compact_text.isalnum() and len(compact_text) <= 4 and not compact_text.isdigit():
             score += 0.5
 
         distance_from_center = abs(target.x - 0.5) + abs(target.y - 0.5)
@@ -884,12 +1008,60 @@ class DynamicPlanner:
                 best_score = score
         return best_target
 
-    def _ocr_only_review_decision(self, context, goal, detections, targets, decision):
+    @staticmethod
+    def _screen_supports_resource_review(ocr_text: str) -> bool:
+        """Return whether the current OCR text looks like a resource/map screen."""
+
+        normalized_text = DynamicPlanner._normalized_text(ocr_text)
+        resource_hits = DynamicPlanner._matching_keywords(normalized_text, RESOURCE_TEXT_KEYWORDS)
+        if DynamicPlanner._matching_keywords(normalized_text, RESOURCE_REVIEW_SCREEN_KEYWORDS):
+            return True
+        if (" lv " in f" {normalized_text} " or " level " in f" {normalized_text} ") and resource_hits:
+            return True
+        return len(resource_hits) >= 2
+
+    @staticmethod
+    def remember_planner_feedback(context, decision, reason, *, prefix="REJECTED"):
+        """Append one bounded planner-memory feedback item for future prompts."""
+
+        if not context or not hasattr(context, "extracted"):
+            return
+
+        if isinstance(decision, PlannerDecision):
+            decision_detail = decision.to_dict()
+        elif isinstance(decision, dict):
+            decision_detail = dict(decision)
+        else:
+            decision_detail = {}
+
+        feedback_reason = f"{prefix}: {reason}"
+        signature = "|".join(
+            (
+                str(decision_detail.get("action_type", "")),
+                str(decision_detail.get("target_id", "")),
+                str(decision_detail.get("label", "")),
+                feedback_reason,
+            )
+        )
+        if context.extracted.get("planner_memory_last_feedback") == signature:
+            return
+
+        decision_detail["reason"] = feedback_reason
+        memory_list = context.extracted.get("planner_memory", [])
+        if not isinstance(memory_list, list):
+            memory_list = []
+        memory_list.append(decision_detail)
+        context.extracted["planner_memory"] = memory_list[-PLANNER_MEMORY_LIMIT:]
+        context.extracted["planner_memory_last_feedback"] = signature
+
+    def _ocr_only_review_decision(self, context, goal, detections, targets, decision, ocr_text=""):
         if self._autonomy_level(context) != 1:
             return None
         if detections:
             return None
         if isinstance(decision, PlannerDecision) and decision.action_type not in {"wait", "stop"}:
+            return None
+        if not self._screen_supports_resource_review(ocr_text):
             return None
 
         target = self._best_ocr_review_target(goal, targets)
@@ -924,12 +1096,7 @@ class DynamicPlanner:
 
     @staticmethod
     def _record_planner_rejection(context, decision, reason):
-        if context and hasattr(context, "extracted"):
-            memory_list = context.extracted.get("planner_memory", [])
-            decision_detail = decision.to_dict() if isinstance(decision, PlannerDecision) else {}
-            decision_detail["reason"] = f"REJECTED: {reason}"
-            memory_list.append(decision_detail)
-            context.extracted["planner_memory"] = memory_list[-3:]
+        DynamicPlanner.remember_planner_feedback(context, decision, reason)
 
         session_logger = getattr(context, "session_logger", None)
         if not session_logger or not hasattr(session_logger, "record_planner_rejection"):
@@ -1197,6 +1364,15 @@ class DynamicPlanner:
         """
         labels = self._visible_labels(detections)
         targets = self.build_targets(detections, ocr_regions)
+        deterministic_map_decision = self._deterministic_map_transition_decision(goal, labels, ocr_text)
+        if deterministic_map_decision is not None:
+            LOGGER.info(
+                "Dynamic planner used deterministic map transition: action=%s key=%s goal=%s",
+                deterministic_map_decision.action_type,
+                deterministic_map_decision.key_name,
+                goal,
+            )
+            return deterministic_map_decision
         memory_started_at = time.perf_counter()
         try:
             memory_entry = self.memory.find(screenshot_path, labels)
@@ -1227,7 +1403,14 @@ class DynamicPlanner:
             stuck_warning=stuck_warning,
             screen_changed=screen_changed,
         )
-        fallback_review = self._ocr_only_review_decision(context, goal, detections, targets, decision)
+        fallback_review = self._ocr_only_review_decision(
+            context,
+            goal,
+            detections,
+            targets,
+            decision,
+            ocr_text=ocr_text,
+        )
         if fallback_review is not None:
             LOGGER.warning(
                 "Dynamic planner surfaced OCR-only L1 Fix review: prior_action=%s target_id=%s label=%s confidence=%s",

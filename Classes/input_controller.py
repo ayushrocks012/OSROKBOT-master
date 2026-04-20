@@ -101,7 +101,10 @@ class DelayPolicy:
         while time.monotonic() < deadline:
             if not InputController.is_allowed(context):
                 return False
-            time.sleep(min(self.poll_delay, deadline - time.monotonic()))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(self.poll_delay, remaining))
         return True
 
 

@@ -433,11 +433,11 @@ def test_plan_next_routes_stop_without_detections_to_ocr_fix_review(tmp_path):
         context,
         _screen_path(tmp_path),
         detections=[],
-        ocr_text="4 wood node",
+        ocr_text="search wood node level 4",
         goal="Gather the nearest useful resource safely.",
         ocr_regions=[
             {"text": "Technology Research", "x": 0.08, "y": 0.30, "width": 0.18, "height": 0.12, "confidence": 0.90},
-            {"text": "4", "x": 0.34, "y": 0.78, "width": 0.04, "height": 0.04, "confidence": 0.62},
+            {"text": "Wood Lv4", "x": 0.34, "y": 0.78, "width": 0.08, "height": 0.04, "confidence": 0.62},
         ],
     )
 
@@ -447,6 +447,25 @@ def test_plan_next_routes_stop_without_detections_to_ocr_fix_review(tmp_path):
     assert decision.target_id == "ocr_2"
     assert "Use Fix" in decision.reason
     assert 0.10 <= decision.confidence < 0.70
+
+
+def test_plan_next_keeps_stop_when_only_ocr_digit_candidate_is_available(tmp_path):
+    planner = _planner_with_transport(lambda _payload, _should_cancel: _stop_response())
+    context = SimpleNamespace(state_history=[], planner_autonomy_level=1)
+
+    decision = planner.plan_next(
+        context,
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="search wood node",
+        goal="Gather the nearest useful resource safely.",
+        ocr_regions=[
+            {"text": "2", "x": 0.45, "y": 0.79, "width": 0.04, "height": 0.04, "confidence": 0.90},
+        ],
+    )
+
+    assert decision is not None
+    assert decision.action_type == "stop"
 
 
 def test_plan_next_keeps_stop_without_detections_for_non_resource_goal(tmp_path):
@@ -466,6 +485,44 @@ def test_plan_next_keeps_stop_without_detections_for_non_resource_goal(tmp_path)
 
     assert decision is not None
     assert decision.action_type == "stop"
+
+
+def test_plan_next_keeps_stop_without_resource_screen_context(tmp_path):
+    planner = _planner_with_transport(lambda _payload, _should_cancel: _stop_response())
+    context = SimpleNamespace(state_history=[], planner_autonomy_level=1)
+
+    decision = planner.plan_next(
+        context,
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="technology research blacksmith apprentice",
+        goal="Gather the nearest useful resource safely.",
+        ocr_regions=[
+            {"text": "Technology Research", "x": 0.08, "y": 0.30, "width": 0.18, "height": 0.12, "confidence": 0.90},
+            {"text": "3", "x": 0.18, "y": 0.38, "width": 0.04, "height": 0.04, "confidence": 0.62},
+        ],
+    )
+
+    assert decision is not None
+    assert decision.action_type == "stop"
+
+
+def test_plan_next_uses_deterministic_map_toggle_for_city_view(tmp_path):
+    planner = DynamicPlanner(config=_FakeConfig(), memory=_FakeMemory())
+    planner._transport = _FakeTransport(lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("transport should not run")))
+
+    decision = planner.plan_next(
+        SimpleNamespace(state_history=[], planner_autonomy_level=1),
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="technology research blacksmith apprentice land of civilization",
+        goal="[Step 1/6] Open the world map and dismiss any popups or dialogs blocking it.",
+    )
+
+    assert decision is not None
+    assert decision.action_type == "key"
+    assert decision.key_name == "space"
+    assert "world-map hotkey" in decision.reason
 
 
 def test_plan_next_prefers_memory_when_entry_resolves_to_valid_target(tmp_path):
@@ -566,3 +623,14 @@ def test_async_planner_transport_returns_when_paused_while_future_is_pending(mon
     transport.close()
 
     assert decision is None
+
+
+def test_interruptible_sleep_never_passes_negative_seconds_to_time_sleep(monkeypatch):
+    monotonic_values = iter([0.0, 0.09, 0.11])
+    sleep_calls = []
+
+    monkeypatch.setattr(dynamic_planner_module.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(dynamic_planner_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    assert AsyncPlannerTransport._interruptible_sleep(lambda: False, 0.1, 0.05) is True
+    assert sleep_calls == []

@@ -93,3 +93,16 @@ def test_sample_click_target_stays_within_window_bounds(monkeypatch):
     sampled_x, sampled_y = controller.sample_click_target(10, 20, window_rect)
 
     assert InputController.validate_bounds(sampled_x, sampled_y, window_rect) is True
+
+
+def test_delay_policy_wait_never_sleeps_negative_duration(monkeypatch):
+    monotonic_values = iter([0.0, 0.09, 0.11])
+    sleep_calls = []
+
+    monkeypatch.setattr(input_controller_module.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(input_controller_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    policy = DelayPolicy(default_delay=0.0, poll_delay=0.1, jitter_ratio=0.0)
+
+    assert policy.wait(0.1) is True
+    assert sleep_calls == []

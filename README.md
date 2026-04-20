@@ -69,7 +69,8 @@ OSROKBOT executes one guarded planner step at a time.
    breaker. The planner uses it for decision requests when memory has no safe
    match, and the task graph uses it for one-time mission decomposition.
 7. `DynamicPlannerAction` resolves target IDs to current screen geometry,
-   applies the autonomy policy, records corrections or failures, and sends any
+   applies the autonomy policy, records corrections or failures, feeds
+   no-progress/failure notes back into bounded planner memory, and sends any
    hardware input through `Classes/input_controller.py`.
 
 The active action package exposes only the base `Action` contract and
@@ -148,7 +149,7 @@ they do not use the target approval prompt.
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat lifecycle, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and guarded execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
-| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, jittered retry and circuit-breaker handling, strict JSON schema validation, target resolution, memory-first decision selection, and decision validation. |
+| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, jittered retry and circuit-breaker handling, strict JSON schema validation, deterministic city-to-map fallback for the world-map step, target resolution, memory-first decision selection, and decision validation. |
 | `Classes/planner_decision_policy.py` | Canonical decision verdict for execution readiness, Fix-required review, rejection reasons, and pointer safety rules shared by planner, UI, and approval services. |
 | `Classes/task_graph.py` | One-time mission decomposition into sub-goals through the shared planner transport, cached per mission, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
@@ -302,7 +303,7 @@ input boundary, memory strategy, or operational contract.
 
 | Level | UI Label | Behavior |
 | --- | --- | --- |
-| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes, the selected target, and an intent tooltip. `Fix` opens a blocking crosshair overlay over the game client and waits indefinitely for one corrected click. When detector boxes are unavailable on a gather/resource mission, the planner can surface an OCR-only `Fix required` target instead of stopping. Use this by default. |
+| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes, the selected target, and an intent tooltip. `Fix` opens a blocking crosshair overlay over the game client and waits indefinitely for one corrected click. When detector boxes are unavailable on a gather/resource mission, the planner can surface one OCR-only `Fix required` target instead of stopping, but only when the current OCR text still looks like a true resource/map screen; digit-only OCR targets are rejected. For the focused `Open the world map` step, city-looking screens use the guarded `space` hotkey instead of an OCR guess. Use this by default. |
 | L2 | `L2 trusted` | Pointer actions with locally trusted labels can execute after enough clean successes. New or failed labels still require approval. |
 | L3 | `L3 auto` | Validated pointer actions can execute without approval. Use only for stable, supervised workflows. |
 
@@ -778,7 +779,8 @@ Check:
   weights with `ROK_YOLO_WEIGHTS` for reliable target boxes. Without weights,
   gather/resource missions in `L1 approve` can still surface an OCR-only
   `Fix required` target after the planner exhausts safe detector-backed
-  options.
+  options, but only when the current OCR text still looks like a resource/map
+  screen.
 
 ### The Planner Chooses The Wrong Target
 
@@ -795,7 +797,10 @@ OCR-only map targets are often low-confidence. In `L1 approve`, those can be
 shown for manual `Fix` correction, but they cannot execute from `OK` unless
 they meet the normal confidence threshold. When the planner would otherwise
 end a gather/resource run with `stop`, it now tries to surface one OCR-only
-review target first.
+review target first, but only when the current OCR text still looks like a
+resource/map screen and the OCR candidate is not a bare digit. Focused
+world-map steps on city-looking screens short-circuit to the guarded `space`
+toggle instead of selecting an OCR review target.
 
 ### OCR Is Weak
 

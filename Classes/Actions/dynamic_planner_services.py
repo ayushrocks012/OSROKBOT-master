@@ -711,6 +711,27 @@ class PlannerFeedbackService:
 
         return self.task_graph.focused_goal_text(goal)
 
+    def record_no_progress_feedback(self, context: Any, *, screen_changed: bool) -> None:
+        """Persist one negative planner-memory hint when an action had no effect."""
+
+        if screen_changed or not context or not hasattr(context, "extracted"):
+            return
+
+        last_decision = context.extracted.get("planner_last_decision")
+        if not isinstance(last_decision, dict):
+            return
+        if str(last_decision.get("action_type", "")).lower() in {"", "wait", "stop"}:
+            return
+
+        if (
+            str(last_decision.get("action_type", "")).lower() == "key"
+            and str(last_decision.get("key_name", "")).lower() == "space"
+        ):
+            reason = "world_map_toggle_did_not_change_screen; keep looking for blockers or a true map transition and do not switch to OCR-only digit targets"
+        else:
+            reason = "previous_action_did_not_change_screen"
+        self.planner.remember_planner_feedback(context, last_decision, reason, prefix="FAILED")
+
     def record_decision(self, context: Any, decision: PlannerDecision) -> None:
         """Record the last planner decision for stuck-screen warnings and UI state."""
 
@@ -777,6 +798,12 @@ class PlannerFeedbackService:
     def record_failure(self, context: Any, decision: PlannerDecision) -> None:
         """Penalize a failed decision and write a failed session action event."""
 
+        self.planner.remember_planner_feedback(
+            context,
+            decision,
+            "guarded_input_failed_or_manual_review_not_completed",
+            prefix="FAILED",
+        )
         self.memory.record_failure(decision.to_dict())
         self._record_session_action(context, decision, "failure")
 

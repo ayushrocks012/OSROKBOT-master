@@ -128,6 +128,42 @@ def test_record_wait_does_not_write_visual_memory(tmp_path):
     assert calls == [("session", "wait", "observe", "", "success", "ai")]
 
 
+def test_record_no_progress_feedback_annotates_stuck_map_toggle():
+    calls = []
+    service = PlannerFeedbackService(
+        task_graph=SimpleNamespace(),
+        planner=SimpleNamespace(
+            remember_planner_feedback=lambda context, decision, reason, prefix="REJECTED": calls.append(
+                (decision["action_type"], decision["key_name"], reason, prefix)
+            )
+        ),
+        memory=SimpleNamespace(),
+        dataset=SimpleNamespace(),
+        change_detector=SimpleNamespace(),
+    )
+    context = SimpleNamespace(
+        extracted={
+            "planner_last_decision": {
+                "action_type": "key",
+                "key_name": "space",
+                "label": "world map toggle",
+                "target_id": "",
+            }
+        }
+    )
+
+    service.record_no_progress_feedback(context, screen_changed=False)
+
+    assert calls == [
+        (
+            "key",
+            "space",
+            "world_map_toggle_did_not_change_screen; keep looking for blockers or a true map transition and do not switch to OCR-only digit targets",
+            "FAILED",
+        )
+    ]
+
+
 def test_low_confidence_approval_requires_manual_correction(tmp_path):
     event = Event()
     event.set()
