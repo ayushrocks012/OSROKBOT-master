@@ -29,10 +29,10 @@ root-level `Media/*.png` files are deprecated and are purged by
 | Module | Owns |
 | --- | --- |
 | `Classes/UI.py` | Agent Supervisor Console view, shell layout, tabs, tray notifications, state-responsive collapse/expand behavior, and overlay presentation. |
-| `Classes/UIController.py` | Mission history, autonomy selection, pending-action evaluation, YOLO warmup, session logging, and per-run `Context` creation for the supervisor console. |
-| `Classes/runtime_composition.py` | Explicit startup composition root for the supervisor console, shared detector/window/input collaborators, and per-run `Context` factory wiring. |
+| `Classes/UIController.py` | Mission history, autonomy selection, teaching-mode selections, pending-action evaluation, YOLO warmup, session logging, and per-run `Context` creation for the supervisor console. |
+| `Classes/runtime_composition.py` | Explicit startup composition root for the supervisor console, shared detector/window/input collaborators, and per-run `Context` factory wiring plus gameplay teaching-brief injection. |
 | `Classes/click_overlay.py` | Non-blocking planner preview overlay plus the blocking crosshair correction overlay used by `Fix`. |
-| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, UI signal access, and per-run runtime collaborator factories. |
+| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, UI signal access, gameplay teaching selections, and per-run runtime collaborator factories. |
 | `Classes/action_sets.py` | Supported workflow factory. New runtime work should use `dynamic_planner()`. |
 | `Classes/state_machine.py` | Deterministic state execution, preconditions, transition history, diagnostics, and tiered global recovery. |
 | `Classes/runtime_contracts.py` | Shared typed Protocols and aliases for active state/action, detector/OCR, input/state-monitor factories, and window-capture boundaries. |
@@ -43,9 +43,10 @@ root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat scheduling, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
-| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, jittered retries, circuit-breaker fallback, strict JSON schema validation, deterministic city-to-map and map-to-search fallbacks for gather workflows, target resolution, and memory-first decision selection. |
+| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, jittered retries, circuit-breaker fallback, strict JSON schema validation, deterministic city-to-map and map-to-search fallbacks for gather workflows, gameplay teaching-brief prompt injection, target resolution, and memory-first decision selection. |
+| `Classes/gameplay_teaching.py` | Central teaching-mode gameplay profile catalog, operator question prompts, mission-specific focus hints, and planner/task-graph teaching briefs. |
 | `Classes/planner_decision_policy.py` | Canonical decision verdict for execution readiness, Fix-required review, rejection reasons, and pointer safety rules shared by planner, UI, and approval services. |
-| `Classes/task_graph.py` | Mission decomposition through the shared planner transport, sub-goal cache, focused-goal text, and label/OCR completion checks. |
+| `Classes/task_graph.py` | Mission decomposition through the shared planner transport, sub-goal cache keyed by mission plus teaching brief, focused-goal text, and label/OCR completion checks. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS/NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
 | `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract planner text/region reads, and normalized OCR target extraction. |
 | `Classes/recovery_memory.py` | Bounded atomic persistence for guarded recovery outcomes keyed by state/action/screen signatures. |
@@ -74,6 +75,7 @@ root-level `Media/*.png` files are deprecated and are purged by
 - Do not move protected media under `Media/UI/` or `Media/Readme/` without updating `MEDIA_MAP.md`.
 - Keep `dynamic_planner.py` side-effect free. It may propose JSON decisions; it must not execute input.
 - Keep agentic input execution behind `DynamicPlannerAction` and `InputController`.
+- Keep gameplay teaching doctrine centralized in `Classes/gameplay_teaching.py` or the teaching-mode UI/config flow instead of scattering operator workflow prose across unrelated modules.
 - Keep runner-owned dependencies injectable and close planner/action resources during run teardown.
 - Prefer per-run collaborator factories on `Context` for runtime seams that must stay mockable in CI without live Windows dependencies.
 - Keep startup/runtime composition in `UI.py` or another explicit composition root; `OS_ROKBOT` should stay orchestration-focused.
@@ -178,7 +180,10 @@ city-looking screens should use a deterministic ladder: guarded `space`,
 then the fixed map-toggle button if city view persists, then guarded `f`
 once city markers disappear and the resource-search interface is still not
 open. No-progress/failure feedback should be fed back into bounded planner
-memory so repeated bad actions are discouraged in later prompts.
+memory so repeated bad actions are discouraged in later prompts. Teaching mode
+should stay paired with supervised `L1 approve` runs and must feed its
+gameplay doctrine through `Context.teaching_brief` into task decomposition and
+planner prompts.
 
 Default to L1 when testing changes, new prompts, new weights, new action types,
 new missions, or new memory.

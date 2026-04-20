@@ -235,7 +235,8 @@ QPushButton#ApprovalOk:disabled {
     color: rgba(203, 213, 225, 120);
 }
 QComboBox,
-QLineEdit {
+QLineEdit,
+QPlainTextEdit {
     background: rgba(15, 23, 42, 228);
     color: #f8fafc;
     border: 1px solid rgba(71, 85, 105, 138);
@@ -245,8 +246,10 @@ QLineEdit {
 }
 QComboBox:hover,
 QLineEdit:hover,
+QPlainTextEdit:hover,
 QComboBox:focus,
-QLineEdit:focus {
+QLineEdit:focus,
+QPlainTextEdit:focus {
     border-color: rgba(125, 211, 252, 170);
 }
 QComboBox::drop-down {
@@ -257,6 +260,25 @@ QComboBox::down-arrow {
     image: url(__DOWN_ARROW_ICON__);
     width: 10px;
     height: 10px;
+}
+QCheckBox {
+    color: #e2e8f0;
+    font-size: 12px;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+}
+QCheckBox::indicator:unchecked {
+    border: 1px solid rgba(71, 85, 105, 138);
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 228);
+}
+QCheckBox::indicator:checked {
+    border: 1px solid rgba(96, 165, 250, 160);
+    border-radius: 6px;
+    background: rgba(37, 99, 235, 210);
 }
 QPushButton#AutonomyButton {
     min-height: 40px;
@@ -984,6 +1006,44 @@ class UI(QtWidgets.QWidget):
         operator_layout.addWidget(operator_title)
         operator_layout.addWidget(self.guidance_label)
 
+        teaching_card = QtWidgets.QFrame()
+        teaching_card.setObjectName("SectionCard")
+        teaching_layout = QtWidgets.QVBoxLayout(teaching_card)
+        teaching_layout.setContentsMargins(16, 16, 16, 16)
+        teaching_layout.setSpacing(10)
+
+        teaching_title = QtWidgets.QLabel("Teaching Mode")
+        teaching_title.setObjectName("SectionTitle")
+        teaching_hint = QtWidgets.QLabel(
+            "Use early supervised runs to teach gameplay doctrine. The selected profile and notes are fed into task decomposition and planning."
+        )
+        teaching_hint.setObjectName("HintText")
+        teaching_hint.setWordWrap(True)
+
+        self.teaching_mode_checkbox = QtWidgets.QCheckBox("Enable teaching mode for the next run")
+        self.teaching_mode_checkbox.toggled.connect(self.controller.set_teaching_mode_enabled)
+
+        self.teaching_profile_input = QtWidgets.QComboBox()
+        self.teaching_profile_input.currentIndexChanged.connect(self._on_teaching_profile_changed)
+
+        self.teaching_notes_input = QtWidgets.QPlainTextEdit()
+        self.teaching_notes_input.setPlaceholderText(
+            "Describe how you actually play this workflow. Example: from city press Space, then press F, choose Wood, click Gather, then Send."
+        )
+        self.teaching_notes_input.setMinimumHeight(110)
+        self.teaching_notes_input.textChanged.connect(self._on_teaching_notes_changed)
+
+        self.teaching_prompt_label = QtWidgets.QLabel("")
+        self.teaching_prompt_label.setObjectName("HintText")
+        self.teaching_prompt_label.setWordWrap(True)
+
+        teaching_layout.addWidget(teaching_title)
+        teaching_layout.addWidget(teaching_hint)
+        teaching_layout.addWidget(self.teaching_mode_checkbox)
+        teaching_layout.addWidget(self.teaching_profile_input)
+        teaching_layout.addWidget(self.teaching_notes_input)
+        teaching_layout.addWidget(self.teaching_prompt_label)
+
         self.error_card = QtWidgets.QFrame()
         self.error_card.setObjectName("ErrorCard")
         error_layout = QtWidgets.QVBoxLayout(self.error_card)
@@ -1003,6 +1063,7 @@ class UI(QtWidgets.QWidget):
         mission_layout.addWidget(self.error_card)
         mission_layout.addWidget(mission_card)
         mission_layout.addWidget(autonomy_card)
+        mission_layout.addWidget(teaching_card)
         mission_layout.addWidget(operator_card)
         mission_layout.addStretch()
 
@@ -1059,6 +1120,45 @@ class UI(QtWidgets.QWidget):
             self.mission_input.setCurrentText(snapshot.mission_text)
             self.mission_input.blockSignals(False)
 
+    def _sync_teaching_inputs(self, snapshot: SupervisorSnapshot) -> None:
+        current_profile_items = [
+            self.teaching_profile_input.itemData(index)
+            for index in range(self.teaching_profile_input.count())
+        ]
+        snapshot_profile_items = [name for name, _title in snapshot.teaching_profile_options]
+        if current_profile_items != snapshot_profile_items:
+            self.teaching_profile_input.blockSignals(True)
+            self.teaching_profile_input.clear()
+            for name, title in snapshot.teaching_profile_options:
+                self.teaching_profile_input.addItem(title, name)
+            self.teaching_profile_input.blockSignals(False)
+
+        checkbox_state = self.teaching_mode_checkbox.isChecked()
+        if checkbox_state != snapshot.teaching_mode_enabled:
+            self.teaching_mode_checkbox.blockSignals(True)
+            self.teaching_mode_checkbox.setChecked(snapshot.teaching_mode_enabled)
+            self.teaching_mode_checkbox.blockSignals(False)
+
+        selected_profile = self.teaching_profile_input.currentData()
+        if selected_profile != snapshot.teaching_profile_name:
+            index = self.teaching_profile_input.findData(snapshot.teaching_profile_name)
+            if index >= 0:
+                self.teaching_profile_input.blockSignals(True)
+                self.teaching_profile_input.setCurrentIndex(index)
+                self.teaching_profile_input.blockSignals(False)
+
+        notes_value = self.teaching_notes_input.toPlainText().strip()
+        if not self.teaching_notes_input.hasFocus() and notes_value != snapshot.teaching_notes:
+            self.teaching_notes_input.blockSignals(True)
+            self.teaching_notes_input.setPlainText(snapshot.teaching_notes)
+            self.teaching_notes_input.blockSignals(False)
+
+        inputs_enabled = bool(snapshot.teaching_mode_enabled)
+        self.teaching_profile_input.setEnabled(inputs_enabled)
+        self.teaching_notes_input.setEnabled(inputs_enabled)
+        self.teaching_prompt_label.setEnabled(inputs_enabled)
+        self.teaching_prompt_label.setText(snapshot.teaching_prompt_text)
+
     def _apply_mode(self, mode: str) -> None:
         if mode == self._current_mode:
             return
@@ -1085,6 +1185,7 @@ class UI(QtWidgets.QWidget):
             return
 
         self._sync_mission_input(snapshot)
+        self._sync_teaching_inputs(snapshot)
         self.autonomy_selector.set_level(snapshot.autonomy_level)
 
         self.state_dot.setText(snapshot.state_icon)
@@ -1196,7 +1297,13 @@ class UI(QtWidgets.QWidget):
     def start_automation(self) -> None:
         """Start the selected mission with the current autonomy level."""
 
-        self.controller.start_automation(self.mission_input.currentText(), self._selected_autonomy_level())
+        self.controller.start_automation(
+            self.mission_input.currentText(),
+            self._selected_autonomy_level(),
+            self.teaching_mode_checkbox.isChecked(),
+            str(self.teaching_profile_input.currentData() or ""),
+            self.teaching_notes_input.toPlainText(),
+        )
 
     def stop_automation(self) -> None:
         """Request shutdown of the active automation session."""
@@ -1248,6 +1355,12 @@ class UI(QtWidgets.QWidget):
             if button.isChecked():
                 return level
         return self.controller.snapshot().autonomy_level
+
+    def _on_teaching_profile_changed(self) -> None:
+        self.controller.set_teaching_profile_name(str(self.teaching_profile_input.currentData() or ""))
+
+    def _on_teaching_notes_changed(self) -> None:
+        self.controller.set_teaching_notes(self.teaching_notes_input.toPlainText())
 
     def _open_help(self) -> None:
         readme_path = PROJECT_ROOT / "README.md"

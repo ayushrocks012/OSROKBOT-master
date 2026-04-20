@@ -23,6 +23,7 @@ from config_manager import ConfigManager
 from context import Context, ObservationSnapshot, record_stage_timing
 from diagnostic_screenshot import save_diagnostic_screenshot
 from emergency_stop import EmergencyStop
+from gameplay_teaching import build_teaching_brief
 from input_controller import InputController
 from logging_config import get_logger, scoped_log_context
 from object_detector import create_detector
@@ -175,6 +176,12 @@ class OSROKBOT:
                 return AIRecoveryExecutor(detector=self.detector)
 
             active_context.recovery_executor_factory = _recovery_executor_factory
+        active_context.teaching_brief = build_teaching_brief(
+            enabled=bool(getattr(active_context, "teaching_mode_enabled", False)),
+            profile_name=str(getattr(active_context, "teaching_profile_name", "guided_general")),
+            operator_notes=str(getattr(active_context, "teaching_notes", "") or ""),
+            mission=str(getattr(active_context, "planner_goal", "") or ""),
+        )
         return active_context
 
     def _hardware_input_ready(self, context: Context | None = None) -> bool:

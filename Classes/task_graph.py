@@ -256,7 +256,7 @@ class TaskGraph:
         return self.sub_goals
 
     @staticmethod
-    def _build_request_payload(mission: str, model: str) -> dict[str, Any]:
+    def _build_request_payload(mission: str, model: str, teaching_brief: str = "") -> dict[str, Any]:
         prompt = (
             "You are a Rise of Kingdoms automation planner. Decompose the following "
             "mission into a sequence of 2-8 concrete sub-goals that a screen-based "
@@ -272,6 +272,8 @@ class TaskGraph:
             "- completion_hint: how to know this step is done\n\n"
             f"Mission: {mission}"
         )
+        if teaching_brief:
+            prompt += f"\n\nGameplay Teaching Brief:\n{teaching_brief}"
         return {
             "model": model,
             "instructions": "Return only the strict JSON object requested by the schema.",
@@ -327,9 +329,11 @@ class TaskGraph:
         """
         started_at = time.perf_counter()
         self.mission = mission
+        teaching_brief = str(getattr(context, "teaching_brief", "") or "") if context is not None else ""
+        cache_key = f"{mission}\n\nGameplay Teaching Brief:\n{teaching_brief}" if teaching_brief else mission
 
-        if mission in self._decomposition_cache:
-            cached = self._decomposition_cache[mission]
+        if cache_key in self._decomposition_cache:
+            cached = self._decomposition_cache[cache_key]
             self.sub_goals = [
                 SubGoal(
                     step=sg.step,
@@ -365,7 +369,10 @@ class TaskGraph:
         cancellation = should_cancel or (lambda: False)
 
         try:
-            response = transport.request(self._build_request_payload(mission, model), cancellation)
+            response = transport.request(
+                self._build_request_payload(mission, model, teaching_brief=teaching_brief),
+                cancellation,
+            )
             if response is None:
                 LOGGER.info("TaskGraph decomposition cancelled; using single-goal fallback.")
                 record_stage_timing(
@@ -392,7 +399,7 @@ class TaskGraph:
 
         self.current_index = 0
         self.current_goal_cycles_stuck = 0
-        self._decomposition_cache[mission] = self.sub_goals
+        self._decomposition_cache[cache_key] = self.sub_goals
         LOGGER.info(
             "TaskGraph: decomposed mission into %s sub-goals: %s",
             len(self.sub_goals),

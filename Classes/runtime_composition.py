@@ -16,6 +16,7 @@ from ai_recovery_executor import AIRecoveryExecutor
 from config_manager import ConfigManager
 from context import Context
 from detection_dataset import DetectionDataset
+from gameplay_teaching import build_teaching_brief
 from input_controller import InputController
 from object_detector import create_detector
 from ocr_service import OCRService
@@ -105,6 +106,9 @@ class SupervisorRuntimeComposition:
         session_logger: Any | None = None,
         planner_goal: str = DEFAULT_MISSION,
         planner_autonomy_level: int = 1,
+        teaching_mode_enabled: bool = False,
+        teaching_profile_name: str = "guided_general",
+        teaching_notes: str = "",
     ) -> Context:
         """Create one per-run runtime context wired to shared factories."""
 
@@ -121,4 +125,13 @@ class SupervisorRuntimeComposition:
         )
         context.planner_goal = planner_goal or DEFAULT_MISSION
         context.planner_autonomy_level = planner_autonomy_level
+        context.teaching_mode_enabled = bool(teaching_mode_enabled)
+        context.teaching_profile_name = str(teaching_profile_name or "guided_general")
+        context.teaching_notes = str(teaching_notes or "").strip()
+        context.teaching_brief = build_teaching_brief(
+            enabled=context.teaching_mode_enabled,
+            profile_name=context.teaching_profile_name,
+            operator_notes=context.teaching_notes,
+            mission=context.planner_goal,
+        )
         return context

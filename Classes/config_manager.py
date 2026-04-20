@@ -73,6 +73,9 @@ class ConfigManager:
         "MISSION_HISTORY",
         "SECRET_PROVIDER",
         "DPAPI_SECRET_STORE_PATH",
+        "TEACHING_MODE_ENABLED",
+        "TEACHING_PROFILE_NAME",
+        "TEACHING_NOTES",
     }
 
     def __init__(

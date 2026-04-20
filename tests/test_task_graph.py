@@ -67,6 +67,36 @@ def test_task_graph_decompose_uses_shared_transport():
     assert timings[-1][2] >= 0.0
 
 
+def test_task_graph_decompose_includes_teaching_brief_when_present():
+    response = _FakeResponse(
+        """{
+        "sub_goals": [
+            {
+                "step": 1,
+                "description": "Open the world map",
+                "expected_labels": ["map"],
+                "expected_ocr_keywords": [],
+                "completion_hint": "The world map is visible."
+            }
+        ]
+    }"""
+    )
+    transport = _FakeTransport(lambda _payload, _should_cancel: response)
+    context = SimpleNamespace(teaching_brief="Teaching mode is active. Use the taught gather flow.")
+
+    graph = TaskGraph()
+    graph.decompose(
+        "Gather wood safely.",
+        transport=transport,
+        model="gpt-5.4-mini",
+        context=context,
+    )
+
+    prompt = transport.payloads[0]["input"][0]["content"][0]["text"]
+    assert "Gameplay Teaching Brief:" in prompt
+    assert "Use the taught gather flow." in prompt
+
+
 def test_task_graph_decompose_falls_back_to_single_goal_on_transport_error():
     transport = _FakeTransport(lambda _payload, _should_cancel: (_ for _ in ()).throw(RuntimeError("boom")))
 

@@ -111,6 +111,10 @@ class Context:
     primary_anchor_reference_normalized: tuple[float, float] | None = None
     planner_goal: str = "Safely continue the selected Rise of Kingdoms task."
     planner_autonomy_level: int = 1
+    teaching_mode_enabled: bool = False
+    teaching_profile_name: str = "guided_general"
+    teaching_notes: str = ""
+    teaching_brief: str = ""
     session_logger: SessionLogger | None = None
     window_handler_factory: WindowHandlerFactory | None = None
     input_controller_factory: InputControllerFactory | None = None

@@ -106,6 +106,20 @@ def test_safe_json_loads_accepts_wrapped_json():
     assert parsed["label"] == "none"
 
 
+def test_build_prompt_includes_teaching_brief():
+    prompt = DynamicPlanner._build_prompt(
+        goal="Gather wood safely.",
+        labels=[],
+        target_payload=[],
+        ocr_text="",
+        history=[],
+        teaching_brief="Teaching mode is active. Follow the taught workflow.",
+    )
+
+    assert "Gameplay Teaching Brief:" in prompt
+    assert "Follow the taught workflow." in prompt
+
+
 def test_planner_decision_from_mapping_normalizes_action_type():
     decision = PlannerDecision.from_mapping(
         {

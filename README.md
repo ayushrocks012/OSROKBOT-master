@@ -135,10 +135,10 @@ they do not use the target approval prompt.
 | Module | Responsibility |
 | --- | --- |
 | `Classes/UI.py` | PyQt Agent Supervisor Console view: shell layout, theming, tabs, state-responsive collapse/expand behavior, tray notifications, and overlay presentation. |
-| `Classes/UIController.py` | View-model/controller for mission history, autonomy selection, session logging, planner approval state, YOLO warmup, and per-run `Context` creation. |
-| `Classes/runtime_composition.py` | Explicit startup composition root for the supervisor console, shared detector/window/input collaborators, and per-run `Context` factory wiring. |
+| `Classes/UIController.py` | View-model/controller for mission history, autonomy selection, teaching-mode selections, session logging, planner approval state, YOLO warmup, and per-run `Context` creation. |
+| `Classes/runtime_composition.py` | Explicit startup composition root for the supervisor console, shared detector/window/input collaborators, per-run `Context` factory wiring, and gameplay teaching-brief injection. |
 | `Classes/click_overlay.py` | Non-blocking planner target preview overlay plus the blocking crosshair correction overlay used by `Fix`. |
-| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, signal access, and per-run runtime collaborator factories. |
+| `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, signal access, gameplay teaching notes, and per-run runtime collaborator factories. |
 | `Classes/action_sets.py` | Supported workflow factory. `dynamic_planner()` is the current runtime entry point. |
 | `Classes/state_machine.py` | Deterministic action runner, preconditions, transition history, diagnostics, and tiered global recovery. |
 | `Classes/runtime_contracts.py` | Shared Protocols and type aliases for state-machine actions, detector/OCR providers, input/state-monitor factories, and window-capture boundaries. |
@@ -149,9 +149,10 @@ they do not use the target approval prompt.
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat lifecycle, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and guarded execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
-| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, jittered retry and circuit-breaker handling, strict JSON schema validation, deterministic city-to-map and map-to-search fallbacks for gather workflows, target resolution, memory-first decision selection, and decision validation. |
+| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, jittered retry and circuit-breaker handling, strict JSON schema validation, deterministic city-to-map and map-to-search fallbacks for gather workflows, teaching-brief prompt injection, target resolution, memory-first decision selection, and decision validation. |
+| `Classes/gameplay_teaching.py` | Central teaching-mode gameplay profile catalog, operator question prompts, mission-specific focus hints, and planner/task-graph teaching briefs. |
 | `Classes/planner_decision_policy.py` | Canonical decision verdict for execution readiness, Fix-required review, rejection reasons, and pointer safety rules shared by planner, UI, and approval services. |
-| `Classes/task_graph.py` | One-time mission decomposition into sub-goals through the shared planner transport, cached per mission, with label/OCR post-condition tracking. |
+| `Classes/task_graph.py` | One-time mission decomposition into sub-goals through the shared planner transport, cached per mission plus teaching brief, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
 | `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract text/region fallback, and normalized OCR targets. |
 | `Classes/state_monitor.py` | Coarse game-state classification, blocker clearing, idle march-slot OCR, action-point OCR, explicit client restart support, and injectable window/input/detector collaborators. |
@@ -447,6 +448,9 @@ Core variables:
 | `TESSERACT_PATH` | Optional | Tesseract executable path for OCR fallback and resource OCR. |
 | `TESSERACT_TIMEOUT_SECONDS` | Optional | Per-call Tesseract timeout for planner and resource OCR. Defaults to `5`. |
 | `PLANNER_AUTONOMY_LEVEL` | Optional | Default UI autonomy level, `1` to `3`. |
+| `TEACHING_MODE_ENABLED` | Optional | Enables gameplay teaching mode for supervised early runs. Defaults to `0`. |
+| `TEACHING_PROFILE_NAME` | Optional | Selected gameplay teaching profile, such as `gather_resources`, `gather_gems`, `farm_barbarians`, or `map_navigation`. |
+| `TEACHING_NOTES` | Optional | Free-form operator notes describing the real gameplay workflow the planner should follow. |
 | `PLANNER_L1_REVIEW_MIN_CONFIDENCE` | Optional | Lowest pointer confidence that can be shown for L1 manual `Fix` review. Defaults to `0.10`; uncorrected low-confidence targets still cannot execute. |
 | `PLANNER_TRUSTED_SUCCESS_COUNT` | Optional | Clean local successes needed for L2 trusted labels. Defaults to `3`. |
 | `OSROKBOT_CONSOLE_LOG_LEVEL` | Optional | PowerShell log level. Defaults to `ERROR`; full runtime logs still go to `data/logs/osrokbot.log`. |
@@ -490,9 +494,11 @@ Recommended first run:
 
 1. Choose `L1 approve`.
 2. Enter a narrow mission in plain English.
-3. Press Play.
-4. Review each pointer action with the detector-box overlay and intent tooltip.
-5. Use `OK`, `No`, or `Fix` from the Agent Intent Card.
+3. Enable `Teaching Mode` if the workflow is new or gameplay has changed.
+4. Pick the closest gameplay profile and answer the teaching prompts in your own words.
+5. Press Play.
+6. Review each pointer action with the detector-box overlay and intent tooltip.
+7. Use `OK`, `No`, or `Fix` from the Agent Intent Card.
 
 Example missions:
 
@@ -506,6 +512,38 @@ Continue the current gathering flow safely. Stop if a CAPTCHA appears.
 
 ```text
 Navigate visible prompts conservatively. Wait whenever the safe next action is unclear.
+```
+
+## Teaching Mode
+
+Teaching mode is the supported way to teach gameplay doctrine during early
+supervised runs. It does two things:
+
+1. It surfaces operator questions for a selected gameplay profile such as
+   standard gathering, gem gathering, barbarian farming, or map navigation.
+2. It feeds the selected profile plus your notes into both mission
+   decomposition and single-step planning.
+
+Use it when:
+
+- you are teaching the bot a new gameplay loop,
+- a game patch changed a known workflow,
+- detector coverage is weak and the planner needs stronger operator doctrine,
+- or you want the planner to follow your exact key/button sequence.
+
+Recommended teaching workflow:
+
+1. Stay in `L1 approve`.
+2. Enable `Teaching Mode`.
+3. Pick the closest gameplay profile.
+4. Write the real workflow in the notes box, including key presses, buttons,
+   and success cues.
+5. Run the mission and use `Fix` whenever the chosen pointer target is wrong.
+
+Example note for gathering:
+
+```text
+From city view I press Space to open the world map. On the map I press F to open search. I choose Wood, then Gather, then Send. Success means the march leaves the city and a timer or occupation indicator appears.
 ```
 
 ## Corrections And Memory

@@ -1279,7 +1279,8 @@ class DynamicPlanner:
     @staticmethod
     def _build_prompt(goal, labels, target_payload, ocr_text, history,
                       resource_context=None, stuck_warning="",
-                      screen_changed=True, planner_memory=None, session_summary=None):
+                      screen_changed=True, planner_memory=None, session_summary=None,
+                      teaching_brief=""):
         """Build the full planner prompt with all available context.
 
         Args:
@@ -1293,6 +1294,8 @@ class DynamicPlanner:
             screen_changed: Whether the screen changed since the last cycle.
             planner_memory: Recent conversational memory of decisions.
             session_summary: Summary of the current session.
+            teaching_brief: Optional operator-authored gameplay doctrine for
+                teaching mode.
         """
         parts = [
             "You control a guarded Rise of Kingdoms automation planner. Return one safe next action. "
@@ -1328,6 +1331,9 @@ class DynamicPlanner:
                          f"- Duration: {session_summary.get('duration_text', '0s')}\n"
                          f"- Actions Taken: {session_summary.get('total_actions', 0)}\n"
                          f"- Errors/Rejections: {session_summary.get('errors', 0)}/{session_summary.get('planner_rejections', 0)}")
+
+        if teaching_brief:
+            parts.append(f"\nGameplay Teaching Brief:\n{teaching_brief}")
 
         parts.append(f"\nRecent state history: {json.dumps(history, ensure_ascii=True)}")
 
@@ -1366,6 +1372,7 @@ class DynamicPlanner:
         session_logger = getattr(context, "session_logger", None)
         session_summary = session_logger.summary() if session_logger and hasattr(session_logger, "summary") else {}
         planner_memory = context.extracted.get("planner_memory", []) if context and hasattr(context, "extracted") else []
+        teaching_brief = str(getattr(context, "teaching_brief", "") or "") if context else ""
 
         prompt = self._build_prompt(
             goal=goal,
@@ -1378,6 +1385,7 @@ class DynamicPlanner:
             screen_changed=screen_changed,
             planner_memory=planner_memory,
             session_summary=session_summary,
+            teaching_brief=teaching_brief,
         )
 
         session_logger = getattr(context, "session_logger", None)

@@ -16,6 +16,12 @@ from typing import Any
 
 from config_manager import ConfigManager
 from context import Context
+from gameplay_teaching import (
+    DEFAULT_TEACHING_PROFILE,
+    get_profile,
+    profile_options,
+    teaching_questions_text,
+)
 from logging_config import bind_log_context, get_logger, reset_log_context
 from model_manager import ModelManager, yolo_download_required
 from object_detector import create_detector
@@ -112,6 +118,11 @@ class SupervisorSnapshot:
     mission_text: str = DEFAULT_MISSION
     mission_options: list[str] = field(default_factory=list)
     autonomy_level: int = 1
+    teaching_mode_enabled: bool = False
+    teaching_profile_name: str = DEFAULT_TEACHING_PROFILE
+    teaching_profile_options: list[tuple[str, str]] = field(default_factory=list)
+    teaching_notes: str = ""
+    teaching_prompt_text: str = ""
     elapsed_text: str = "00:00"
     is_running: bool = False
     is_paused: bool = False
@@ -236,6 +247,11 @@ class UIController(QtCore.QObject):
         self._mission_text = DEFAULT_MISSION
         self._mission_options = self._load_mission_options()
         self._autonomy_level = self._load_autonomy_level()
+        self._teaching_mode_enabled = self._load_teaching_mode_enabled()
+        self._teaching_profile_name = self._load_teaching_profile_name()
+        self._teaching_profile_options = profile_options()
+        self._teaching_notes = self._load_teaching_notes()
+        self._teaching_prompt_text = teaching_questions_text(self._teaching_profile_name)
         self._yolo_ready = True
         self._start_tooltip = "Start (F5)"
 
@@ -312,11 +328,53 @@ class UIController(QtCore.QObject):
             configured = 1
         return _bounded_autonomy(configured)
 
+    @staticmethod
+    def _load_teaching_mode_enabled() -> bool:
+        """Load the persisted teaching-mode toggle."""
+
+        raw = str(ConfigManager().get("TEACHING_MODE_ENABLED", "0") or "0").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _load_teaching_profile_name() -> str:
+        """Load the persisted gameplay teaching profile name."""
+
+        configured = str(
+            ConfigManager().get("TEACHING_PROFILE_NAME", DEFAULT_TEACHING_PROFILE) or DEFAULT_TEACHING_PROFILE
+        )
+        return get_profile(configured).name
+
+    @staticmethod
+    def _load_teaching_notes() -> str:
+        """Load the persisted operator gameplay notes."""
+
+        return str(ConfigManager().get("TEACHING_NOTES", "") or "").strip()
+
     def set_autonomy_level(self, level: int) -> None:
         """Update and persist the selected autonomy level."""
 
         self._autonomy_level = max(1, min(3, int(level)))
         ConfigManager().set_many({"PLANNER_AUTONOMY_LEVEL": str(self._autonomy_level)})
+        self._emit_snapshot()
+
+    def set_teaching_mode_enabled(self, enabled: bool) -> None:
+        """Update the in-memory teaching-mode toggle shown by the supervisor UI."""
+
+        self._teaching_mode_enabled = bool(enabled)
+        self._emit_snapshot()
+
+    def set_teaching_profile_name(self, profile_name: str) -> None:
+        """Update the selected gameplay teaching profile in memory."""
+
+        resolved = get_profile(profile_name).name
+        self._teaching_profile_name = resolved
+        self._teaching_prompt_text = teaching_questions_text(resolved)
+        self._emit_snapshot()
+
+    def set_teaching_notes(self, notes: str) -> None:
+        """Update the operator-authored gameplay notes in memory."""
+
+        self._teaching_notes = str(notes or "").strip()
         self._emit_snapshot()
 
     def _set_status(self, text: str, tone: str, detail: str = "") -> None:
@@ -387,15 +445,29 @@ class UIController(QtCore.QObject):
 
         self._mission_options = self._load_mission_options()
         self._autonomy_level = self._load_autonomy_level()
+        self._teaching_mode_enabled = self._load_teaching_mode_enabled()
+        self._teaching_profile_name = self._load_teaching_profile_name()
+        self._teaching_notes = self._load_teaching_notes()
+        self._teaching_prompt_text = teaching_questions_text(self._teaching_profile_name)
         self.begin_yolo_warmup()
         self._emit_snapshot()
 
-    def _start_selection(self, mission_text: str | None, autonomy_level: int | None) -> tuple[str, int]:
-        """Normalize the mission text and autonomy level selected for a new run."""
+    def _start_selection(
+        self,
+        mission_text: str | None,
+        autonomy_level: int | None,
+        teaching_mode_enabled: bool | None,
+        teaching_profile_name: str | None,
+        teaching_notes: str | None,
+    ) -> tuple[str, int, bool, str, str]:
+        """Normalize the mission, autonomy, and teaching-mode selections for a new run."""
 
         mission = str(mission_text or self._mission_text or DEFAULT_MISSION).strip() or DEFAULT_MISSION
         selected_autonomy = _bounded_autonomy(autonomy_level or self._autonomy_level)
-        return mission, selected_autonomy
+        selected_teaching_mode = self._teaching_mode_enabled if teaching_mode_enabled is None else bool(teaching_mode_enabled)
+        selected_profile = get_profile(teaching_profile_name or self._teaching_profile_name).name
+        selected_notes = str(teaching_notes if teaching_notes is not None else self._teaching_notes).strip()
+        return mission, selected_autonomy, selected_teaching_mode, selected_profile, selected_notes
 
     def _start_blocker(self) -> tuple[str, str, str] | None:
         """Return the status payload describing why a new run cannot start yet."""
@@ -410,11 +482,22 @@ class UIController(QtCore.QObject):
             )
         return None
 
-    def _persist_start_selection(self, mission: str, autonomy_level: int) -> None:
+    def _persist_start_selection(
+        self,
+        mission: str,
+        autonomy_level: int,
+        teaching_mode_enabled: bool,
+        teaching_profile_name: str,
+        teaching_notes: str,
+    ) -> None:
         """Persist one accepted start selection and prepare the game window."""
 
         self._mission_text = mission
         self._autonomy_level = autonomy_level
+        self._teaching_mode_enabled = bool(teaching_mode_enabled)
+        self._teaching_profile_name = get_profile(teaching_profile_name).name
+        self._teaching_notes = str(teaching_notes or "").strip()
+        self._teaching_prompt_text = teaching_questions_text(self._teaching_profile_name)
         if self.OS_ROKBOT.is_paused():
             self.OS_ROKBOT.toggle_pause()
 
@@ -423,11 +506,21 @@ class UIController(QtCore.QObject):
             {
                 "PLANNER_GOAL": mission,
                 "PLANNER_AUTONOMY_LEVEL": str(autonomy_level),
+                "TEACHING_MODE_ENABLED": "1" if self._teaching_mode_enabled else "0",
+                "TEACHING_PROFILE_NAME": self._teaching_profile_name,
+                "TEACHING_NOTES": self._teaching_notes,
             }
         )
         self._save_mission_to_history(mission)
 
-    def _prepare_runtime_session(self, mission: str, autonomy_level: int) -> Context:
+    def _prepare_runtime_session(
+        self,
+        mission: str,
+        autonomy_level: int,
+        teaching_mode_enabled: bool,
+        teaching_profile_name: str,
+        teaching_notes: str,
+    ) -> Context:
         """Create the per-run session logger, logging context, and runtime `Context`."""
 
         self._session_logger = SessionLogger(mission=mission, autonomy_level=autonomy_level)
@@ -439,6 +532,9 @@ class UIController(QtCore.QObject):
             session_logger=self._session_logger,
             planner_goal=mission,
             planner_autonomy_level=autonomy_level,
+            teaching_mode_enabled=teaching_mode_enabled,
+            teaching_profile_name=teaching_profile_name,
+            teaching_notes=teaching_notes,
         )
         self._current_context = context
         self._pending_payload = None
@@ -463,17 +559,36 @@ class UIController(QtCore.QObject):
         self._session_active = True
         self._finalize_session(status="failed", end_reason="start_refused", detail="OSROKBOT refused to start the run.")
 
-    def start_automation(self, mission_text: str | None = None, autonomy_level: int | None = None) -> None:
+    def start_automation(
+        self,
+        mission_text: str | None = None,
+        autonomy_level: int | None = None,
+        teaching_mode_enabled: bool | None = None,
+        teaching_profile_name: str | None = None,
+        teaching_notes: str | None = None,
+    ) -> None:
         """Start a planner-first automation run from the selected mission."""
 
-        mission, selected_autonomy = self._start_selection(mission_text, autonomy_level)
+        mission, selected_autonomy, selected_teaching_mode, selected_profile, selected_notes = self._start_selection(
+            mission_text,
+            autonomy_level,
+            teaching_mode_enabled,
+            teaching_profile_name,
+            teaching_notes,
+        )
         blocker = self._start_blocker()
         if blocker is not None:
             self._set_status(*blocker)
             self._emit_snapshot()
             return
 
-        self._persist_start_selection(mission, selected_autonomy)
+        self._persist_start_selection(
+            mission,
+            selected_autonomy,
+            selected_teaching_mode,
+            selected_profile,
+            selected_notes,
+        )
 
         action_group = self.action_sets.dynamic_planner()
         if not action_group:
@@ -481,7 +596,13 @@ class UIController(QtCore.QObject):
             self._emit_snapshot()
             return
 
-        context = self._prepare_runtime_session(mission, selected_autonomy)
+        context = self._prepare_runtime_session(
+            mission,
+            selected_autonomy,
+            selected_teaching_mode,
+            selected_profile,
+            selected_notes,
+        )
         self._set_start_result(started=self.OS_ROKBOT.start([action_group], context), mission=mission)
         self._emit_snapshot()
 
@@ -940,6 +1061,11 @@ class UIController(QtCore.QObject):
             mission_text=self._mission_text,
             mission_options=list(self._mission_options),
             autonomy_level=self._autonomy_level,
+            teaching_mode_enabled=self._teaching_mode_enabled,
+            teaching_profile_name=self._teaching_profile_name,
+            teaching_profile_options=list(self._teaching_profile_options),
+            teaching_notes=self._teaching_notes,
+            teaching_prompt_text=self._teaching_prompt_text,
             elapsed_text=_format_elapsed(elapsed),
             is_running=is_running,
             is_paused=is_paused,

@@ -100,9 +100,25 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Purpose: decompose complex missions into 2-8 concrete sub-goals with
   expected labels/OCR keywords.
 - Runtime use: `DynamicPlannerAction` initializes the graph once per mission
-  and sends the current focused sub-goal to the planner.
+  and sends the current focused sub-goal to the planner. When teaching mode is
+  active, the decomposition prompt also receives the gameplay teaching brief.
 - Fallback: if decomposition is unavailable, the full mission becomes a single
   sub-goal.
+
+## Gameplay Teaching Mode
+
+- Owner: `Classes/gameplay_teaching.py`
+- Runtime bridge: `Classes/UI.py`, `Classes/UIController.py`,
+  `Classes/runtime_composition.py`, `Classes/task_graph.py`, and
+  `Classes/dynamic_planner.py`
+- Purpose: let operators teach gameplay doctrine for early supervised runs by
+  selecting a workflow profile and writing the real button/key sequence they
+  use.
+- Profiles: guided general, resource gathering, gem gathering, barbarian
+  farming, and map navigation.
+- Runtime use: the selected profile and notes are carried on `Context` as a
+  teaching brief that informs both mission decomposition and next-step
+  planning.
 
 ## YOLO UI Perception
 
