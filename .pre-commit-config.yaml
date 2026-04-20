@@ -1,0 +1,42 @@
+default_language_version:
+  python: python3.13
+
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.8.6
+  hooks:
+  - id: ruff
+  - id: ruff-format
+- repo: https://github.com/pre-commit/mirrors-mypy
+  rev: v1.14.1
+  hooks:
+  - id: mypy
+    additional_dependencies:
+    - pydantic==2.13.1
+- repo: local
+  hooks:
+  - id: bandit
+    name: bandit
+    entry: python -m bandit -q -r Classes watchdog.py verify_integrity.py verify_docs.py cleanup_media.py tools/check_repo_hygiene.py -ll -ii
+    language: system
+    pass_filenames: false
+  - id: radon
+    name: radon-cc
+    entry: python -m radon cc -n C -s Classes
+    language: system
+    pass_filenames: false
+  - id: vulture
+    name: vulture
+    entry: python -m vulture Classes tests verify_integrity.py watchdog.py cleanup_media.py tools/check_repo_hygiene.py --exclude Media/,data/,datasets/,diagnostics/,models/ --min-confidence 80
+    language: system
+    pass_filenames: false
+  - id: repo-hygiene
+    name: repo-hygiene
+    entry: python tools/check_repo_hygiene.py
+    language: system
+    pass_filenames: false
+  - id: verify-docs
+    name: verify-docs
+    entry: python verify_docs.py
+    language: system
+    pass_filenames: false

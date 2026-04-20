@@ -17,14 +17,19 @@ REQUIRED_FILES = [
     "MEDIA_MAP.md",
     "docs/documentation-review-checklist.md",
     "docs/runbooks/README.md",
-    "docs/runbooks/watchdog-restart.md",
     "docs/runbooks/captcha-manual-recovery.md",
     "docs/runbooks/emergency-stop.md",
-    "docs/runbooks/secret-provisioning.md",
     "docs/runbooks/failure-triage.md",
+    "docs/runbooks/ocr-degradation.md",
+    "docs/runbooks/planner-transport-outage.md",
     "docs/runbooks/run-handoff.md",
+    "docs/runbooks/secret-provisioning.md",
+    "docs/runbooks/startup-health-check.md",
+    "docs/runbooks/watchdog-restart.md",
+    "docs/runbooks/yolo-warmup-and-download.md",
     "docs/adr/0001-planner-first-runtime.md",
     "docs/adr/0002-human-in-the-loop-safety.md",
+    "docs/adr/0004-runtime-composition-and-legacy-retirement.md",
 ]
 
 RUNBOOK_REQUIRED_SECTIONS = [
@@ -35,14 +40,19 @@ RUNBOOK_REQUIRED_SECTIONS = [
 ]
 
 REQUIRED_DOC_REFERENCES = [
-    "docs/runbooks/watchdog-restart.md",
     "docs/runbooks/captcha-manual-recovery.md",
     "docs/runbooks/emergency-stop.md",
-    "docs/runbooks/secret-provisioning.md",
     "docs/runbooks/failure-triage.md",
+    "docs/runbooks/ocr-degradation.md",
+    "docs/runbooks/planner-transport-outage.md",
     "docs/runbooks/run-handoff.md",
+    "docs/runbooks/secret-provisioning.md",
+    "docs/runbooks/startup-health-check.md",
+    "docs/runbooks/watchdog-restart.md",
+    "docs/runbooks/yolo-warmup-and-download.md",
     "docs/adr/0001-planner-first-runtime.md",
     "docs/adr/0002-human-in-the-loop-safety.md",
+    "docs/adr/0004-runtime-composition-and-legacy-retirement.md",
     "docs/documentation-review-checklist.md",
 ]
 

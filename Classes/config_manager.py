@@ -46,13 +46,7 @@ class ConfigManager:
     SUPPORTED_KEYS = {
         "OPENAI_KEY",
         "OPENAI_API_KEY",
-        "EMAIL",
-        "EMAIL_TO",
-        "EMAIL_FROM",
-        "EMAIL_PASSWORD",
         "RUNTIME_JOURNAL_HMAC_KEY",
-        "EMAIL_SMTP_SERVER",
-        "EMAIL_SMTP_PORT",
         "OCR_ENGINE",
         "OCR_MAX_IMAGE_SIDE",
         "TESSERACT_PATH",

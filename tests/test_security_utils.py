@@ -63,13 +63,13 @@ def test_update_env_file_preserves_comments_and_replaces_requested_keys(tmp_path
     env_path = tmp_path / ".env"
     env_path.write_text("# comment\nOPENAI_KEY=old\nUNCHANGED=1\n", encoding="utf-8")
 
-    update_env_file(env_path, {"OPENAI_KEY": "new value", "EMAIL_PASSWORD": "secret"})
+    update_env_file(env_path, {"OPENAI_KEY": "new value", "RUNTIME_JOURNAL_HMAC_KEY": "secret"})
 
     written = env_path.read_text(encoding="utf-8")
     assert "# comment" in written
     assert 'OPENAI_KEY="new value"' in written
     assert "UNCHANGED=1" in written
-    assert "EMAIL_PASSWORD=secret" in written
+    assert "RUNTIME_JOURNAL_HMAC_KEY=secret" in written
 
 
 def test_update_env_file_removes_keys_when_value_is_none(tmp_path):

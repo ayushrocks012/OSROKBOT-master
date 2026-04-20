@@ -14,13 +14,13 @@ from typing import Any
 
 from artifact_retention import ArtifactRetentionManager, ArtifactRetentionPolicy
 from logging_config import get_logger
-from runtime_journal import RuntimeJournal
 from run_handoff import (
     DEFAULT_LIVE_SNAPSHOT_INTERVAL_SECONDS,
     DEFAULT_SESSION_LOGS_DIR,
     DEFAULT_SESSION_RETENTION,
     RunRecordSession,
 )
+from runtime_journal import RuntimeJournal
 
 LOGGER = get_logger(__name__)
 

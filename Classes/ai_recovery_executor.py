@@ -161,8 +161,26 @@ class AIRecoveryExecutor:
             return None
         return max(allowed_hints, key=lambda hint: hint["confidence"])
 
+    @staticmethod
+    def _window_handler(context: Any) -> Any:
+        build_window_handler = getattr(context, "build_window_handler", None)
+        if callable(build_window_handler):
+            return build_window_handler()
+        return WindowHandler()
+
+    @staticmethod
+    def _input_controller(context: Any) -> Any:
+        build_input_controller = getattr(context, "build_input_controller", None)
+        if callable(build_input_controller):
+            controller = build_input_controller()
+            if hasattr(controller, "coordinate_noise_px"):
+                controller.coordinate_noise_px = 0
+            return controller
+        return InputController(context=context, coordinate_noise_px=0)
+
     def _click_hint(self, context: Any, hint: RecoveryHint) -> bool:
-        window_rect = WindowHandler().get_client_window_rect(context.window_title)
+        window_handler = self._window_handler(context)
+        window_rect = window_handler.get_client_window_rect(context.window_title)
         if not window_rect:
             return False
 
@@ -172,8 +190,9 @@ class AIRecoveryExecutor:
             return False
 
         LOGGER.info(f"AI recovery guarded click: {hint['label']} ({hint['x']:.3f}, {hint['y']:.3f})")
+        controller = self._input_controller(context)
         return bool(
-            InputController(context=context, coordinate_noise_px=0).click(
+            controller.click(
                 target_x,
                 target_y,
                 window_rect=window_rect,
@@ -255,9 +274,13 @@ class AIRecoveryExecutor:
         recovered = bool(result) or next_state != pending.get("state_name")
         if not recovered:
             try:
-                from state_monitor import GameStateMonitor
+                build_state_monitor = getattr(context, "build_state_monitor", None)
+                if callable(build_state_monitor):
+                    recovered = bool(build_state_monitor().is_known_state())
+                else:
+                    from state_monitor import GameStateMonitor
 
-                recovered = GameStateMonitor(context).is_known_state()
+                    recovered = GameStateMonitor(context).is_known_state()
             except Exception:
                 recovered = False
 

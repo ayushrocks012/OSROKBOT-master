@@ -14,29 +14,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from action_sets import ActionSets
-from Actions.dynamic_planner_action import DynamicPlannerAction
 from config_manager import ConfigManager
 from context import Context
-from detection_dataset import DetectionDataset
-from input_controller import InputController
 from logging_config import bind_log_context, get_logger, reset_log_context
 from model_manager import ModelManager, yolo_download_required
 from object_detector import create_detector
-from ocr_service import OCRService
-from OS_ROKBOT import OSROKBOT
+from planner_decision_policy import decision_requires_manual_fix
 from PyQt5 import QtCore, QtWidgets
 from run_handoff import reconcile_latest_runtime_run
-from screen_change_detector import ScreenChangeDetector
+from runtime_composition import DEFAULT_MISSION, SupervisorRuntimeComposition
 from session_logger import SessionLogger
-from task_graph import TaskGraph
-from vision_memory import VisionMemory
-from window_handler import WindowHandler
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOGGER = get_logger(__name__)
-DEFAULT_MISSION = "Safely continue the selected Rise of Kingdoms task."
-MIN_APPROVAL_CONFIDENCE = 0.70
 MAX_MISSION_HISTORY = 10
 
 MISSION_PRESETS = [
@@ -132,31 +122,29 @@ class UIController(QtCore.QObject):
     fix_overlay_cleared = QtCore.pyqtSignal()
     notification_requested = QtCore.pyqtSignal(str, str, object)
 
-    def __init__(self, window_title: str, delay: float = 0.0, parent: QtCore.QObject | None = None) -> None:
+    def __init__(
+        self,
+        window_title: str,
+        delay: float = 0.0,
+        *,
+        composition: SupervisorRuntimeComposition | None = None,
+        parent: QtCore.QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self.target_title = window_title
-        self._window_handler = WindowHandler()
-        self._input_controller = InputController(context=None)
-        self._detector = create_detector()
-        self._vision_memory = VisionMemory()
-        self._detection_dataset = DetectionDataset()
-        self.OS_ROKBOT = OSROKBOT(
-            window_title,
-            delay,
-            window_handler=self._window_handler,
-            input_controller=self._input_controller,
-            detector=self._detector,
-        )
+        self._composition = composition or SupervisorRuntimeComposition(window_title, delay=delay)
+        self._window_handler = self._composition.window_handler
+        self._detector = self._composition.detector
+        self._vision_memory = self._composition.vision_memory
+        self._detection_dataset = self._composition.detection_dataset
+        self.OS_ROKBOT = self._composition.build_bot()
         self.OS_ROKBOT.signal_emitter.pause_toggled.connect(self.handle_pause_toggled)
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.handle_runtime_state_changed)
         self.OS_ROKBOT.signal_emitter.planner_decision.connect(self.handle_planner_decision)
         self.OS_ROKBOT.signal_emitter.yolo_weights_ready.connect(self.handle_yolo_weights_ready)
         self.OS_ROKBOT.signal_emitter.run_finished.connect(self.handle_run_finished)
 
-        self.action_sets = ActionSets(
-            OS_ROKBOT=self.OS_ROKBOT,
-            dynamic_planner_factory=self._create_dynamic_planner_action,
-        )
+        self.action_sets = self._composition.create_action_sets(self.OS_ROKBOT)
         self._background_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="OSROKBOT-UI")
         self._yolo_warmup_future: Future[Any] | None = None
         self._current_context: Context | None = None
@@ -259,36 +247,6 @@ class UIController(QtCore.QObject):
         ConfigManager().set_many({"PLANNER_AUTONOMY_LEVEL": str(self._autonomy_level)})
         self._emit_snapshot()
 
-    def _create_dynamic_planner_action(self) -> DynamicPlannerAction:
-        """Build one planner action with startup-owned shared services."""
-
-        return DynamicPlannerAction(
-            window_handler=self._window_handler,
-            detector=self._detector,
-            ocr=OCRService(),
-            memory=self._vision_memory,
-            dataset=self._detection_dataset,
-            change_detector=ScreenChangeDetector(),
-            task_graph=TaskGraph(),
-        )
-
-    def _create_input_controller_for_context(self, context: Context | None = None) -> InputController:
-        """Return a context-bound input controller for runtime collaborators."""
-
-        return InputController(context=context)
-
-    def _create_state_monitor_for_context(self, context: Context | None = None) -> Any:
-        """Return a context-bound game-state monitor for runtime collaborators."""
-
-        from state_monitor import GameStateMonitor
-
-        return GameStateMonitor(
-            context=context,
-            window_handler=self._window_handler,
-            input_controller=self._create_input_controller_for_context(context),
-            detector=self._detector,
-        )
-
     def _set_status(self, text: str, tone: str, detail: str = "") -> None:
         self._status_text = text
         self._status_tone = tone
@@ -334,6 +292,7 @@ class UIController(QtCore.QObject):
         if success:
             try:
                 self._detector = create_detector()
+                self._composition.detector = self._detector
                 self.OS_ROKBOT.detector = self._detector
             except Exception as exc:
                 LOGGER.warning("Detector refresh failed after YOLO warmup: %s", exc)
@@ -395,18 +354,12 @@ class UIController(QtCore.QObject):
         if self._logging_context_token is not None:
             reset_log_context(self._logging_context_token)
         self._logging_context_token = bind_log_context(**self._session_logger.log_context_fields())
-        context = Context(
-            ui_instance=self,
+        context = self._composition.create_context(
             bot=self.OS_ROKBOT,
-            signal_emitter=self.OS_ROKBOT.signal_emitter,
-            window_title=self.target_title,
             session_logger=self._session_logger,
-            window_handler_factory=lambda: self._window_handler,
-            input_controller_factory=self._create_input_controller_for_context,
-            state_monitor_factory=self._create_state_monitor_for_context,
+            planner_goal=mission,
+            planner_autonomy_level=selected_autonomy,
         )
-        context.planner_goal = mission
-        context.planner_autonomy_level = selected_autonomy
         self._current_context = context
         self._pending_payload = None
         self._fix_capture_active = False
@@ -463,15 +416,9 @@ class UIController(QtCore.QObject):
     def _pending_requires_fix_payload(pending: dict[str, Any] | None) -> bool:
         if not pending:
             return False
-        decision = pending.get("decision", {})
-        action_type = str(decision.get("action_type", ""))
-        try:
-            confidence = float(decision.get("confidence", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        return action_type in {"click", "drag", "long_press"} and (
-            confidence < MIN_APPROVAL_CONFIDENCE or decision.get("source") == "ai_review"
-        )
+        if "fix_required" in pending:
+            return bool(pending.get("fix_required"))
+        return decision_requires_manual_fix(pending.get("decision", {}))
 
     def approve_pending_action(self) -> None:
         """Approve the pending planner action if it is execution-ready."""

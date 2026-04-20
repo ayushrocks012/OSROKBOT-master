@@ -20,8 +20,8 @@ UI mission
 ```
 
 Legacy gameplay templates are not a supported runtime path. Deprecated action
-templates live under `Classes/Actions/legacy/` for reference only. `Media/Legacy/`
-and loose root-level `Media/*.png` files are deprecated and are purged by
+templates have been removed from the repository. `Media/Legacy/` and loose
+root-level `Media/*.png` files are deprecated and are purged by
 `cleanup_media.py`.
 
 ## Ownership Boundaries
@@ -30,6 +30,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | --- | --- |
 | `Classes/UI.py` | Agent Supervisor Console view, shell layout, tabs, tray notifications, state-responsive collapse/expand behavior, and overlay presentation. |
 | `Classes/UIController.py` | Mission history, autonomy selection, pending-action evaluation, YOLO warmup, session logging, and per-run `Context` creation for the supervisor console. |
+| `Classes/runtime_composition.py` | Explicit startup composition root for the supervisor console, shared detector/window/input collaborators, and per-run `Context` factory wiring. |
 | `Classes/click_overlay.py` | Non-blocking planner preview overlay plus the blocking crosshair correction overlay used by `Fix`. |
 | `Classes/context.py` | Thread-guarded shared runtime state, per-step observation cache, planner approval payloads, state history, resource cache, UI anchors, UI signal access, and per-run runtime collaborator factories. |
 | `Classes/action_sets.py` | Supported workflow factory. New runtime work should use `dynamic_planner()`. |
@@ -42,8 +43,8 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat scheduling, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
-| `Classes/Actions/legacy/` | Deprecated action templates retained outside the supported runtime. Do not import them from production paths. |
 | `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, jittered retries, circuit-breaker fallback, strict JSON schema validation, target resolution, and memory-first decision selection. |
+| `Classes/planner_decision_policy.py` | Canonical decision verdict for execution readiness, Fix-required review, rejection reasons, and pointer safety rules shared by planner, UI, and approval services. |
 | `Classes/task_graph.py` | Mission decomposition through the shared planner transport, sub-goal cache, focused-goal text, and label/OCR completion checks. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS/NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
 | `Classes/ocr_service.py` | Configurable OCR engine order, bounded Tesseract planner text/region reads, and normalized OCR target extraction. |
@@ -69,7 +70,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Do not bypass `InputController.validate_bounds(...)` for pointer actions.
 - Do not solve, bypass, or automate CAPTCHAs. Detection must pause for human review.
 - Do not add new root-level gameplay templates under `Media/`.
-- Do not import from `Actions.legacy` in production runtime code.
+- Do not reintroduce `Actions.legacy` imports or a new legacy action package.
 - Do not move protected media under `Media/UI/` or `Media/Readme/` without updating `MEDIA_MAP.md`.
 - Keep `dynamic_planner.py` side-effect free. It may propose JSON decisions; it must not execute input.
 - Keep agentic input execution behind `DynamicPlannerAction` and `InputController`.
@@ -88,7 +89,7 @@ and loose root-level `Media/*.png` files are deprecated and are purged by
 - Resume after crashes or F12 from the journal checkpoint only, and re-observe the game window before any new hardware input.
 - Keep runtime timing telemetry for capture, detector, OCR, planner, and input phases flowing into the current grouped session artifacts and latest-run handoff when modifying those paths.
 - When code changes behavior, architecture, configuration, runtime data paths, safety rules, or operator workflow, update the affected documentation in the same change. At minimum, review `README.md`, `AGENTS.md`, `SKILLS.md`, and `MEDIA_MAP.md`.
-- Update operator runbooks under `docs/runbooks/` when watchdog, CAPTCHA, emergency-stop, secret provisioning, telemetry, or failure-triage behavior changes.
+- Update operator runbooks under `docs/runbooks/` when watchdog, CAPTCHA, emergency-stop, secret provisioning, telemetry, OCR degradation, planner transport, YOLO warmup, startup health-check, or failure-triage behavior changes.
 - Keep documented maintainer verification commands routed through `tools/run_maintainer_command.ps1` so stdout/stderr capture, latest-run refresh, and centralized pytest artifact cleanup stay consistent.
 - Add or amend ADRs under `docs/adr/` when changing the planner-first runtime path, HITL safety model, input boundary, or other architecture-level contracts.
 - Do not launch live automation in tests unless explicitly requested.
@@ -199,8 +200,9 @@ Run these before handing work back:
 ```powershell
 .\tools\run_maintainer_command.ps1 verify-integrity
 .\tools\run_maintainer_command.ps1 verify-docs
+.\tools\run_maintainer_command.ps1 repo-hygiene
 python -m compileall Classes verify_integrity.py verify_docs.py cleanup_media.py watchdog.py
-python -c "import cv2, numpy; from PyQt5.QtCore import QObject; print('imports ok')"
+python -c "import numpy; from PyQt5.QtCore import QObject; print('imports ok')"
 .\tools\run_maintainer_command.ps1 mypy
 .\tools\run_maintainer_command.ps1 pytest
 ```
@@ -221,7 +223,7 @@ unless an operator explicitly sets `OSROKBOT_RUN_SUPERVISED_TESTS=1`.
 
 The maintainer wrapper centralizes pytest temp/cache output under
 `.artifacts/test_runs/<run_id>/`, copies the latest run handoff into that
-folder, and provides `cleanup-test-artifacts` for legacy `.pytest_tmp*`,
+folder, and provides `cleanup-test-artifacts` for historical `.pytest_tmp*`,
 `.pytest_cache*`, `pytest-cache-files-*`, and `data/smoke_config_tests`
 cleanup after migration.
 

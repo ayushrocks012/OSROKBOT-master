@@ -300,7 +300,13 @@ def test_runner_done_cleans_executor_after_background_failure():
     future = Future()
     future.set_exception(RuntimeError("boom"))
     bot._runner_future = future
-    bot._runner_executor = type("Executor", (), {"shutdown": lambda self, wait=False, cancel_futures=True: None})()
+
+    class _Executor:
+        def shutdown(self, wait=False, cancel_futures=True):
+            assert wait is False
+            assert cancel_futures is True
+
+    bot._runner_executor = _Executor()
     bot.is_running = True
     bot.all_threads_joined = False
 

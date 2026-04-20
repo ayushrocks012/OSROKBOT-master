@@ -209,7 +209,7 @@ class DpapiSecretProvider:
         return raw
 
     def _entropy_for(self, key: str) -> bytes:
-        return f"OSROKBOT::{key}".encode("utf-8")
+        return f"OSROKBOT::{key}".encode()
 
     def get(self, key: str) -> str | None:
         secrets = self._load_payload().get("secrets", {})

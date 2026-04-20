@@ -17,9 +17,9 @@ OSROKBOT uses a planner-first runtime:
 UI mission -> Context -> StateMachine -> DynamicPlannerAction -> DynamicPlanner -> InputController
 ```
 
-Legacy gameplay templates remain quarantined under `Classes/Actions/legacy/`
-for reference only. New production behavior must enter through
-`ActionSets.dynamic_planner()` and the guarded planner action services.
+Legacy gameplay templates have been removed from the repository. New
+production behavior must enter through `ActionSets.dynamic_planner()` and the
+guarded planner action services.
 
 ## Consequences
 
@@ -28,7 +28,7 @@ for reference only. New production behavior must enter through
 - `dynamic_planner.py` remains side-effect free and cannot send input.
 - `InputController` remains the only hardware input path.
 - Tests and static checks focus on the supported planner-first runtime instead
-  of legacy template actions.
+  of removed legacy template actions.
 
 ## Rejected Alternatives
 

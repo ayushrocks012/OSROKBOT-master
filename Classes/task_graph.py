@@ -99,6 +99,7 @@ class SubGoal:
 
 from context import record_stage_timing
 
+
 class TaskGraph:
     """Decompose missions into sub-goals and track their completion.
 

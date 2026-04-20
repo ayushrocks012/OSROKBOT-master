@@ -9,9 +9,9 @@ from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
+from config_manager import ConfigManager
 from logging_config import get_logger
 from PIL import Image
-from config_manager import ConfigManager
 
 LOGGER = get_logger(__name__)
 

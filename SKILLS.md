@@ -31,10 +31,28 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 
 - Owner: `Classes/Actions/__init__.py`
 - Active actions: `Action` and `DynamicPlannerAction`.
-- Deprecated actions: old template-driven actions live under
-  `Classes/Actions/legacy/` and are retained for reference only.
-- Rule: new runtime work must use `ActionSets.dynamic_planner()` instead of
-  importing legacy action modules.
+- Removed actions: old template-driven actions have been retired from the
+  repository.
+- Rule: new runtime work must use `ActionSets.dynamic_planner()` and must not
+  reintroduce legacy action modules.
+
+## Runtime Composition Root
+
+- Owner: `Classes/runtime_composition.py`
+- Purpose: keep startup wiring explicit by owning shared detector, window,
+  input, and memory collaborators plus per-run `Context` factory wiring.
+- Runtime use: `UI.py` creates the composition root, `UIController.py`
+  consumes it, and `OSROKBOT`, `GameStateMonitor`, and guarded recovery reuse
+  its injected factories.
+
+## Planner Decision Policy
+
+- Owner: `Classes/planner_decision_policy.py`
+- Purpose: derive one canonical verdict for planner execution readiness,
+  Fix-required review, and rejection reasons.
+- Runtime use: `dynamic_planner.py`, `UIController.py`, and
+  `dynamic_planner_services.py` all use the same decision policy so low-
+  confidence pointer actions do not drift across modules.
 
 ## Typed Runtime Contracts
 
@@ -71,7 +89,8 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Owner: `pyproject.toml`
 - Command: `python -m mypy`
 - Scope: `runtime_contracts`, `runtime_payloads`, `context`, `OS_ROKBOT`,
-  `action_sets`, and `ai_recovery_executor`.
+  `action_sets`, `ai_recovery_executor`, `planner_decision_policy`, and
+  `runtime_composition`.
 - Intent: keep the typed boundary/runtime handoff clean now, while heavier
   orchestration modules are refactored before they join the strict gate.
 
@@ -113,8 +132,9 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 
 - Owners: `Classes/config_manager.py`, `Classes/security_utils.py`, and
   `Classes/logging_config.py`
-- Secret storage: `OPENAI_KEY`, `OPENAI_API_KEY`, and `EMAIL_PASSWORD` persist
-  through `.env` instead of `config.json`.
+- Secret storage: `OPENAI_KEY`, `OPENAI_API_KEY`, and
+  `RUNTIME_JOURNAL_HMAC_KEY` persist through the configured secret provider
+  instead of `config.json`.
 - Logging: OpenAI-style keys and known secret assignments are redacted before
   console or file handlers emit records.
 - Operator note: `.env` is workstation-grade local secret storage, not an
@@ -250,8 +270,8 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 
 - Owner: `Classes/maintainer_run.py`
 - PowerShell entrypoint: `tools/run_maintainer_command.ps1`
-- Supported presets: `verify-integrity`, `verify-docs`, `mypy`, `pytest`,
-  `watchdog-once`, `ui`, and `cleanup-test-artifacts`
+- Supported presets: `verify-integrity`, `verify-docs`, `repo-hygiene`,
+  `mypy`, `pytest`, `watchdog-once`, `ui`, and `cleanup-test-artifacts`
 - Console milestones: `RUN START`, `RUN EVENT`, `RUN ERROR`, `RUN END`
 - Purpose: keep documented maintainer commands on the same run-handoff
   contract as runtime sessions.
@@ -301,8 +321,9 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Threshold: `>=80%`
 - Scope: deterministic planner/runtime modules only:
   `ai_fallback`, `ai_recovery_executor`, `config_manager`, `context`,
-  `dynamic_planner`, `model_manager`, `OS_ROKBOT`, `security_utils`, and
-  `state_machine`.
+  `dynamic_planner`, `health_check`, `maintainer_run`, `model_manager`,
+  `OS_ROKBOT`, `planner_decision_policy`, `run_handoff`, `runtime_composition`,
+  `runtime_journal`, `security_utils`, and `state_machine`.
 - Reason: these modules are stable enough for hard unit-test enforcement;
   Windows/UI/hardware-bound modules remain regression tested but are outside
   the hard fail-under gate.
@@ -339,6 +360,10 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Watchdog operations: `docs/runbooks/watchdog-restart.md`
 - CAPTCHA handling: `docs/runbooks/captcha-manual-recovery.md`
 - Emergency stop: `docs/runbooks/emergency-stop.md`
+- Startup readiness: `docs/runbooks/startup-health-check.md`
+- YOLO warmup: `docs/runbooks/yolo-warmup-and-download.md`
+- OCR degradation: `docs/runbooks/ocr-degradation.md`
+- Planner transport: `docs/runbooks/planner-transport-outage.md`
 - Secret provisioning: `docs/runbooks/secret-provisioning.md`
 - Failure triage: `docs/runbooks/failure-triage.md`
 - Run handoff: `docs/runbooks/run-handoff.md`
@@ -350,6 +375,8 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Owner: `docs/adr/`
 - Planner-first runtime: `docs/adr/0001-planner-first-runtime.md`
 - Human-in-the-loop safety: `docs/adr/0002-human-in-the-loop-safety.md`
+- Composition root and legacy retirement:
+  `docs/adr/0004-runtime-composition-and-legacy-retirement.md`
 - Purpose: record production architecture decisions that should not be
   rediscovered through code archaeology.
 

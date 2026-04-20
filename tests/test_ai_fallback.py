@@ -25,11 +25,11 @@ def test_analyze_failure_stores_structured_result_in_context(monkeypatch, tmp_pa
     screenshot_path = tmp_path / "screen.png"
     screenshot_path.write_bytes(b"png")
     responses = _FakeResponses(
-        (
+        
             '{"state_guess":"CITY","visible_targets":["confirm"],'
             '"suggested_recovery":"Click confirm.",'
             '"target_hints":[{"label":"confirm","x":0.25,"y":0.75,"confidence":0.91}]}'
-        )
+        
     )
     fallback = AIFallback()
     fallback.enabled = True

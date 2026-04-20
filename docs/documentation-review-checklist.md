@@ -13,7 +13,8 @@ workflow.
 - README Mermaid diagrams are updated when runtime flow, approval gating, or
   recovery behavior changes.
 - Operator runbooks are updated when setup, watchdog, CAPTCHA, emergency-stop,
-  secrets, or triage steps change.
+  secrets, OCR degradation, planner transport, YOLO warmup, startup
+  health-check, or triage steps change.
 - ADRs are added or amended when architectural decisions change.
 - New active runtime modules, classes, and non-trivial public methods use
   Google-style docstrings.

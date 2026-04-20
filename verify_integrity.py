@@ -80,38 +80,6 @@ def _literal_string(node: ast.AST | None) -> str | None:
     return None
 
 
-def _resolve_helpers_get_random_rss() -> set[str]:
-    helpers_path = CLASSES_DIR / "helpers.py"
-    tree = ast.parse(helpers_path.read_text(encoding="utf-8"))
-    states: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Attribute) or node.func.attr != "choice":
-            continue
-        if not node.args or not isinstance(node.args[0], ast.List):
-            continue
-        for item in node.args[0].elts:
-            value = _literal_string(item)
-            if value:
-                states.add(value)
-    return states
-
-
-def _dynamic_targets(node: ast.AST | None) -> set[str]:
-    if not isinstance(node, ast.Call):
-        return set()
-    func = node.func
-    if (
-        isinstance(func, ast.Attribute)
-        and func.attr == "getRandomRss"
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "Helpers"
-    ):
-        return _resolve_helpers_get_random_rss()
-    return set()
-
-
 def _call_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
         return node.func.attr
@@ -164,9 +132,6 @@ def check_state_machine_transitions() -> list[str]:
                     literal = _literal_string(target_node)
                     if literal:
                         transitions.append((state_name, label, literal))
-                        continue
-                    for dynamic_target in _dynamic_targets(target_node):
-                        transitions.append((state_name, label, dynamic_target))
 
             elif call_name == "set_initial_state":
                 initial_state = _literal_string(node.args[0]) if node.args else None

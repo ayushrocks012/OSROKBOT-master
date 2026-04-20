@@ -1,8 +1,3 @@
-import secrets
-
-SYS_RANDOM = secrets.SystemRandom()
-
-
 class UIMap:
     """Normalized screen regions for reusable state and resource checks.
 
@@ -15,10 +10,3 @@ class UIMap:
     TOP_RIGHT_MARCH_SLOTS = (0.955, 0.175, 0.040, 0.040)
     TOP_ACTION_POINTS = (0.34, 0.015, 0.22, 0.055)
     MAP_VIEW_MARKER = (0.0, 0.0, 1.0, 1.0)
-
-
-class Helpers:
-    @staticmethod
-    def getRandomRss():
-        # return lambda: SYS_RANDOM.choice(["cornicon"])
-        return lambda: SYS_RANDOM.choice(["cornicon", "logicon"])

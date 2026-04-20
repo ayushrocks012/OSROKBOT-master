@@ -180,6 +180,28 @@ class ConfigProvider(Protocol):
         """Return a configured value or the provided default."""
 
 
+class RecoveryExecutorLike(Protocol):
+    """Guarded recovery contract used by `StateMachine` fallback tiers."""
+
+    def try_recover(
+        self,
+        context: Any | None,
+        state_name: str,
+        action: object,
+        screenshot_path: str | Path | None,
+    ) -> bool:
+        """Attempt one guarded recovery click from memory or advisory AI."""
+
+    def verify_pending(
+        self,
+        context: Any | None,
+        previous_state: str,
+        next_state: str | None,
+        result: bool,
+    ) -> None:
+        """Resolve staged recovery memory after the next observed state."""
+
+
 class PlannerTransport(Protocol):
     """Transport boundary for side-effect-free planner and task-graph requests."""
 
@@ -196,3 +218,7 @@ class EmergencyStopController(Protocol):
     @classmethod
     def start_once(cls) -> bool:
         """Arm the emergency stop and return whether it is available."""
+
+
+type ConfigFactory = Callable[[], ConfigProvider]
+type RecoveryExecutorFactory = Callable[[Any | None], RecoveryExecutorLike]

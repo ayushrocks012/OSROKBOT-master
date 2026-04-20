@@ -65,11 +65,13 @@ def test_pending_planner_decision_emits_absolute_coordinates():
     assert pending["absolute_x"] == 200
     assert pending["absolute_y"] == 150
     assert pending["detections"][0]["target_id"] == "det_1"
+    assert pending["fix_required"] is False
     assert emitter.state_changed.payloads == ["Planner approval needed"]
     assert emitter.planner_decision.payloads[0]["absolute_x"] == 200
     assert emitter.planner_decision.payloads[0]["decision"]["target_id"] == "det_1"
     assert emitter.planner_decision.payloads[0]["decision"]["label"] == "Gather Button"
     assert emitter.planner_decision.payloads[0]["detections"][0]["width"] == 0.10
+    assert emitter.planner_decision.payloads[0]["fix_required"] is False
 
 
 def test_resolve_planner_decision_records_rejection_and_unblocks_event():
@@ -81,6 +83,24 @@ def test_resolve_planner_decision_records_rejection_and_unblocks_event():
 
     assert pending["result"] == "rejected"
     assert pending["event"].is_set()
+
+
+def test_pending_planner_decision_marks_fix_required_for_reviewable_pointer():
+    context = Context()
+    decision = {
+        "action_type": "click",
+        "target_id": "ocr_1",
+        "label": "Resource Node",
+        "x": 0.4,
+        "y": 0.5,
+        "confidence": 0.45,
+        "delay_seconds": 1.0,
+        "reason": "Low-confidence OCR target.",
+    }
+
+    pending = context.set_pending_planner_decision(decision)
+
+    assert pending["fix_required"] is True
 
 
 def test_current_observation_clear_is_identity_guarded():

@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from config_manager import ConfigManager
+from context import record_stage_timing
 from detection_dataset import DetectionDataset
-from dynamic_planner import MIN_PLANNER_CONFIDENCE, DynamicPlanner, PlannerDecision
+from dynamic_planner import DynamicPlanner, PlannerDecision
 from input_controller import DelayPolicy, InputController
 from logging_config import get_logger
 from PIL import Image
+from planner_decision_policy import decision_requires_manual_fix
 from runtime_contracts import (
     ClientRectLike,
     DetectionLike,
@@ -33,7 +35,6 @@ from runtime_payloads import ResourceContext
 from screen_change_detector import ScreenChangeDetector
 from task_graph import TaskGraph
 from vision_memory import VisionMemory
-from context import record_stage_timing
 
 LOGGER = get_logger(__name__)
 
@@ -276,7 +277,7 @@ class PlannerApprovalService:
         session_logger = _session_logger(context)
         step_id, machine_id, state_name = _step_identity(context)
         decision_id = str(_step_scope(context).get("decision_id", "") or "")
-        fix_required = decision.source == "ai_review" or decision.confidence < MIN_PLANNER_CONFIDENCE
+        fix_required = decision_requires_manual_fix(decision)
         if (
             session_logger
             and step_id
@@ -392,7 +393,7 @@ class PlannerApprovalService:
                 }
             )
             return corrected, True
-        if decision.source == "ai_review" or decision.confidence < MIN_PLANNER_CONFIDENCE:
+        if decision_requires_manual_fix(decision):
             LOGGER.warning("Low-confidence planner action requires Fix before execution.")
             return None, False
         return decision, False
@@ -627,16 +628,15 @@ class PlannerExecutionService:
                 target_id=decision.target_id,
             )
         _update_step_scope(context, input_id=None)
-        if not result:
-            if session_logger and hasattr(session_logger, "record_error"):
-                session_logger.record_error(
-                    f"Guarded input failed for {decision.action_type}.",
-                    stage="input_execute",
-                    action_type=decision.action_type,
-                    label=decision.label,
-                    target_id=decision.target_id,
-                    outcome="failure",
-                )
+        if not result and session_logger and hasattr(session_logger, "record_error"):
+            session_logger.record_error(
+                f"Guarded input failed for {decision.action_type}.",
+                stage="input_execute",
+                action_type=decision.action_type,
+                label=decision.label,
+                target_id=decision.target_id,
+                outcome="failure",
+            )
         return result
 
     def wait_after_execution(self, delay_seconds: float, context: Any) -> bool:
@@ -689,9 +689,8 @@ class PlannerFeedbackService:
     def advance_progress(self, visible_labels: list[str], ocr_text: str, context: Any = None) -> None:
         """Advance task-graph completion using current detector/OCR context."""
 
-        if self.task_graph.advance_if_completed(visible_labels, ocr_text):
-            if context:
-                context.emit_state(self.task_graph.progress_summary())
+        if self.task_graph.advance_if_completed(visible_labels, ocr_text) and context:
+            context.emit_state(self.task_graph.progress_summary())
 
     def mission_complete(self, context: Any) -> bool:
         """Stop the run when the task graph reports completion."""

@@ -6,9 +6,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from logging_config import get_logger
+from planner_decision_policy import decision_requires_manual_fix
 from runtime_contracts import (
+    ConfigFactory,
+    ConfigProvider,
     InputControllerFactory,
     InputControllerLike,
+    RecoveryExecutorFactory,
+    RecoveryExecutorLike,
     StateMonitorFactory,
     StateMonitorLike,
     WindowCaptureProvider,
@@ -17,8 +22,8 @@ from runtime_contracts import (
 from runtime_payloads import (
     NormalizedPoint,
     PlannerPendingPayload,
-    RuntimeTimingEntry,
     RuntimeStepScope,
+    RuntimeTimingEntry,
     StateHistoryEntry,
     coerce_decision_payload,
     compute_absolute_point,
@@ -66,7 +71,6 @@ class Context:
     """Runtime state shared by every state machine in one automation run.
 
     Inputs:
-        ui_instance: Optional PyQt UI object that started the run.
         bot: Optional OSROKBOT instance controlling pause/stop state.
         signal_emitter: Optional Qt signal bridge for UI status updates.
         window_title: Target game window title used by window/input actions.
@@ -76,7 +80,6 @@ class Context:
         results. Actions also call `emit_state()` to update the UI safely.
     """
 
-    ui_instance: Any | None = None
     bot: Any | None = None
     signal_emitter: Any | None = None
     window_title: str = DEFAULT_WINDOW_TITLE
@@ -104,22 +107,17 @@ class Context:
     window_handler_factory: WindowHandlerFactory | None = None
     input_controller_factory: InputControllerFactory | None = None
     state_monitor_factory: StateMonitorFactory | None = None
+    config_factory: ConfigFactory | None = None
+    recovery_executor_factory: RecoveryExecutorFactory | None = None
     current_observation: ObservationSnapshot | None = None
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _thread_local: threading.local = field(default_factory=threading.local, init=False, repr=False)
-
-    @property
-    def UI(self) -> Any | None:
-        """Backward-compatible alias for older code paths."""
-        return self.ui_instance
 
     def get_signal_emitter(self) -> Any | None:
         if self.signal_emitter:
             return self.signal_emitter
         if self.bot and hasattr(self.bot, "signal_emitter"):
             return self.bot.signal_emitter
-        if self.ui_instance and hasattr(self.ui_instance, "OS_ROKBOT"):
-            return self.ui_instance.OS_ROKBOT.signal_emitter
         return None
 
     def emit_state(self, state_text: str) -> None:
@@ -301,6 +299,24 @@ class Context:
 
         return cast(StateMonitorLike, GameStateMonitor(context=self))
 
+    def build_config(self) -> ConfigProvider:
+        """Return the runtime configuration reader used by injectable seams."""
+
+        if self.config_factory is not None:
+            return self.config_factory()
+        from config_manager import ConfigManager
+
+        return cast(ConfigProvider, ConfigManager())
+
+    def build_recovery_executor(self) -> RecoveryExecutorLike:
+        """Return the guarded recovery executor for this runtime context."""
+
+        if self.recovery_executor_factory is not None:
+            return self.recovery_executor_factory(self)
+        from ai_recovery_executor import AIRecoveryExecutor
+
+        return cast(RecoveryExecutorLike, AIRecoveryExecutor())
+
     def save_failure_diagnostic(self, state_name: str = "unknown") -> Path | None:
         from diagnostic_screenshot import save_diagnostic_screenshot
 
@@ -434,6 +450,7 @@ class Context:
             "absolute_x": absolute_point[0] if absolute_point else None,
             "absolute_y": absolute_point[1] if absolute_point else None,
             "sub_goal": sub_goal,
+            "fix_required": decision_requires_manual_fix(decision_data),
             "event": threading.Event(),
             "result": None,
             "corrected_point": None,

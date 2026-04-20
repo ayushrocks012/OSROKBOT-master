@@ -103,6 +103,8 @@ def _build_preset_command(preset: str, extra_args: list[str], run_id: str) -> tu
         return [sys.executable, "verify_integrity.py", *extra_args], env, metadata
     if preset == "verify-docs":
         return [sys.executable, "verify_docs.py", *extra_args], env, metadata
+    if preset == "repo-hygiene":
+        return [sys.executable, "tools/check_repo_hygiene.py", *extra_args], env, metadata
     if preset == "mypy":
         return [sys.executable, "-m", "mypy", *extra_args], env, metadata
     if preset == "watchdog-once":
@@ -215,7 +217,7 @@ def run_preset(preset: str, extra_args: list[str]) -> int:
         command_summary: dict[str, Any] = {}
         if preset == "pytest":
             command_summary["failing_tests"] = _parse_failing_tests(stdout_lines + stderr_lines)
-        if preset in {"verify-integrity", "verify-docs"}:
+        if preset in {"verify-integrity", "verify-docs", "repo-hygiene"}:
             command_summary["failed_checks"] = _parse_failed_checks(stdout_lines + stderr_lines)
 
         session.update_metadata(exit_code=exit_code, command_summary=command_summary)
@@ -256,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
             "pytest",
             "verify-integrity",
             "verify-docs",
+            "repo-hygiene",
             "mypy",
             "watchdog-once",
             "ui",

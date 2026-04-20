@@ -20,6 +20,7 @@ from emergency_stop import EmergencyStop
 from health_check import HealthCheckDialog
 from logging_config import get_logger
 from PyQt5 import QtCore, QtGui, QtWidgets
+from runtime_composition import SupervisorRuntimeComposition
 from UIController import DEFAULT_MISSION, SupervisorSnapshot, UIController
 from window_handler import WindowHandler
 
@@ -363,7 +364,6 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.openai_key_input = QtWidgets.QLineEdit(self.config.get("OPENAI_KEY", "") or "")
         self.openai_key_input.setEchoMode(QtWidgets.QLineEdit.Password)
-        self.email_input = QtWidgets.QLineEdit(self.config.get("EMAIL", "") or self.config.get("EMAIL_TO", "") or "")
         self.tesseract_input = QtWidgets.QLineEdit(self.config.get("TESSERACT_PATH", "") or "")
         self.yolo_weights_input = QtWidgets.QLineEdit(self.config.get("ROK_YOLO_WEIGHTS", "") or "")
         self.yolo_url_input = QtWidgets.QLineEdit(self.config.get("ROK_YOLO_WEIGHTS_URL", "") or "")
@@ -392,7 +392,6 @@ class SettingsDialog(QtWidgets.QDialog):
         general_form.setVerticalSpacing(12)
         general_form.addRow("Secret Provider", self.secret_provider_input)
         general_form.addRow("OpenAI API Key", self.openai_key_input)
-        general_form.addRow("Notification Email", self.email_input)
         
         # --- Planner AI Tab ---
         planner_tab = QtWidgets.QWidget()
@@ -483,7 +482,6 @@ class SettingsDialog(QtWidgets.QDialog):
             {
                 "OPENAI_KEY": self.openai_key_input.text(),
                 "SECRET_PROVIDER": self.secret_provider_input.currentData(),
-                "EMAIL": self.email_input.text(),
                 "TESSERACT_PATH": self.tesseract_input.text(),
                 "ROK_YOLO_WEIGHTS": self.yolo_weights_input.text(),
                 "ROK_YOLO_WEIGHTS_URL": self.yolo_url_input.text(),
@@ -694,7 +692,13 @@ class UI(QtWidgets.QWidget):
         os.chdir(PROJECT_ROOT)
 
         self.target_title = window_title
-        self.controller = UIController(window_title, delay=delay, parent=self)
+        self.runtime_composition = SupervisorRuntimeComposition(window_title, delay=delay)
+        self.controller = UIController(
+            window_title,
+            delay=delay,
+            composition=self.runtime_composition,
+            parent=self,
+        )
         self.OS_ROKBOT = self.controller.OS_ROKBOT
         self._click_overlay = ClickOverlay()
         self._correction_overlay = PlannerCorrectionOverlay()

@@ -475,8 +475,12 @@ class StateMachine:
             return False
         return bool(image)
 
-    def _get_recovery_executor(self):
+    def _get_recovery_executor(self, context=None):
         if self.recovery_executor:
+            return self.recovery_executor
+        build_recovery_executor = getattr(context, "build_recovery_executor", None) if context else None
+        if callable(build_recovery_executor):
+            self.recovery_executor = build_recovery_executor()
             return self.recovery_executor
         try:
             from ai_recovery_executor import AIRecoveryExecutor
@@ -487,13 +491,13 @@ class StateMachine:
         return self.recovery_executor
 
     def _run_guarded_recovery(self, context, state_name, state, screenshot_path):
-        executor = self._get_recovery_executor()
+        executor = self._get_recovery_executor(context)
         if not executor:
             return False
         return executor.try_recover(context, state_name, state, screenshot_path)
 
     def _verify_pending_recovery(self, context, previous_state, next_state, result):
-        executor = self._get_recovery_executor()
+        executor = self._get_recovery_executor(context)
         if not executor:
             return
         executor.verify_pending(context, previous_state, next_state, result)

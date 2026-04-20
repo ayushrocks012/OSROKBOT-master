@@ -10,8 +10,8 @@ This module owns two related UI-only surfaces:
 
 from __future__ import annotations
 
-from typing import Any
 import textwrap
+from typing import Any
 
 from logging_config import get_logger
 from PyQt5 import QtCore, QtGui, QtWidgets

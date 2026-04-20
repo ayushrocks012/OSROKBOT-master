@@ -75,6 +75,10 @@ class GameStateMonitor:
     ):
         _ = threshold
         self.context = context
+        if config is None and context is not None:
+            build_config = getattr(context, "build_config", None)
+            if callable(build_config):
+                config = build_config()
         self.config = config or ConfigManager()
         tesseract_path = self.config.get("TESSERACT_PATH")
         if tesseract_path:
@@ -93,6 +97,21 @@ class GameStateMonitor:
         if self.context and getattr(self.context, "window_title", None):
             return self.context.window_title
         return "Rise of Kingdoms"
+
+    def _config_value(self, key, default=None):
+        config = getattr(self, "config", None)
+        if config is None and self.context is not None:
+            build_config = getattr(self.context, "build_config", None)
+            if callable(build_config):
+                config = build_config()
+        if config is None:
+            config = ConfigManager()
+        self.config = config
+        try:
+            return config.get(key, default)
+        except TypeError:
+            value = config.get(key)
+            return default if value is None else value
 
     def _screenshot(self):
         return self.window_handler.screenshot_window(self._window_title())
@@ -123,7 +142,9 @@ class GameStateMonitor:
 
     def _tesseract_timeout(self):
         try:
-            configured = float(self.config.get("TESSERACT_TIMEOUT_SECONDS", self.DEFAULT_TESSERACT_TIMEOUT_SECONDS))
+            configured = float(
+                self._config_value("TESSERACT_TIMEOUT_SECONDS", self.DEFAULT_TESSERACT_TIMEOUT_SECONDS)
+            )
         except (TypeError, ValueError):
             configured = self.DEFAULT_TESSERACT_TIMEOUT_SECONDS
         return max(1.0, configured)
@@ -313,7 +334,7 @@ class GameStateMonitor:
             LOGGER.warning("Restarting client through bot restart hook.")
             return bool(restart_hook())
 
-        client_path = ConfigManager().get("ROK_CLIENT_PATH")
+        client_path = self._config_value("ROK_CLIENT_PATH")
         if not client_path:
             LOGGER.warning("Client restart skipped: ROK_CLIENT_PATH is not configured.")
             return False

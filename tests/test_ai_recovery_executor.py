@@ -1,11 +1,10 @@
 import sys
 from types import ModuleType, SimpleNamespace
 
-from PIL import Image
-import pytest
-
 import ai_recovery_executor as ai_recovery_executor_module
+import pytest
 from ai_recovery_executor import AIRecoveryExecutor
+from PIL import Image
 
 
 class _FakeMemory:
@@ -251,3 +250,25 @@ def test_click_hint_rejects_target_outside_window(monkeypatch):
     )
 
     assert result is False
+
+
+def test_click_hint_uses_context_runtime_factories():
+    calls = []
+
+    class _FactoryContext(_FakeContext):
+        def build_window_handler(self):
+            return SimpleNamespace(get_client_window_rect=lambda _title: _WindowRect())
+
+        def build_input_controller(self):
+            return SimpleNamespace(
+                coordinate_noise_px=3,
+                click=lambda *args, **kwargs: calls.append(("click", args, kwargs)) or True,
+            )
+
+    result = AIRecoveryExecutor(memory=_FakeMemory(), detector=SimpleNamespace())._click_hint(
+        _FactoryContext(),
+        {"label": "confirm", "x": 0.2, "y": 0.3, "confidence": 0.95},
+    )
+
+    assert result is True
+    assert calls

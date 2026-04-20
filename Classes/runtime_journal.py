@@ -119,7 +119,7 @@ def _canonical_payload(payload: dict[str, Any]) -> str:
 
 
 def _compute_entry_hmac(secret: bytes, previous_hmac: str, payload: dict[str, Any]) -> str:
-    message = f"{previous_hmac}\n{_canonical_payload(payload)}".encode("utf-8")
+    message = f"{previous_hmac}\n{_canonical_payload(payload)}".encode()
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
 
 
@@ -159,7 +159,7 @@ def _resume_summary_from_entries(
     last_committed = _last_event(entries, "transition_committed")
     committed_sequence = int(last_committed.get("sequence", 0) or 0) if last_committed else 0
     pending_tail_events = _tail_event_types(entries, committed_sequence)
-    summary = {
+    return {
         "run_id": run_id,
         "verified": bool(verified),
         "resume_policy": RESUME_POLICY,
@@ -182,7 +182,6 @@ def _resume_summary_from_entries(
         "terminal_status": str(terminal_event.get("status", "") or "") if terminal_event else "",
         "terminal_reason": str(terminal_event.get("end_reason", "") or "") if terminal_event else "",
     }
-    return summary
 
 
 def _checkpoint_payload(

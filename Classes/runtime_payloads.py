@@ -101,6 +101,7 @@ class PlannerPendingPayload(TypedDict):
     absolute_x: int | None
     absolute_y: int | None
     sub_goal: str
+    fix_required: bool
     event: Event
     result: PlannerApprovalResult | None
     corrected_point: NormalizedPoint | None
@@ -116,6 +117,7 @@ class PlannerDecisionSignalPayload(TypedDict):
     absolute_x: int | None
     absolute_y: int | None
     sub_goal: str
+    fix_required: bool
 
 
 class PendingRecoveryPayload(TypedDict):
@@ -205,6 +207,7 @@ def planner_signal_payload(pending: PlannerPendingPayload) -> PlannerDecisionSig
         "absolute_x": pending["absolute_x"],
         "absolute_y": pending["absolute_y"],
         "sub_goal": pending.get("sub_goal", ""),
+        "fix_required": bool(pending.get("fix_required", False)),
     }
 
 

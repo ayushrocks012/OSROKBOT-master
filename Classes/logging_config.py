@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from security_utils import redact_secret
 from termcolor import colored
@@ -28,7 +29,7 @@ LOG_CONTEXT_FIELDS = (
     "step_id",
     "decision_id",
 )
-_LOG_CONTEXT: ContextVar[dict[str, Any]] = ContextVar("osrokbot_log_context", default={})
+_LOG_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("osrokbot_log_context", default=None)
 _RESERVED_LOG_RECORD_ATTRS = frozenset(logging.makeLogRecord({}).__dict__) | {"message", "asctime"}
 
 
@@ -67,7 +68,7 @@ def _format_name(*keys: str, default: str) -> str:
 
 
 def _utc_timestamp(created_at: float) -> str:
-    timestamp = datetime.fromtimestamp(created_at, tz=timezone.utc)
+    timestamp = datetime.fromtimestamp(created_at, tz=UTC)
     return timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
@@ -88,10 +89,10 @@ def _json_safe(value: Any) -> Any:
 def current_log_context() -> dict[str, Any]:
     """Return the current structured logging context for this execution context."""
 
-    return dict(_LOG_CONTEXT.get())
+    return dict(_LOG_CONTEXT.get() or {})
 
 
-def bind_log_context(**fields: Any) -> Token[dict[str, Any]]:
+def bind_log_context(**fields: Any) -> Token[dict[str, Any] | None]:
     """Merge structured logging fields into the current execution context."""
 
     merged = current_log_context()
@@ -105,7 +106,7 @@ def bind_log_context(**fields: Any) -> Token[dict[str, Any]]:
     return _LOG_CONTEXT.set(merged)
 
 
-def reset_log_context(token: Token[dict[str, Any]]) -> None:
+def reset_log_context(token: Token[dict[str, Any] | None]) -> None:
     """Restore a previous structured logging context snapshot."""
 
     _LOG_CONTEXT.reset(token)

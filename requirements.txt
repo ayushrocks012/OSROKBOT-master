@@ -2,8 +2,7 @@
 # Target runtime: Python 3.13 on Windows.
 # Keep this as the only requirements file; do not add nested requirements files.
 
-# Image and tensor runtime for screenshots, YOLO perception, OCR, and memory.
-opencv-python==4.13.0.92
+# Image and tensor runtime for screenshots, OCR, and memory.
 numpy==2.4.4
 Pillow==12.2.0
 
@@ -22,16 +21,10 @@ keyboard==0.13.5
 
 # OCR and local configuration.
 pytesseract==0.3.10
-packaging==24.2
-python-dotenv==1.0.0
 pydantic==2.13.1
 
-# Lyceum answer matching.
-scikit-learn==1.8.0
-
-# OpenAI Responses API fallback for Lyceum and advisory vision recovery.
+# OpenAI Responses API planning and advisory vision recovery.
 openai==2.31.0
-jiter==0.14.0
 
 # Optional YOLO object detection when ROK_YOLO_WEIGHTS is configured.
 ultralytics==8.4.39
@@ -46,6 +39,9 @@ termcolor==2.4.0
 
 # Developer QA tooling.
 pytest==8.3.4
+pytest-cov==6.0.0
 ruff==0.8.6
 mypy==1.14.1
 vulture==2.14
+bandit==1.7.10
+radon==6.0.1

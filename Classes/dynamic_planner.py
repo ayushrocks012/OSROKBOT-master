@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 from config_manager import ConfigManager
+from context import record_stage_timing
 from encoding_utils import image_data_url, safe_json_loads
 from logging_config import get_logger
 from openai import (
@@ -44,19 +45,20 @@ from openai import (
     PermissionDeniedError,
     RateLimitError,
 )
+from planner_decision_policy import (
+    MAX_PLANNER_DELAY_SECONDS,
+    MIN_L1_REVIEW_CONFIDENCE,
+    MIN_PLANNER_CONFIDENCE,
+    decision_verdict,
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from runtime_contracts import PlannerTransport
-from context import record_stage_timing
 from vision_memory import VisionMemory
 
 LOGGER = get_logger(__name__)
 
 
-ALLOWED_ACTION_TYPES = {"click", "wait", "stop", "drag", "long_press", "key", "type"}
 DEFAULT_MODEL = "gpt-5.4-mini"
-MIN_PLANNER_CONFIDENCE = 0.70
-MIN_L1_REVIEW_CONFIDENCE = 0.10
-MAX_PLANNER_DELAY_SECONDS = 10.0
 REQUEST_POLL_SECONDS = 0.1
 MAX_REQUEST_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
@@ -789,85 +791,13 @@ class DynamicPlanner:
             bool: True when the action type is supported and click coordinates
             are finite, normalized, and above the minimum confidence threshold.
         """
-        if not isinstance(decision, PlannerDecision):
-            return False
-        if decision.action_type not in ALLOWED_ACTION_TYPES:
-            return False
-        if not math.isfinite(decision.confidence):
-            return False
-        if not math.isfinite(decision.delay_seconds) or not 0.0 <= decision.delay_seconds <= MAX_PLANNER_DELAY_SECONDS:
-            return False
-        if decision.action_type in {"click", "long_press"}:
-            return (
-                bool(decision.target_id)
-                and math.isfinite(decision.x)
-                and math.isfinite(decision.y)
-                and decision.confidence >= MIN_PLANNER_CONFIDENCE
-                and 0.0 <= decision.x <= 1.0
-                and 0.0 <= decision.y <= 1.0
-            )
-        if decision.action_type == "drag":
-            valid_start = (
-                bool(decision.target_id)
-                and math.isfinite(decision.x)
-                and math.isfinite(decision.y)
-                and 0.0 <= decision.x <= 1.0
-                and 0.0 <= decision.y <= 1.0
-            )
-            # Drag needs either end coordinates or a direction hint.
-            valid_end = (
-                (math.isfinite(decision.end_x) and math.isfinite(decision.end_y)
-                 and 0.0 <= decision.end_x <= 1.0 and 0.0 <= decision.end_y <= 1.0)
-                or bool(decision.drag_direction)
-            )
-            return valid_start and valid_end and decision.confidence >= MIN_PLANNER_CONFIDENCE
-        if decision.action_type == "key":
-            return bool(decision.key_name) and decision.confidence >= MIN_PLANNER_CONFIDENCE
-        if decision.action_type == "type":
-            return bool(decision.text_content) and decision.confidence >= MIN_PLANNER_CONFIDENCE
-        return True
+        return decision_verdict(decision).execution_ready
 
     @staticmethod
     def decision_rejection_reason(decision):
         """Return a concise reason explaining why a decision is unsafe."""
-
-        if not isinstance(decision, PlannerDecision):
-            return "not_a_planner_decision"
-        if decision.action_type not in ALLOWED_ACTION_TYPES:
-            return f"unsupported_action:{decision.action_type}"
-        if not math.isfinite(decision.confidence):
-            return "confidence_not_finite"
-        if decision.confidence < MIN_PLANNER_CONFIDENCE and decision.action_type in {"click", "drag", "long_press", "key", "type"}:
-            return f"confidence_below_threshold:{decision.confidence:.3f}<{MIN_PLANNER_CONFIDENCE:.3f}"
-        if not math.isfinite(decision.delay_seconds) or not 0.0 <= decision.delay_seconds <= MAX_PLANNER_DELAY_SECONDS:
-            return f"delay_out_of_bounds:{decision.delay_seconds}"
-        if decision.action_type in {"click", "long_press"}:
-            if not decision.target_id:
-                return "missing_target_id"
-            if not math.isfinite(decision.x) or not math.isfinite(decision.y):
-                return "target_coordinates_not_finite"
-            if not 0.0 <= decision.x <= 1.0 or not 0.0 <= decision.y <= 1.0:
-                return f"target_coordinates_out_of_bounds:{decision.x:.3f},{decision.y:.3f}"
-        if decision.action_type == "drag":
-            if not decision.target_id:
-                return "missing_target_id"
-            if not math.isfinite(decision.x) or not math.isfinite(decision.y):
-                return "drag_start_not_finite"
-            if not 0.0 <= decision.x <= 1.0 or not 0.0 <= decision.y <= 1.0:
-                return f"drag_start_out_of_bounds:{decision.x:.3f},{decision.y:.3f}"
-            valid_end = (
-                math.isfinite(decision.end_x)
-                and math.isfinite(decision.end_y)
-                and 0.0 <= decision.end_x <= 1.0
-                and 0.0 <= decision.end_y <= 1.0
-            )
-            if not valid_end and not decision.drag_direction:
-                return "drag_missing_end_target_or_direction"
-        if decision.action_type == "key" and not decision.key_name:
-            return "missing_key_name"
-        if decision.action_type == "type" and not decision.text_content:
-            return "missing_text_content"
-        return "unknown"
+        verdict = decision_verdict(decision)
+        return verdict.rejection_reason or "accepted"
 
     @staticmethod
     def _autonomy_level(context):
@@ -984,17 +914,11 @@ class DynamicPlanner:
     def _is_l1_reviewable_pointer_decision(self, context, decision, rejection_reason):
         if self._autonomy_level(context) != 1:
             return False
-        if not isinstance(decision, PlannerDecision):
-            return False
-        if decision.action_type not in {"click", "drag", "long_press"}:
-            return False
-        if not str(rejection_reason).startswith("confidence_below_threshold:"):
-            return False
-        if decision.confidence < self._l1_review_min_confidence():
-            return False
-
-        structurally_safe = decision.model_copy(update={"confidence": MIN_PLANNER_CONFIDENCE})
-        return self.validate_decision(structurally_safe)
+        verdict = decision_verdict(
+            decision,
+            l1_review_min_confidence=self._l1_review_min_confidence(),
+        )
+        return verdict.requires_manual_fix and verdict.rejection_reason == str(rejection_reason)
 
     @staticmethod
     def _record_planner_rejection(context, decision, reason):

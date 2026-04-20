@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait, TimeoutError
+from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, TimeoutError, wait
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -141,14 +141,32 @@ class OSROKBOT:
         if active_context.window_handler_factory is None:
             active_context.window_handler_factory = lambda: self.window_handler
         if active_context.input_controller_factory is None:
-            active_context.input_controller_factory = lambda runtime_context: InputController(context=runtime_context)
+            active_context.input_controller_factory = lambda runtime_context: InputController(
+                context=runtime_context,
+                window_handler=self.window_handler,
+            )
         if active_context.state_monitor_factory is None:
             def _state_monitor_factory(runtime_context: Context | None) -> Any:
                 from state_monitor import GameStateMonitor
 
-                return GameStateMonitor(context=runtime_context)
+                return GameStateMonitor(
+                    context=runtime_context,
+                    config=self.config,
+                    window_handler=self.window_handler,
+                    input_controller=active_context.build_input_controller(),
+                    detector=self.detector,
+                )
 
             active_context.state_monitor_factory = _state_monitor_factory
+        if active_context.config_factory is None:
+            active_context.config_factory = lambda: self.config
+        if active_context.recovery_executor_factory is None:
+            def _recovery_executor_factory(_runtime_context: Context | None) -> Any:
+                from ai_recovery_executor import AIRecoveryExecutor
+
+                return AIRecoveryExecutor(detector=self.detector)
+
+            active_context.recovery_executor_factory = _recovery_executor_factory
         return active_context
 
     def _hardware_input_ready(self, context: Context | None = None) -> bool:

@@ -22,6 +22,7 @@ testprocessed.png
 diagnostics/
 data/session_logs/
 data/handoff/
+data/secrets/
 .artifacts/
 data/recovery_memory.json
 data/vision_memory.json
@@ -30,6 +31,7 @@ data/heartbeat.json
 data/logs/
 datasets/recovery/
 models/
+.pre-commit-cache/
 
 # Local editor/backup files.
 *.bak

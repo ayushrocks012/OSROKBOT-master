@@ -10,7 +10,6 @@ from pathlib import Path
 SENSITIVE_CONFIG_KEYS = {
     "OPENAI_KEY",
     "OPENAI_API_KEY",
-    "EMAIL_PASSWORD",
     "RUNTIME_JOURNAL_HMAC_KEY",
 }
 
@@ -20,15 +19,14 @@ _SECRET_PATTERNS = (
     re.compile(r"(Bearer\s+)([A-Za-z0-9\-._~+/=]{8,})", re.IGNORECASE),
     re.compile(r"((?:X-Vault-Token|Vault-Token)\s*[:=]\s*)([^\s,;]+)", re.IGNORECASE),
     re.compile(r"(OPENAI(?:_API)?_KEY\s*=\s*)([^\s]+)", re.IGNORECASE),
-    re.compile(r"(EMAIL_PASSWORD\s*=\s*)([^\s]+)", re.IGNORECASE),
     re.compile(
-        r"((?:OPENAI(?:_API)?_KEY|EMAIL_PASSWORD|VAULT_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|"
+        r"((?:OPENAI(?:_API)?_KEY|VAULT_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|"
         r"AWS_SESSION_TOKEN|API_KEY|ACCESS_TOKEN|REFRESH_TOKEN|CLIENT_SECRET|SECRET_KEY|"
         r"PASSWORD)\s*[:=]\s*)([^\s,;]+)",
         re.IGNORECASE,
     ),
     re.compile(
-        r'("?(?:openai(?:_api)?_key|email_password|vault_token|aws_access_key_id|aws_secret_access_key|'
+        r'("?(?:openai(?:_api)?_key|vault_token|aws_access_key_id|aws_secret_access_key|'
         r'aws_session_token|authorization|api_key|access_token|refresh_token|client_secret|secret_key|'
         r'password)"?\s*:\s*")([^"]+)(")',
         re.IGNORECASE,

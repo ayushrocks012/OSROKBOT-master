@@ -313,6 +313,13 @@ def test_get_recovery_executor_returns_none_when_import_fails(monkeypatch):
     assert StateMachine()._get_recovery_executor() is None
 
 
+def test_get_recovery_executor_uses_context_factory():
+    executor = object()
+    context = type("Context", (), {"build_recovery_executor": lambda self: executor})()
+
+    assert StateMachine()._get_recovery_executor(context) is executor
+
+
 def test_verify_pending_recovery_uses_executor(monkeypatch):
     machine = StateMachine()
     calls = []
