@@ -149,7 +149,7 @@ they do not use the target approval prompt.
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat lifecycle, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and guarded execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
-| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, jittered retry and circuit-breaker handling, strict JSON schema validation, deterministic city-to-map fallback for the world-map step, target resolution, memory-first decision selection, and decision validation. |
+| `Classes/dynamic_planner.py` | Async OpenAI Responses transport, jittered retry and circuit-breaker handling, strict JSON schema validation, deterministic city-to-map and map-to-search fallbacks for gather workflows, target resolution, memory-first decision selection, and decision validation. |
 | `Classes/planner_decision_policy.py` | Canonical decision verdict for execution readiness, Fix-required review, rejection reasons, and pointer safety rules shared by planner, UI, and approval services. |
 | `Classes/task_graph.py` | One-time mission decomposition into sub-goals through the shared planner transport, cached per mission, with label/OCR post-condition tracking. |
 | `Classes/object_detector.py` | YOLO detector adapter and no-op fallback when weights are absent or unavailable. |
@@ -303,7 +303,7 @@ input boundary, memory strategy, or operational contract.
 
 | Level | UI Label | Behavior |
 | --- | --- | --- |
-| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes, the selected target, and an intent tooltip. `Fix` opens a blocking crosshair overlay over the game client and waits indefinitely for one corrected click. When detector boxes are unavailable on a gather/resource mission, the planner can surface one OCR-only `Fix required` target instead of stopping, but only when the current OCR text still looks like a true resource/map screen; digit-only OCR targets are rejected. For the focused `Open the world map` step, city-looking screens use the guarded `space` hotkey instead of an OCR guess. Use this by default. |
+| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes, the selected target, and an intent tooltip. `Fix` opens a blocking crosshair overlay over the game client and waits indefinitely for one corrected click. When detector boxes are unavailable on a gather/resource mission, the planner can surface one OCR-only `Fix required` target instead of stopping, but only when the current OCR text still looks like a true resource/map screen; digit-only OCR targets are rejected. For the focused world-map/search-interface step, city-looking screens first use the guarded `space` hotkey, then fall back to the fixed map button if city view persists, and only use `f` after the city markers disappear. Use this by default. |
 | L2 | `L2 trusted` | Pointer actions with locally trusted labels can execute after enough clean successes. New or failed labels still require approval. |
 | L3 | `L3 auto` | Validated pointer actions can execute without approval. Use only for stable, supervised workflows. |
 
@@ -799,8 +799,10 @@ they meet the normal confidence threshold. When the planner would otherwise
 end a gather/resource run with `stop`, it now tries to surface one OCR-only
 review target first, but only when the current OCR text still looks like a
 resource/map screen and the OCR candidate is not a bare digit. Focused
-world-map steps on city-looking screens short-circuit to the guarded `space`
-toggle instead of selecting an OCR review target.
+world-map/search-interface steps on city-looking screens short-circuit to a
+deterministic ladder: `space`, then the fixed map-toggle button if city view
+persists, then `f` once the city markers disappear and the search interface is
+still not open.
 
 ### OCR Is Weak
 

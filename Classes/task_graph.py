@@ -24,6 +24,20 @@ from logging_config import get_logger
 from runtime_contracts import PlannerTransport
 
 LOGGER = get_logger(__name__)
+SEARCH_PANEL_RESOURCE_KEYWORDS = ("food", "wood", "stone", "gold", "gem")
+SEARCH_PANEL_UI_KEYWORDS = ("search", "resource", "gather", "find")
+
+
+def _normalized_text(text: str) -> str:
+    return "".join(ch if ch.isalnum() else " " for ch in str(text or "").lower()).strip()
+
+
+def _contains_keyword(text: str, keyword: str) -> bool:
+    normalized_text = _normalized_text(text)
+    normalized_keyword = _normalized_text(keyword)
+    if not normalized_text or not normalized_keyword:
+        return False
+    return f" {normalized_keyword} " in f" {normalized_text} "
 
 
 DECOMPOSITION_SCHEMA = {
@@ -73,6 +87,27 @@ class SubGoal:
     completion_hint: str = ""
     completed: bool = False
 
+    def _expects_search_interface(self) -> bool:
+        searchable = " ".join(
+            [
+                str(self.description or ""),
+                str(self.completion_hint or ""),
+                " ".join(self.expected_ocr_keywords or []),
+            ]
+        ).lower()
+        return "search interface" in searchable or "search function" in searchable or "search panel" in searchable
+
+    def _ocr_indicates_search_interface(self, ocr_text: str) -> bool:
+        resource_hits = {
+            keyword for keyword in SEARCH_PANEL_RESOURCE_KEYWORDS
+            if _contains_keyword(ocr_text, keyword)
+        }
+        ui_hits = {
+            keyword for keyword in SEARCH_PANEL_UI_KEYWORDS
+            if _contains_keyword(ocr_text, keyword)
+        }
+        return len(resource_hits) >= 2 or (bool(resource_hits) and bool(ui_hits))
+
     def is_completed_by(
         self,
         visible_labels: list[str] | None = None,
@@ -93,7 +128,9 @@ class SubGoal:
         lower_ocr = str(ocr_text or "").lower()
 
         if self.expected_labels:
-            return any(expected.lower() in labels for expected in self.expected_labels)
+            if any(expected.lower() in labels for expected in self.expected_labels):
+                return True
+            return not labels and self._expects_search_interface() and self._ocr_indicates_search_interface(ocr_text)
 
         return any(keyword.lower() in lower_ocr for keyword in self.expected_ocr_keywords)
 

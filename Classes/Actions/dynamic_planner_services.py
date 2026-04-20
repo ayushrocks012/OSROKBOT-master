@@ -711,26 +711,57 @@ class PlannerFeedbackService:
 
         return self.task_graph.focused_goal_text(goal)
 
-    def record_no_progress_feedback(self, context: Any, *, screen_changed: bool) -> None:
-        """Persist one negative planner-memory hint when an action had no effect."""
+    def record_no_progress_feedback(
+        self,
+        context: Any,
+        *,
+        goal: str,
+        visible_labels: list[str],
+        ocr_text: str,
+    ) -> None:
+        """Persist bounded negative planner-memory hints for stalled deterministic steps."""
 
-        if screen_changed or not context or not hasattr(context, "extracted"):
+        if not context or not hasattr(context, "extracted"):
             return
 
         last_decision = context.extracted.get("planner_last_decision")
         if not isinstance(last_decision, dict):
             return
-        if str(last_decision.get("action_type", "")).lower() in {"", "wait", "stop"}:
+        action_type = str(last_decision.get("action_type", "")).lower()
+        if action_type in {"", "wait", "stop"}:
+            return
+
+        key_name = str(last_decision.get("key_name", "")).lower()
+        target_id = str(last_decision.get("target_id", "")).lower()
+        if (
+            self.planner._goal_requests_world_map(goal)
+            and self.planner._screen_looks_like_city(visible_labels, ocr_text)
+            and (
+                (action_type == "key" and key_name == "space")
+                or target_id == "ui_map_toggle"
+            )
+        ):
+            self.planner.remember_planner_feedback(
+                context,
+                last_decision,
+                "world_map_toggle_did_not_reach_map_view",
+                prefix="FAILED",
+            )
             return
 
         if (
-            str(last_decision.get("action_type", "")).lower() == "key"
-            and str(last_decision.get("key_name", "")).lower() == "space"
+            self.planner._goal_requests_search_interface(goal)
+            and action_type == "key"
+            and key_name == "f"
+            and not self.planner._screen_shows_search_interface(ocr_text)
+            and not self.planner._screen_looks_like_city(visible_labels, ocr_text)
         ):
-            reason = "world_map_toggle_did_not_change_screen; keep looking for blockers or a true map transition and do not switch to OCR-only digit targets"
-        else:
-            reason = "previous_action_did_not_change_screen"
-        self.planner.remember_planner_feedback(context, last_decision, reason, prefix="FAILED")
+            self.planner.remember_planner_feedback(
+                context,
+                last_decision,
+                "search_hotkey_did_not_open_resource_search",
+                prefix="FAILED",
+            )
 
     def record_decision(self, context: Any, decision: PlannerDecision) -> None:
         """Record the last planner decision for stuck-screen warnings and UI state."""

@@ -43,7 +43,7 @@ root-level `Media/*.png` files are deprecated and are purged by
 | `Classes/OS_ROKBOT.py` | Executor-backed run loop, injectable runtime services, pause/stop events, foreground guard, shared observation reuse, CAPTCHA pause, heartbeat scheduling, state-machine cleanup, and emergency-stop startup. |
 | `Classes/Actions/dynamic_planner_action.py` | Planner-step orchestration that composes observation, approval, feedback, and execution services. |
 | `Classes/Actions/dynamic_planner_services.py` | Planner observation, approval, execution, and feedback services used by `DynamicPlannerAction`. |
-| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, jittered retries, circuit-breaker fallback, strict JSON schema validation, deterministic city-to-map fallback for the world-map step, target resolution, and memory-first decision selection. |
+| `Classes/dynamic_planner.py` | Side-effect-free OpenAI planning, dedicated async transport, jittered retries, circuit-breaker fallback, strict JSON schema validation, deterministic city-to-map and map-to-search fallbacks for gather workflows, target resolution, and memory-first decision selection. |
 | `Classes/planner_decision_policy.py` | Canonical decision verdict for execution readiness, Fix-required review, rejection reasons, and pointer safety rules shared by planner, UI, and approval services. |
 | `Classes/task_graph.py` | Mission decomposition through the shared planner transport, sub-goal cache, focused-goal text, and label/OCR completion checks. |
 | `Classes/vision_memory.py` | CLIP embeddings, FAISS/NumPy similarity search, bounded atomic persistence, duplicate-success merging, success/failure memory, corrections, and trusted-label checks. |
@@ -174,9 +174,11 @@ gather/resource mission has no detector boxes, the planner may surface one
 OCR-only `Fix required` target instead of stopping, but only when the current
 OCR text also looks like a true resource/map screen; digit-only OCR targets
 must not be surfaced for review. Focused `Open the world map` steps on
-city-looking screens should use the guarded `space` toggle instead of an OCR
-guess, and no-progress/failure feedback should be fed back into bounded
-planner memory so repeated bad actions are discouraged in later prompts.
+city-looking screens should use a deterministic ladder: guarded `space`,
+then the fixed map-toggle button if city view persists, then guarded `f`
+once city markers disappear and the resource-search interface is still not
+open. No-progress/failure feedback should be fed back into bounded planner
+memory so repeated bad actions are discouraged in later prompts.
 
 Default to L1 when testing changes, new prompts, new weights, new action types,
 new missions, or new memory.

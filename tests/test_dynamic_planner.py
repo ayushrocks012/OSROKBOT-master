@@ -525,6 +525,55 @@ def test_plan_next_uses_deterministic_map_toggle_for_city_view(tmp_path):
     assert "world-map hotkey" in decision.reason
 
 
+def test_plan_next_uses_map_button_when_space_did_not_leave_city_view(tmp_path):
+    planner = DynamicPlanner(config=_FakeConfig(), memory=_FakeMemory())
+    planner._transport = _FakeTransport(lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("transport should not run")))
+    context = SimpleNamespace(
+        state_history=[],
+        planner_autonomy_level=1,
+        extracted={
+            "planner_last_decision": {
+                "action_type": "key",
+                "key_name": "space",
+                "label": "world map toggle",
+                "target_id": "",
+            }
+        },
+    )
+
+    decision = planner.plan_next(
+        context,
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="technology research blacksmith apprentice land of civilization",
+        goal="[Step 1/6] Open the world map/resource search interface from the main city screen.",
+    )
+
+    assert decision is not None
+    assert decision.action_type == "click"
+    assert decision.target_id == "ui_map_toggle"
+    assert decision.source == "deterministic"
+    assert "fixed map-toggle button" in decision.reason
+
+
+def test_plan_next_uses_search_hotkey_after_city_view_is_cleared(tmp_path):
+    planner = DynamicPlanner(config=_FakeConfig(), memory=_FakeMemory())
+    planner._transport = _FakeTransport(lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("transport should not run")))
+
+    decision = planner.plan_next(
+        SimpleNamespace(state_history=[], planner_autonomy_level=1),
+        _screen_path(tmp_path),
+        detections=[],
+        ocr_text="alliance resource occupy gather",
+        goal="[Step 1/6] Open the world map/resource search interface from the main city screen.",
+    )
+
+    assert decision is not None
+    assert decision.action_type == "key"
+    assert decision.key_name == "f"
+    assert "resource search interface" in decision.reason
+
+
 def test_plan_next_prefers_memory_when_entry_resolves_to_valid_target(tmp_path):
     class _Memory:
         def find(self, *_args, **_kwargs):

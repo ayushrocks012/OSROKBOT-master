@@ -133,6 +133,10 @@ def test_record_no_progress_feedback_annotates_stuck_map_toggle():
     service = PlannerFeedbackService(
         task_graph=SimpleNamespace(),
         planner=SimpleNamespace(
+            _goal_requests_world_map=lambda goal: "world map" in goal.lower(),
+            _goal_requests_search_interface=lambda goal: "search interface" in goal.lower(),
+            _screen_looks_like_city=lambda labels, ocr_text: "technology research" in ocr_text.lower(),
+            _screen_shows_search_interface=lambda ocr_text: "food" in ocr_text.lower() and "wood" in ocr_text.lower(),
             remember_planner_feedback=lambda context, decision, reason, prefix="REJECTED": calls.append(
                 (decision["action_type"], decision["key_name"], reason, prefix)
             )
@@ -152,13 +156,63 @@ def test_record_no_progress_feedback_annotates_stuck_map_toggle():
         }
     )
 
-    service.record_no_progress_feedback(context, screen_changed=False)
+    service.record_no_progress_feedback(
+        context,
+        goal="[Step 1/6] Open the world map/resource search interface from the main city screen.",
+        visible_labels=[],
+        ocr_text="technology research blacksmith apprentice",
+    )
 
     assert calls == [
         (
             "key",
             "space",
-            "world_map_toggle_did_not_change_screen; keep looking for blockers or a true map transition and do not switch to OCR-only digit targets",
+            "world_map_toggle_did_not_reach_map_view",
+            "FAILED",
+        )
+    ]
+
+
+def test_record_no_progress_feedback_marks_failed_search_hotkey():
+    calls = []
+    service = PlannerFeedbackService(
+        task_graph=SimpleNamespace(),
+        planner=SimpleNamespace(
+            _goal_requests_world_map=lambda goal: "world map" in goal.lower(),
+            _goal_requests_search_interface=lambda goal: "search interface" in goal.lower(),
+            _screen_looks_like_city=lambda labels, ocr_text: "technology research" in ocr_text.lower(),
+            _screen_shows_search_interface=lambda ocr_text: "food" in ocr_text.lower() and "wood" in ocr_text.lower(),
+            remember_planner_feedback=lambda context, decision, reason, prefix="REJECTED": calls.append(
+                (decision["action_type"], decision["key_name"], reason, prefix)
+            ),
+        ),
+        memory=SimpleNamespace(),
+        dataset=SimpleNamespace(),
+        change_detector=SimpleNamespace(),
+    )
+    context = SimpleNamespace(
+        extracted={
+            "planner_last_decision": {
+                "action_type": "key",
+                "key_name": "f",
+                "label": "resource search hotkey",
+                "target_id": "",
+            }
+        }
+    )
+
+    service.record_no_progress_feedback(
+        context,
+        goal="[Step 1/6] Open the world map/resource search interface from the main city screen.",
+        visible_labels=[],
+        ocr_text="alliance resource occupy",
+    )
+
+    assert calls == [
+        (
+            "key",
+            "f",
+            "search_hotkey_did_not_open_resource_search",
             "FAILED",
         )
     ]

@@ -91,3 +91,16 @@ def test_subgoal_with_expected_labels_does_not_complete_from_ocr_only_match():
 
     assert sub_goal.is_completed_by([], "world map") is False
     assert sub_goal.is_completed_by(["map"], "") is True
+
+
+def test_subgoal_allows_ocr_fallback_for_search_interface_step():
+    sub_goal = SubGoal(
+        step=1,
+        description="Open the world map/resource search interface from the main city screen.",
+        expected_labels=["searchaction"],
+        expected_ocr_keywords=["search"],
+        completion_hint="The resource search panel is visible.",
+    )
+
+    assert sub_goal.is_completed_by([], "food wood stone gold search") is True
+    assert sub_goal.is_completed_by([], "technology research blacksmith apprentice") is False

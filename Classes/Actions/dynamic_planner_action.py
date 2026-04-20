@@ -114,9 +114,6 @@ class DynamicPlannerAction(Action):
 
         screenshot_path = self.observation_service.save_latest_screenshot(self.planner.memory.path, observation.screenshot)
         screen_changed, stuck_warning = self.observation_service.screen_change_context(observation.screenshot)
-        record_no_progress_feedback = getattr(self.feedback_service, "record_no_progress_feedback", None)
-        if callable(record_no_progress_feedback):
-            record_no_progress_feedback(context, screen_changed=screen_changed)
         if _runtime_interrupted(context):
             return False
         self.feedback_service.ensure_task_graph(context, goal)
@@ -130,12 +127,20 @@ class DynamicPlannerAction(Action):
         if _runtime_interrupted(context):
             return False
         visible_labels = self.observation_service.visible_labels(observation.detections)
+        focused_goal = self.feedback_service.focused_goal(goal)
+        record_no_progress_feedback = getattr(self.feedback_service, "record_no_progress_feedback", None)
+        if callable(record_no_progress_feedback):
+            record_no_progress_feedback(
+                context,
+                goal=focused_goal,
+                visible_labels=visible_labels,
+                ocr_text=ocr_text,
+            )
         self.feedback_service.advance_progress(visible_labels, ocr_text, context=context)
 
         if self.feedback_service.mission_complete(context):
             return False
 
-        focused_goal = self.feedback_service.focused_goal(goal)
         decision = self.planner.plan_next(
             context,
             screenshot_path,

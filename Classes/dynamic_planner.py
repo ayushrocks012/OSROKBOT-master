@@ -33,6 +33,7 @@ from typing import Any, ClassVar, Literal
 from config_manager import ConfigManager
 from context import record_stage_timing
 from encoding_utils import image_data_url, safe_json_loads
+from helpers import UIMap
 from logging_config import get_logger
 from openai import (
     APIConnectionError,
@@ -87,6 +88,13 @@ OCR_UI_BLACKLIST = (
 )
 PLANNER_MEMORY_LIMIT = 5
 MAP_GOAL_KEYWORDS = ("open the world map", "world map", "map view", "switch to map")
+SEARCH_INTERFACE_GOAL_KEYWORDS = (
+    "search interface",
+    "search function",
+    "search menu",
+    "resource search",
+    "find nearby resource",
+)
 MAP_LABEL_HINTS = {
     "searchaction",
     "gatheraction",
@@ -112,6 +120,7 @@ RESOURCE_REVIEW_SCREEN_KEYWORDS = (
     "alliance resource",
     "occupy",
 )
+SEARCH_PANEL_RESOURCE_KEYWORDS = ("food", "wood", "stone", "gold", "gem")
 CITY_SCREEN_TEXT_KEYWORDS = (
     "technology research",
     "blacksmith apprentice",
@@ -865,6 +874,11 @@ class DynamicPlanner:
         return any(keyword in goal_text for keyword in MAP_GOAL_KEYWORDS)
 
     @staticmethod
+    def _goal_requests_search_interface(goal):
+        goal_text = str(goal or "").lower()
+        return any(keyword in goal_text for keyword in SEARCH_INTERFACE_GOAL_KEYWORDS)
+
+    @staticmethod
     def _normalized_text(text):
         return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
 
@@ -901,12 +915,61 @@ class DynamicPlanner:
         return city_hits >= 1 and map_hits == 0
 
     @classmethod
-    def _deterministic_map_transition_decision(cls, goal, labels, ocr_text):
-        if not cls._goal_requests_world_map(goal):
+    def _screen_shows_search_interface(cls, ocr_text):
+        resource_hits = cls._matching_keywords(ocr_text, SEARCH_PANEL_RESOURCE_KEYWORDS)
+        review_hits = cls._matching_keywords(ocr_text, RESOURCE_REVIEW_SCREEN_KEYWORDS)
+        return len(resource_hits) >= 2 or (bool(resource_hits) and bool(review_hits))
+
+    @staticmethod
+    def _recent_planner_feedback(context):
+        if not context or not hasattr(context, "extracted"):
+            return []
+        memory_list = context.extracted.get("planner_memory", [])
+        if not isinstance(memory_list, list):
+            return []
+        return [item for item in memory_list if isinstance(item, dict)]
+
+    @classmethod
+    def _recent_feedback_contains(cls, context, needle):
+        needle_text = str(needle or "").lower()
+        return any(
+            needle_text in str(item.get("reason", "")).lower()
+            for item in cls._recent_planner_feedback(context)
+        )
+
+    @staticmethod
+    def _last_decision(context):
+        if not context or not hasattr(context, "extracted"):
+            return {}
+        decision = context.extracted.get("planner_last_decision")
+        return decision if isinstance(decision, dict) else {}
+
+    @staticmethod
+    def _map_toggle_button_center():
+        x, y, width, height = UIMap.BOTTOM_RIGHT_MAP_TOGGLE
+        return x + (width / 2.0), y + (height / 2.0)
+
+    @classmethod
+    def _deterministic_map_transition_decision(cls, context, goal, labels, ocr_text):
+        needs_world_map = cls._goal_requests_world_map(goal)
+        needs_search_interface = cls._goal_requests_search_interface(goal) or needs_world_map
+        if not needs_world_map and not needs_search_interface:
             return None
 
         normalized_labels = cls._normalized_labels(labels)
         if normalized_labels.intersection(MAP_LABEL_HINTS):
+            if needs_search_interface and not cls._screen_shows_search_interface(ocr_text):
+                return PlannerDecision.from_mapping(
+                    {
+                        "thought_process": "The screen no longer looks like city view but the resource-search interface is not open yet.",
+                        "action_type": "key",
+                        "label": "resource search hotkey",
+                        "confidence": 0.99,
+                        "delay_seconds": 0.8,
+                        "reason": "Open the resource search interface with the guarded search hotkey.",
+                        "key_name": "f",
+                    }
+                )
             return None
         if normalized_labels.intersection(BLOCKER_LABEL_HINTS):
             return PlannerDecision.from_mapping(
@@ -920,8 +983,64 @@ class DynamicPlanner:
                     "key_name": "escape",
                 }
             )
+        last_decision = cls._last_decision(context)
+        last_action_type = str(last_decision.get("action_type", "")).lower()
+        last_key_name = str(last_decision.get("key_name", "")).lower()
+        last_target_id = str(last_decision.get("target_id", "")).lower()
+
         if not cls._screen_looks_like_city(labels, ocr_text):
+            if needs_search_interface and not cls._screen_shows_search_interface(ocr_text):
+                search_failed = cls._recent_feedback_contains(
+                    context,
+                    "search_hotkey_did_not_open_resource_search",
+                )
+                if last_action_type == "key" and last_key_name == "f" and search_failed:
+                    return PlannerDecision.from_mapping(
+                        {
+                            "thought_process": "The search hotkey did not expose the search interface yet.",
+                            "action_type": "wait",
+                            "label": "wait",
+                            "confidence": 0.99,
+                            "delay_seconds": 1.0,
+                            "reason": "Re-observe before retrying another search-interface action.",
+                        }
+                    )
+                return PlannerDecision.from_mapping(
+                    {
+                        "thought_process": "The world map appears reachable but the resource-search interface is not visible yet.",
+                        "action_type": "key",
+                        "label": "resource search hotkey",
+                        "confidence": 0.99,
+                        "delay_seconds": 0.8,
+                        "reason": "Open the resource search interface with the guarded search hotkey.",
+                        "key_name": "f",
+                    }
+                )
             return None
+        map_toggle_failed = cls._recent_feedback_contains(
+            context,
+            "world_map_toggle_did_not_reach_map_view",
+        )
+        if (
+            (last_action_type == "key" and last_key_name == "space")
+            or map_toggle_failed
+            or last_target_id == "ui_map_toggle"
+        ):
+            center_x, center_y = cls._map_toggle_button_center()
+            return PlannerDecision.from_mapping(
+                {
+                    "thought_process": "The world-map hotkey had no visible effect while the screen still looks like city view.",
+                    "action_type": "click",
+                    "label": "world map button",
+                    "confidence": 0.99,
+                    "delay_seconds": 1.0,
+                    "reason": "Click the fixed map-toggle button because the world-map hotkey did not leave city view.",
+                    "target_id": "ui_map_toggle",
+                    "x": center_x,
+                    "y": center_y,
+                },
+                source="deterministic",
+            )
         return PlannerDecision.from_mapping(
             {
                 "thought_process": "The focused goal is to open the world map and the screen still looks like city view.",
@@ -1364,12 +1483,13 @@ class DynamicPlanner:
         """
         labels = self._visible_labels(detections)
         targets = self.build_targets(detections, ocr_regions)
-        deterministic_map_decision = self._deterministic_map_transition_decision(goal, labels, ocr_text)
+        deterministic_map_decision = self._deterministic_map_transition_decision(context, goal, labels, ocr_text)
         if deterministic_map_decision is not None:
             LOGGER.info(
-                "Dynamic planner used deterministic map transition: action=%s key=%s goal=%s",
+                "Dynamic planner used deterministic map/search transition: action=%s key=%s target_id=%s goal=%s",
                 deterministic_map_decision.action_type,
                 deterministic_map_decision.key_name,
+                deterministic_map_decision.target_id,
                 goal,
             )
             return deterministic_map_decision
