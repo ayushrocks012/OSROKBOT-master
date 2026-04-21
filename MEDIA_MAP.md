@@ -13,7 +13,7 @@ cleanup:
 
 | Path | Protected | Purpose |
 | --- | --- | --- |
-| `Media/UI/` | Yes | PyQt overlay icons and local interface assets. |
+| `Media/UI/` | Yes | PyQt overlay icons, console control icons, and local interface assets. |
 | `Media/Readme/` | Yes | README and documentation images, GIFs, and screenshots. |
 
 `cleanup_media.py` also avoids deleting files nested under any other

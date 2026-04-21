@@ -111,7 +111,7 @@ class SupervisorSnapshot:
 
     mode: str = "command"
     state_text: str = "Ready"
-    state_icon: str = "●"
+    state_icon: str = "--"
     status_text: str = "Standing by"
     status_tone: str = "info"
     status_detail: str = ""
@@ -963,16 +963,16 @@ class UIController(QtCore.QObject):
     def _state_icon(self) -> str:
         lowered = self._last_runtime_state.lower()
         if "mission complete" in lowered:
-            return "✓"
+            return "OK"
         if "captcha" in lowered or self.OS_ROKBOT.is_paused():
-            return "⏸"
+            return "II"
         if self._pending_payload:
             return "!"
         if "recover" in lowered:
-            return "↺"
+            return "R"
         if self.OS_ROKBOT.is_running:
-            return "●"
-        return "○"
+            return "ON"
+        return "--"
 
     def _ui_mode(self) -> str:
         if self._pending_payload:

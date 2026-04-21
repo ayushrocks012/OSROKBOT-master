@@ -29,10 +29,11 @@ LOGGER = get_logger(__name__)
 EmergencyStop.start_once()
 
 MODE_SIZES = {
-    "compact": QtCore.QSize(500, 108),
-    "approval": QtCore.QSize(500, 330),
-    "command": QtCore.QSize(580, 620),
+    "compact": QtCore.QSize(520, 104),
+    "approval": QtCore.QSize(560, 360),
+    "command": QtCore.QSize(680, 700),
 }
+STATUS_BADGE_MAX_CHARS = 30
 
 
 def asset_path(*parts: str) -> str:
@@ -49,6 +50,15 @@ def _repolish(widget: QtWidgets.QWidget) -> None:
     widget.update()
 
 
+def _compact_text(value: str, limit: int = STATUS_BADGE_MAX_CHARS) -> str:
+    """Return a single-line label that cannot crowd fixed-width controls."""
+
+    normalized = " ".join(str(value or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: max(0, limit - 3)].rstrip()}..."
+
+
 WINDOW_QSS = """
 QWidget#SupervisorRoot {
     background: transparent;
@@ -60,19 +70,35 @@ QFrame#SupervisorShell {
         stop: 1 rgba(8, 12, 20, 244)
     );
     border: 1px solid rgba(72, 94, 124, 150);
-    border-radius: 28px;
+    border-radius: 18px;
 }
 QLabel#StateDot {
-    min-width: 34px;
-    max-width: 34px;
-    min-height: 34px;
-    max-height: 34px;
-    border-radius: 17px;
-    background: rgba(56, 189, 248, 26);
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    border-radius: 16px;
+    background: rgba(71, 85, 105, 82);
     color: #38bdf8;
-    font-size: 18px;
+    font-size: 10px;
     font-weight: 700;
     qproperty-alignment: AlignCenter;
+}
+QLabel#StateDot[tone="success"] {
+    background: rgba(22, 163, 74, 58);
+    color: #bbf7d0;
+}
+QLabel#StateDot[tone="warning"] {
+    background: rgba(217, 119, 6, 62);
+    color: #fde68a;
+}
+QLabel#StateDot[tone="danger"] {
+    background: rgba(220, 38, 38, 62);
+    color: #fecaca;
+}
+QLabel#StateDot[tone="accent"] {
+    background: rgba(37, 99, 235, 62);
+    color: #dbeafe;
 }
 QLabel#StateTitle {
     color: #f8fafc;
@@ -84,8 +110,8 @@ QLabel#StateSubtitle {
     font-size: 11px;
 }
 QLabel#Badge {
-    padding: 6px 12px;
-    border-radius: 12px;
+    padding: 5px 10px;
+    border-radius: 8px;
     font-size: 11px;
     font-weight: 600;
     color: #dbeafe;
@@ -115,7 +141,7 @@ QLabel#Badge[tone="accent"] {
 QToolButton#ActionTool,
 QToolButton#WindowTool {
     border: 1px solid rgba(86, 105, 134, 130);
-    border-radius: 12px;
+    border-radius: 8px;
     background: rgba(18, 24, 38, 210);
     color: #e2e8f0;
     min-width: 34px;
@@ -144,12 +170,12 @@ QFrame#IntentCard,
 QFrame#MetricCard {
     background: rgba(15, 23, 42, 222);
     border: 1px solid rgba(71, 85, 105, 138);
-    border-radius: 18px;
+    border-radius: 8px;
 }
 QFrame#ErrorCard {
     background: rgba(127, 29, 29, 200);
     border: 1px solid rgba(239, 68, 68, 140);
-    border-radius: 14px;
+    border-radius: 8px;
 }
 QLabel#SectionTitle {
     color: #f8fafc;
@@ -189,13 +215,13 @@ QLabel#ReasonLabel {
 QProgressBar#ConfidenceBar {
     background: rgba(30, 41, 59, 220);
     border: 1px solid rgba(71, 85, 105, 120);
-    border-radius: 10px;
+    border-radius: 7px;
     min-height: 14px;
     max-height: 14px;
     text-align: center;
 }
 QProgressBar#ConfidenceBar::chunk {
-    border-radius: 9px;
+    border-radius: 6px;
     background: #ef4444;
 }
 QProgressBar#ConfidenceBar[tone="success"]::chunk {
@@ -211,7 +237,7 @@ QPushButton#ApprovalOk,
 QPushButton#ApprovalNo,
 QPushButton#ApprovalFix {
     min-height: 42px;
-    border-radius: 14px;
+    border-radius: 8px;
     font-size: 13px;
     font-weight: 700;
     border: 1px solid rgba(148, 163, 184, 80);
@@ -240,7 +266,7 @@ QPlainTextEdit {
     background: rgba(15, 23, 42, 228);
     color: #f8fafc;
     border: 1px solid rgba(71, 85, 105, 138);
-    border-radius: 14px;
+    border-radius: 8px;
     padding: 10px 12px;
     font-size: 12px;
 }
@@ -272,17 +298,17 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:unchecked {
     border: 1px solid rgba(71, 85, 105, 138);
-    border-radius: 6px;
+    border-radius: 4px;
     background: rgba(15, 23, 42, 228);
 }
 QCheckBox::indicator:checked {
     border: 1px solid rgba(96, 165, 250, 160);
-    border-radius: 6px;
+    border-radius: 4px;
     background: rgba(37, 99, 235, 210);
 }
 QPushButton#AutonomyButton {
     min-height: 40px;
-    border-radius: 14px;
+    border-radius: 8px;
     border: 1px solid rgba(71, 85, 105, 138);
     background: rgba(15, 23, 42, 228);
     color: #cbd5e1;
@@ -310,7 +336,7 @@ QPushButton#AutonomyButton[segment="l3"]:checked {
 }
 QTabWidget::pane {
     border: 1px solid rgba(71, 85, 105, 138);
-    border-radius: 16px;
+    border-radius: 8px;
     top: -1px;
     background: rgba(10, 15, 25, 160);
 }
@@ -320,8 +346,8 @@ QTabBar::tab {
     color: #94a3b8;
     padding: 9px 18px;
     margin-right: 6px;
-    border-top-left-radius: 12px;
-    border-top-right-radius: 12px;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
     font-size: 12px;
     font-weight: 600;
 }
@@ -329,6 +355,31 @@ QTabBar::tab:selected {
     color: #f8fafc;
     background: rgba(37, 99, 235, 170);
     border-color: rgba(96, 165, 250, 150);
+}
+QScrollArea {
+    border: none;
+    background: transparent;
+}
+QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+QScrollBar:vertical {
+    background: rgba(2, 6, 23, 90);
+    border: none;
+    width: 10px;
+    margin: 2px 0 2px 0;
+}
+QScrollBar::handle:vertical {
+    background: rgba(100, 116, 139, 160);
+    border-radius: 5px;
+    min-height: 32px;
+}
+QScrollBar::handle:vertical:hover {
+    background: rgba(148, 163, 184, 190);
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
 }
 QLabel#MetricTitle {
     color: #94a3b8;
@@ -343,7 +394,7 @@ QLabel#MetricValue {
 QListWidget {
     background: rgba(2, 6, 23, 160);
     border: 1px solid rgba(71, 85, 105, 138);
-    border-radius: 14px;
+    border-radius: 8px;
     color: #e2e8f0;
     font-family: Consolas, "Courier New", monospace;
     font-size: 11px;
@@ -356,7 +407,7 @@ QListWidget::item {
 QPushButton#DialogPrimary,
 QPushButton#DialogSecondary {
     min-height: 36px;
-    border-radius: 12px;
+    border-radius: 8px;
     padding: 0 14px;
     font-size: 12px;
     font-weight: 600;
@@ -528,6 +579,7 @@ class MetricCard(QtWidgets.QFrame):
     def __init__(self, title: str, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("MetricCard")
+        self.setMinimumHeight(82)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(6)
@@ -688,6 +740,8 @@ class DashboardTab(QtWidgets.QWidget):
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(12)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
 
         for index, title in enumerate(self.CARD_ORDER):
             card = MetricCard(title)
@@ -797,13 +851,17 @@ class UI(QtWidgets.QWidget):
         header_layout = QtWidgets.QHBoxLayout()
         header_layout.setSpacing(12)
 
-        self.state_dot = QtWidgets.QLabel("○")
+        self.state_dot = QtWidgets.QLabel("--")
         self.state_dot.setObjectName("StateDot")
 
         self.state_title_label = QtWidgets.QLabel("Ready")
         self.state_title_label.setObjectName("StateTitle")
+        self.state_title_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.state_title_label.setMinimumWidth(140)
         self.state_subtitle_label = QtWidgets.QLabel("Standing by")
         self.state_subtitle_label.setObjectName("StateSubtitle")
+        self.state_subtitle_label.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.state_subtitle_label.setMinimumWidth(140)
 
         labels_layout = QtWidgets.QVBoxLayout()
         labels_layout.setContentsMargins(0, 0, 0, 0)
@@ -813,8 +871,11 @@ class UI(QtWidgets.QWidget):
 
         self.status_badge = QtWidgets.QLabel("Standing by")
         self.status_badge.setObjectName("Badge")
+        self.status_badge.setMinimumWidth(112)
+        self.status_badge.setMaximumWidth(220)
         self.elapsed_badge = QtWidgets.QLabel("00:00")
         self.elapsed_badge.setObjectName("Badge")
+        self.elapsed_badge.setMinimumWidth(58)
 
         self.start_button = self._tool_button(
             object_name="ActionTool",
@@ -838,19 +899,19 @@ class UI(QtWidgets.QWidget):
         )
         self.help_button = self._tool_button(
             object_name="WindowTool",
-            text="?",
+            icon_path=asset_path("Media", "UI", "help_icon.svg"),
             tooltip="Open README",
             slot=self._open_help,
         )
         self.settings_button = self._tool_button(
             object_name="WindowTool",
-            text="⚙",
+            icon_path=asset_path("Media", "UI", "settings_icon.svg"),
             tooltip="Settings",
             slot=self.open_settings,
         )
         self.close_button = self._tool_button(
             object_name="WindowTool",
-            text="×",
+            icon_path=asset_path("Media", "UI", "close_icon.svg"),
             tooltip="Close",
             slot=self.close,
         )
@@ -948,8 +1009,12 @@ class UI(QtWidgets.QWidget):
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setDocumentMode(True)
 
-        mission_tab = QtWidgets.QWidget()
-        mission_layout = QtWidgets.QVBoxLayout(mission_tab)
+        mission_tab = QtWidgets.QScrollArea()
+        mission_tab.setWidgetResizable(True)
+        mission_tab.setFrameShape(QtWidgets.QFrame.NoFrame)
+        mission_tab.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        mission_content = QtWidgets.QWidget()
+        mission_layout = QtWidgets.QVBoxLayout(mission_content)
         mission_layout.setContentsMargins(16, 16, 16, 16)
         mission_layout.setSpacing(16)
 
@@ -963,6 +1028,7 @@ class UI(QtWidgets.QWidget):
         mission_title.setObjectName("SectionTitle")
         mission_hint = QtWidgets.QLabel("Editable planner goal used when the next session starts.")
         mission_hint.setObjectName("HintText")
+        mission_hint.setWordWrap(True)
 
         self.mission_input = QtWidgets.QComboBox()
         self.mission_input.setEditable(True)
@@ -983,6 +1049,7 @@ class UI(QtWidgets.QWidget):
         autonomy_title.setObjectName("SectionTitle")
         autonomy_hint = QtWidgets.QLabel("L1 is the default supervised path. L2 and L3 collapse into the compact HUD while running.")
         autonomy_hint.setObjectName("HintText")
+        autonomy_hint.setWordWrap(True)
 
         self.autonomy_selector = AutonomySelector()
         self.autonomy_selector.level_changed.connect(self.controller.set_autonomy_level)
@@ -1030,7 +1097,7 @@ class UI(QtWidgets.QWidget):
         self.teaching_notes_input.setPlaceholderText(
             "Describe how you actually play this workflow. Example: from city press Space, then press F, choose Wood, click Gather, then Send."
         )
-        self.teaching_notes_input.setMinimumHeight(110)
+        self.teaching_notes_input.setMinimumHeight(96)
         self.teaching_notes_input.textChanged.connect(self._on_teaching_notes_changed)
 
         self.teaching_prompt_label = QtWidgets.QLabel("")
@@ -1066,6 +1133,7 @@ class UI(QtWidgets.QWidget):
         mission_layout.addWidget(teaching_card)
         mission_layout.addWidget(operator_card)
         mission_layout.addStretch()
+        mission_tab.setWidget(mission_content)
 
         self.dashboard_tab = DashboardTab()
 
@@ -1189,10 +1257,12 @@ class UI(QtWidgets.QWidget):
         self.autonomy_selector.set_level(snapshot.autonomy_level)
 
         self.state_dot.setText(snapshot.state_icon)
+        self.state_dot.setProperty("tone", snapshot.status_tone)
+        _repolish(self.state_dot)
         self.state_title_label.setText(snapshot.state_text)
         self.state_subtitle_label.setText(snapshot.status_text)
-        self.status_badge.setText(snapshot.status_text)
-        self.status_badge.setToolTip(snapshot.status_detail)
+        self.status_badge.setText(_compact_text(snapshot.status_text))
+        self.status_badge.setToolTip(snapshot.status_detail or snapshot.status_text)
         self.status_badge.setProperty("tone", snapshot.status_tone)
         _repolish(self.status_badge)
 
@@ -1280,6 +1350,16 @@ class UI(QtWidgets.QWidget):
         if target_window:
             x = target_window.left + max(16, target_window.width - self.width() - 20)
             y = target_window.top + 24
+            screen = QtWidgets.QApplication.screenAt(QtCore.QPoint(target_window.left, target_window.top))
+            screen = screen or QtWidgets.QApplication.primaryScreen()
+            if screen:
+                available = screen.availableGeometry()
+                min_x = available.left() + 8
+                min_y = available.top() + 8
+                max_x = max(min_x, available.right() - self.width() - 8)
+                max_y = max(min_y, available.bottom() - self.height() - 8)
+                x = max(min_x, min(x, max_x))
+                y = max(min_y, min(y, max_y))
             self.move(x, y)
 
             active_title = str(getattr(active_window, "title", "") or "")
