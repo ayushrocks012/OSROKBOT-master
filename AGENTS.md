@@ -172,6 +172,11 @@ In `L1 approve`, the overlay highlights the selected target and the current
 YOLO detector boxes for faster human verification and shows an intent tooltip
 next to the selected target. `Fix` must open the blocking crosshair overlay
 over the game client and wait indefinitely for one operator click. When a
+run has no pending approval, the supervisor console may collapse out of the
+topmost window layer, but approval, pause, CAPTCHA, and operator-action states
+must restore the console before human input is needed. Planner trace UI should
+show the latest focused goal, visible detector/OCR context, planner debug note,
+selected action, reason, and confidence without bypassing validation. When a
 gather/resource mission has no detector boxes, the planner may surface one
 OCR-only `Fix required` target instead of stopping, but only when the current
 OCR text also looks like a true resource/map screen; digit-only OCR targets

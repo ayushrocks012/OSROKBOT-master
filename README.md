@@ -500,6 +500,13 @@ Recommended first run:
 6. Review each pointer action with the detector-box overlay and intent tooltip.
 7. Use `OK`, `No`, or `Fix` from the Agent Intent Card.
 
+While a run is active and no human approval is pending, the supervisor console
+collapses to the compact HUD and drops out of the topmost window layer so the
+game stays foreground. It restores and raises itself when approval, pause, or
+operator action is needed. The Dashboard tab includes a `Planner Trace` panel
+with the focused goal, visible detector/OCR context, planner debug note,
+selected action, reason, and confidence for the latest step.
+
 Example missions:
 
 ```text

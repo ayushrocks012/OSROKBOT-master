@@ -39,6 +39,34 @@ def _runtime_interrupted(context: Any) -> bool:
     )
 
 
+def _emit_planner_trace(
+    context: Any,
+    *,
+    decision: Any,
+    focused_goal: str,
+    visible_labels: list[str],
+    ocr_text: str,
+    screen_changed: bool,
+    stuck_warning: str,
+) -> None:
+    """Send the latest planner observation and decision summary to the UI."""
+
+    emit_trace = getattr(context, "emit_planner_trace", None)
+    if not callable(emit_trace):
+        return
+    decision_payload = decision.to_dict() if hasattr(decision, "to_dict") else decision
+    emit_trace(
+        {
+            "focused_goal": focused_goal,
+            "visible_labels": list(visible_labels),
+            "ocr_text": str(ocr_text or ""),
+            "screen_changed": bool(screen_changed),
+            "stuck_warning": str(stuck_warning or ""),
+            "decision": dict(decision_payload) if isinstance(decision_payload, dict) else {},
+        }
+    )
+
+
 class DynamicPlannerAction(Action):
     """Execute one guarded planner step using explicit helper services."""
 
@@ -157,6 +185,15 @@ class DynamicPlannerAction(Action):
             return False
 
         self.feedback_service.record_decision(context, decision)
+        _emit_planner_trace(
+            context,
+            decision=decision,
+            focused_goal=focused_goal,
+            visible_labels=visible_labels,
+            ocr_text=ocr_text,
+            screen_changed=screen_changed,
+            stuck_warning=stuck_warning,
+        )
         if decision.action_type == "wait":
             self.feedback_service.record_wait(context, screenshot_path, decision, observation.detections)
             return self.execution_service.execute(context, decision, observation.window_rect)

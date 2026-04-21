@@ -793,7 +793,7 @@ class PlannerFeedbackService:
             )
             _update_step_scope(context, decision_id=decision_id, approval_id=None, input_id=None)
         context.emit_state(
-            f"Planner: {decision.action_type} → {decision.label}\n"
+            f"Planner: {decision.action_type} -> {decision.label}\n"
             f"Reason: {decision.reason}\n"
             f"Confidence: {decision.confidence:.0%}"
         )

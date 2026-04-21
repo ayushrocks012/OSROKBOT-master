@@ -34,6 +34,8 @@ from session_logger import SessionLogger
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOGGER = get_logger(__name__)
 MAX_MISSION_HISTORY = 10
+MAX_TRACE_LABELS = 8
+MAX_TRACE_TEXT_CHARS = 180
 
 MISSION_PRESETS = [
     "Farm the nearest useful resource safely.",
@@ -102,7 +104,23 @@ class IntentCardState:
     reason_text: str = ""
     coordinates_text: str = ""
     shortcut_hint: str = ""
+    goal_text: str = ""
+    view_text: str = ""
+    planner_note_text: str = ""
     fix_required: bool = False
+
+
+@dataclass(slots=True)
+class PlannerTraceState:
+    """Latest planner observation and decision summary for operator review."""
+
+    visible: bool = False
+    goal_text: str = "Waiting for planner observation."
+    view_text: str = "No detector/OCR context yet."
+    decision_text: str = "No planner decision yet."
+    planner_note_text: str = ""
+    reason_text: str = ""
+    confidence_text: str = ""
 
 
 @dataclass(slots=True)
@@ -133,6 +151,7 @@ class SupervisorSnapshot:
     start_tooltip: str = "Start (F5)"
     pause_tooltip: str = "Pause / Resume (F6)"
     intent: IntentCardState = field(default_factory=IntentCardState)
+    planner_trace: PlannerTraceState = field(default_factory=PlannerTraceState)
     dashboard_summary: dict[str, str] = field(default_factory=dict)
     timeline_lines: list[str] = field(default_factory=list)
 
@@ -196,6 +215,95 @@ def _coordinates_text(absolute_x: Any, absolute_y: Any) -> str:
     return f"Screen target: {int(absolute_x)}, {int(absolute_y)}"
 
 
+def _short_trace_text(value: Any, limit: int = MAX_TRACE_TEXT_CHARS) -> str:
+    """Normalize one trace field to a compact single-line value."""
+
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 3)].rstrip()}..."
+
+
+def _decision_text(decision: dict[str, Any]) -> str:
+    """Render the planner's selected action for trace display."""
+
+    action = str(decision.get("action_type", "") or "unknown").strip()
+    label = str(decision.get("label", "") or "").strip()
+    target_id = str(decision.get("target_id", "") or "").strip()
+    parts = [action]
+    if label:
+        parts.append(label)
+    if target_id:
+        parts.append(f"({target_id})")
+    return " ".join(parts)
+
+
+def _confidence_text(decision: dict[str, Any]) -> str:
+    """Render planner confidence when the value is numeric."""
+
+    try:
+        return f"{float(decision.get('confidence', 0.0) or 0.0):.0%}"
+    except (TypeError, ValueError):
+        return ""
+
+
+def _labels_from_detections(detections: list[dict[str, Any]]) -> list[str]:
+    """Return unique visible detection labels for the planner trace."""
+
+    labels: list[str] = []
+    seen: set[str] = set()
+    for detection in detections:
+        label = str(detection.get("label", "") if isinstance(detection, dict) else "").strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        labels.append(label)
+        if len(labels) >= MAX_TRACE_LABELS:
+            break
+    return labels
+
+
+def _view_text_from_payload(payload: dict[str, Any], fallback: str = "") -> str:
+    """Summarize detector/OCR context from one planner trace payload."""
+
+    raw_labels = payload.get("visible_labels")
+    if isinstance(raw_labels, list):
+        labels = [str(label).strip() for label in raw_labels if str(label).strip()]
+    else:
+        labels = _labels_from_detections(list(payload.get("detections", []) or []))
+    labels = labels[:MAX_TRACE_LABELS]
+    ocr_text = _short_trace_text(payload.get("ocr_text", ""), 120)
+    parts: list[str] = []
+    if labels:
+        parts.append(f"Labels: {', '.join(labels)}")
+    if ocr_text:
+        parts.append(f"OCR: {ocr_text}")
+    if payload.get("stuck_warning"):
+        parts.append(f"Stuck: {_short_trace_text(payload.get('stuck_warning'), 80)}")
+    return " | ".join(parts) or fallback or "No detector/OCR context yet."
+
+
+def _planner_trace_from_state_text(state_text: str) -> PlannerTraceState:
+    """Build a fallback trace from the older multiline planner state text."""
+
+    lines = [line.strip() for line in str(state_text or "").splitlines() if line.strip()]
+    decision_text = lines[0].removeprefix("Planner:").strip() if lines else "No planner decision yet."
+    reason_text = ""
+    confidence_text = ""
+    for line in lines[1:]:
+        lowered = line.lower()
+        if lowered.startswith("reason:"):
+            reason_text = _short_trace_text(line.split(":", 1)[1])
+        elif lowered.startswith("confidence:"):
+            confidence_text = _short_trace_text(line.split(":", 1)[1], 32)
+    return PlannerTraceState(
+        visible=True,
+        decision_text=decision_text,
+        reason_text=reason_text,
+        confidence_text=confidence_text,
+    )
+
+
 class UIController(QtCore.QObject):
     """Own automation-facing UI state and emit view-model snapshots."""
 
@@ -225,6 +333,8 @@ class UIController(QtCore.QObject):
         self.OS_ROKBOT.signal_emitter.pause_toggled.connect(self.handle_pause_toggled)
         self.OS_ROKBOT.signal_emitter.state_changed.connect(self.handle_runtime_state_changed)
         self.OS_ROKBOT.signal_emitter.planner_decision.connect(self.handle_planner_decision)
+        if hasattr(self.OS_ROKBOT.signal_emitter, "planner_trace"):
+            self.OS_ROKBOT.signal_emitter.planner_trace.connect(self.handle_planner_trace)
         self.OS_ROKBOT.signal_emitter.yolo_weights_ready.connect(self.handle_yolo_weights_ready)
         self.OS_ROKBOT.signal_emitter.run_finished.connect(self.handle_run_finished)
 
@@ -244,6 +354,7 @@ class UIController(QtCore.QObject):
         self._status_text = "Standing by"
         self._status_tone = "info"
         self._status_detail = ""
+        self._planner_trace = PlannerTraceState()
         self._mission_text = DEFAULT_MISSION
         self._mission_options = self._load_mission_options()
         self._autonomy_level = self._load_autonomy_level()
@@ -539,6 +650,7 @@ class UIController(QtCore.QObject):
         self._current_context = context
         self._pending_payload = None
         self._fix_capture_active = False
+        self._planner_trace = PlannerTraceState()
         self._session_finalized = False
         return context
 
@@ -841,11 +953,55 @@ class UIController(QtCore.QObject):
             self._set_status("Ready", "info", "")
         self._emit_snapshot()
 
+    def _planner_trace_from_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        fallback: PlannerTraceState | None = None,
+    ) -> PlannerTraceState:
+        """Build the operator-facing planner trace from a runtime payload."""
+
+        fallback = fallback or PlannerTraceState()
+        decision = payload.get("decision", {})
+        if not isinstance(decision, dict):
+            decision = {}
+        goal_text = _short_trace_text(
+            payload.get("focused_goal") or payload.get("sub_goal") or fallback.goal_text,
+            160,
+        )
+        view_text = _view_text_from_payload(payload, fallback.view_text)
+        return PlannerTraceState(
+            visible=True,
+            goal_text=goal_text or fallback.goal_text,
+            view_text=view_text,
+            decision_text=_decision_text(decision) or fallback.decision_text,
+            planner_note_text=_short_trace_text(
+                decision.get("thought_process", "") or fallback.planner_note_text,
+                180,
+            ),
+            reason_text=_short_trace_text(decision.get("reason", "") or fallback.reason_text, 180),
+            confidence_text=_confidence_text(decision) or fallback.confidence_text,
+        )
+
+    @QtCore.pyqtSlot(dict)
+    def handle_planner_trace(self, payload: dict[str, Any]) -> None:
+        """Update the visible planner trace from the latest observation/decision."""
+
+        if not isinstance(payload, dict):
+            return
+        self._planner_trace = self._planner_trace_from_payload(payload, fallback=self._planner_trace)
+        self._emit_snapshot()
+
     @QtCore.pyqtSlot(str)
     def handle_runtime_state_changed(self, state_text: str) -> None:
         """Map runtime state text into operator-facing status."""
 
-        text = str(state_text or "").strip() or "Ready"
+        raw_text = str(state_text or "").strip() or "Ready"
+        if raw_text.lower().startswith("planner:"):
+            self._planner_trace = _planner_trace_from_state_text(raw_text)
+            text = raw_text.splitlines()[0].strip()
+        else:
+            text = raw_text
         previous_state = self._last_runtime_state
         self._last_runtime_state = text
         self._record_runtime_state(text)
@@ -912,6 +1068,7 @@ class UIController(QtCore.QObject):
             return
         self._pending_payload = payload
         self._fix_capture_active = False
+        self._planner_trace = self._planner_trace_from_payload(payload, fallback=self._planner_trace)
         overlay_payload = self._overlay_payload_from_pending(payload)
         if overlay_payload.get("absolute_x") is not None and overlay_payload.get("absolute_y") is not None:
             self.planner_overlay_requested.emit(overlay_payload)
@@ -977,7 +1134,7 @@ class UIController(QtCore.QObject):
     def _ui_mode(self) -> str:
         if self._pending_payload:
             return "approval"
-        if self.OS_ROKBOT.is_running and not self.OS_ROKBOT.is_paused() and self._autonomy_level >= 2:
+        if self.OS_ROKBOT.is_running and not self.OS_ROKBOT.is_paused():
             return "compact"
         return "command"
 
@@ -991,6 +1148,7 @@ class UIController(QtCore.QObject):
         decision = pending.get("decision", {})
         confidence = float(decision.get("confidence", 0.0) or 0.0)
         fix_required = self._pending_requires_fix_payload(pending)
+        trace = self._planner_trace_from_payload(pending, fallback=self._planner_trace)
         return IntentCardState(
             visible=True,
             title="Fix required" if fix_required else "Awaiting approval",
@@ -1002,6 +1160,9 @@ class UIController(QtCore.QObject):
             reason_text=str(decision.get("reason", "") or "No planner reason supplied."),
             coordinates_text=_coordinates_text(pending.get("absolute_x"), pending.get("absolute_y")),
             shortcut_hint=self._intent_shortcut_hint(fix_required),
+            goal_text=trace.goal_text,
+            view_text=trace.view_text,
+            planner_note_text=trace.planner_note_text,
             fix_required=fix_required,
         )
 
@@ -1076,6 +1237,7 @@ class UIController(QtCore.QObject):
             start_tooltip=self._start_tooltip,
             pause_tooltip="Resume (F6)" if is_paused else "Pause (F6)",
             intent=self._intent_state(),
+            planner_trace=self._planner_trace,
             dashboard_summary=self._dashboard_summary(),
             timeline_lines=self._timeline_lines(),
         )

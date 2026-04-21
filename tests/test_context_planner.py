@@ -14,6 +14,7 @@ class _FakeEmitter:
     def __init__(self):
         self.state_changed = _RecorderSignal()
         self.planner_decision = _RecorderSignal()
+        self.planner_trace = _RecorderSignal()
 
 
 class _WindowRect:
@@ -72,6 +73,17 @@ def test_pending_planner_decision_emits_absolute_coordinates():
     assert emitter.planner_decision.payloads[0]["decision"]["label"] == "Gather Button"
     assert emitter.planner_decision.payloads[0]["detections"][0]["width"] == 0.10
     assert emitter.planner_decision.payloads[0]["fix_required"] is False
+
+
+def test_emit_planner_trace_publishes_payload_copy():
+    emitter = _FakeEmitter()
+    context = Context(signal_emitter=emitter)
+    payload = {"focused_goal": "Open map", "visible_labels": ["Map"]}
+
+    context.emit_planner_trace(payload)
+    payload["focused_goal"] = "mutated"
+
+    assert emitter.planner_trace.payloads == [{"focused_goal": "Open map", "visible_labels": ["Map"]}]
 
 
 def test_resolve_planner_decision_records_rejection_and_unblocks_event():

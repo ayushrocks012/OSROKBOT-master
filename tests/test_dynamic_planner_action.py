@@ -73,6 +73,15 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
     context = SimpleNamespace(
         planner_goal="Gather resources",
         emit_state=lambda _text: None,
+        emit_planner_trace=lambda payload: calls.append(
+            (
+                "planner_trace",
+                payload["focused_goal"],
+                payload["visible_labels"],
+                payload["ocr_text"],
+                payload["decision"]["label"],
+            )
+        ),
         extracted={},
     )
 
@@ -89,6 +98,7 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
     assert action.execute(context) is True
     assert ("ensure_task_graph", "Gather resources") in calls
     assert ("record_decision", "Gather Button") in calls
+    assert ("planner_trace", "focus:Gather resources", ["Gather Button"], "gather", "Gather Button") in calls
     assert ("execute", "click", 400) in calls
     assert ("wait_after_execution", 0.5) in calls
     assert ("record_success", "Gather Button", None) in calls

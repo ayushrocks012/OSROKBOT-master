@@ -624,6 +624,16 @@ class IntentCard(QtWidgets.QFrame):
         self.target_label = QtWidgets.QLabel("target")
         self.target_label.setObjectName("IntentSecondary")
 
+        self.goal_label = QtWidgets.QLabel("")
+        self.goal_label.setObjectName("HintText")
+        self.goal_label.setWordWrap(True)
+        self.view_label = QtWidgets.QLabel("")
+        self.view_label.setObjectName("HintText")
+        self.view_label.setWordWrap(True)
+        self.planner_note_label = QtWidgets.QLabel("")
+        self.planner_note_label.setObjectName("ReasonLabel")
+        self.planner_note_label.setWordWrap(True)
+
         self.confidence_bar = QtWidgets.QProgressBar()
         self.confidence_bar.setObjectName("ConfidenceBar")
         self.confidence_bar.setTextVisible(False)
@@ -641,6 +651,9 @@ class IntentCard(QtWidgets.QFrame):
         layout.addLayout(top_row)
         layout.addWidget(self.action_label)
         layout.addWidget(self.target_label)
+        layout.addWidget(self.goal_label)
+        layout.addWidget(self.view_label)
+        layout.addWidget(self.planner_note_label)
         layout.addWidget(self.confidence_bar)
         layout.addWidget(self.reason_label)
         layout.addWidget(self.coordinates_label)
@@ -653,6 +666,12 @@ class IntentCard(QtWidgets.QFrame):
             self.title_label.setText("Awaiting approval")
             self.action_label.setText("No pending action")
             self.target_label.setText("")
+            self.goal_label.setText("")
+            self.goal_label.hide()
+            self.view_label.setText("")
+            self.view_label.hide()
+            self.planner_note_label.setText("")
+            self.planner_note_label.hide()
             self.reason_label.setText("The planner is not currently waiting for input.")
             self.coordinates_label.setText("")
             self.shortcuts_label.setText("")
@@ -667,6 +686,12 @@ class IntentCard(QtWidgets.QFrame):
         self.title_label.setText(state.title)
         self.action_label.setText(state.action_text)
         self.target_label.setText(state.target_text)
+        self.goal_label.setText(f"Goal: {state.goal_text}" if state.goal_text else "")
+        self.goal_label.setVisible(bool(state.goal_text))
+        self.view_label.setText(f"View: {state.view_text}" if state.view_text else "")
+        self.view_label.setVisible(bool(state.view_text))
+        self.planner_note_label.setText(f"Planner: {state.planner_note_text}" if state.planner_note_text else "")
+        self.planner_note_label.setVisible(bool(state.planner_note_text))
         self.reason_label.setText(state.reason_text)
         self.coordinates_label.setText(state.coordinates_text)
         self.shortcuts_label.setText(state.shortcut_hint)
@@ -714,6 +739,50 @@ class AutonomySelector(QtWidgets.QWidget):
             button.blockSignals(False)
 
 
+class PlannerTraceCard(QtWidgets.QFrame):
+    """Dashboard card for the latest planner view-recognition trace."""
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("SectionCard")
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+
+        title = QtWidgets.QLabel("Planner Trace")
+        title.setObjectName("SectionTitle")
+        self.trace_text = QtWidgets.QPlainTextEdit()
+        self.trace_text.setReadOnly(True)
+        self.trace_text.setMaximumHeight(132)
+        self.trace_text.setPlaceholderText("Waiting for planner observation.")
+
+        layout.addWidget(title)
+        layout.addWidget(self.trace_text)
+
+    def apply_state(self, state: object) -> None:
+        """Render the latest planner trace state."""
+
+        if not getattr(state, "visible", False):
+            self.trace_text.setPlainText("Waiting for planner observation.")
+            return
+
+        lines = [
+            f"Goal: {getattr(state, 'goal_text', '')}",
+            f"View: {getattr(state, 'view_text', '')}",
+            f"Decision: {getattr(state, 'decision_text', '')}",
+        ]
+        confidence = getattr(state, "confidence_text", "")
+        if confidence:
+            lines[-1] = f"{lines[-1]} ({confidence})"
+        planner_note = getattr(state, "planner_note_text", "")
+        if planner_note:
+            lines.append(f"Planner: {planner_note}")
+        reason = getattr(state, "reason_text", "")
+        if reason:
+            lines.append(f"Reason: {reason}")
+        self.trace_text.setPlainText("\n".join(line for line in lines if line.strip()))
+
+
 class DashboardTab(QtWidgets.QWidget):
     """Dashboard tab showing session stats and timeline."""
 
@@ -753,9 +822,11 @@ class DashboardTab(QtWidgets.QWidget):
         timeline_title.setObjectName("SectionTitle")
         timeline_hint = QtWidgets.QLabel("Recent actions, approvals, corrections, and errors.")
         timeline_hint.setObjectName("HintText")
+        self.planner_trace_card = PlannerTraceCard()
         self.timeline_list = QtWidgets.QListWidget()
 
         layout.addLayout(grid)
+        layout.addWidget(self.planner_trace_card)
         layout.addWidget(timeline_title)
         layout.addWidget(timeline_hint)
         layout.addWidget(self.timeline_list, 1)
@@ -766,6 +837,7 @@ class DashboardTab(QtWidgets.QWidget):
         for title in self.CARD_ORDER:
             self._cards[title].set_value(snapshot.dashboard_summary.get(title, "--"))
 
+        self.planner_trace_card.apply_state(snapshot.planner_trace)
         self.timeline_list.blockSignals(True)
         self.timeline_list.clear()
         self.timeline_list.addItems(snapshot.timeline_lines)
@@ -1227,6 +1299,20 @@ class UI(QtWidgets.QWidget):
         self.teaching_prompt_label.setEnabled(inputs_enabled)
         self.teaching_prompt_label.setText(snapshot.teaching_prompt_text)
 
+    def _set_stays_on_top(self, enabled: bool) -> None:
+        """Toggle the topmost flag without repeatedly recreating the window."""
+
+        if enabled == self._last_stays_on_top:
+            return
+        self._last_stays_on_top = enabled
+        flags = self.windowFlags()
+        if enabled:
+            flags |= QtCore.Qt.WindowStaysOnTopHint
+        else:
+            flags &= ~QtCore.Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
+        self.show()
+
     def _apply_mode(self, mode: str) -> None:
         if mode == self._current_mode:
             return
@@ -1243,6 +1329,15 @@ class UI(QtWidgets.QWidget):
             self.body_stack.show()
 
         self.setFixedSize(MODE_SIZES.get(mode, MODE_SIZES["command"]))
+        self._set_stays_on_top(mode != "compact")
+        if mode == "compact":
+            self.show()
+            self.lower()
+        else:
+            self.showNormal()
+            self.raise_()
+            if mode == "approval":
+                self.activateWindow()
         self.update_position()
 
     @QtCore.pyqtSlot(object)
@@ -1363,16 +1458,10 @@ class UI(QtWidgets.QWidget):
             self.move(x, y)
 
             active_title = str(getattr(active_window, "title", "") or "")
-            should_stay_on_top = active_title in {self.target_title, "OSROKBOT", "python3"}
-            if should_stay_on_top != self._last_stays_on_top:
-                self._last_stays_on_top = should_stay_on_top
-                flags = self.windowFlags()
-                if should_stay_on_top:
-                    flags |= QtCore.Qt.WindowStaysOnTopHint
-                else:
-                    flags &= ~QtCore.Qt.WindowStaysOnTopHint
-                self.setWindowFlags(flags)
-                self.show()
+            should_stay_on_top = self._current_mode != "compact" and active_title in {self.target_title, "OSROKBOT", "python3"}
+            self._set_stays_on_top(should_stay_on_top)
+            if self._current_mode == "compact":
+                self.lower()
 
     def start_automation(self) -> None:
         """Start the selected mission with the current autonomy level."""

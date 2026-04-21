@@ -141,6 +141,13 @@ class Context:
         if emitter:
             emitter.state_changed.emit(state_text)
 
+    def emit_planner_trace(self, payload: dict[str, Any]) -> None:
+        """Publish one planner observation/decision trace for the supervisor UI."""
+
+        emitter = self.get_signal_emitter()
+        if emitter and hasattr(emitter, "planner_trace"):
+            emitter.planner_trace.emit(dict(payload))
+
     @staticmethod
     def normalize_coordinate(value: float | int | str) -> float:
         """Normalize percent-style planner coordinates to the 0-1 range."""

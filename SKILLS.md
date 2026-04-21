@@ -239,6 +239,10 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - Note: current target approval UI covers `click`, `drag`, and `long_press`,
   and `L1 approve` now draws the current YOLO detector boxes, the selected
   target, and an intent tooltip.
+- Supervisor behavior: active runs collapse the console out of the topmost
+  window layer until approval or operator attention is needed, and the
+  Dashboard planner trace shows the latest focused goal, detector/OCR context,
+  planner debug note, decision, reason, and confidence.
   `key` and `type` are validation-gated and still route through
   `InputController`, but do not use the target approval prompt.
 
