@@ -91,9 +91,10 @@ def test_resolve_planner_decision_records_rejection_and_unblocks_event():
     decision = PlannerDecision("t", "click", "Gather Button", 0.25, 0.50, 0.9, "Visible.")
     pending = context.set_pending_planner_decision(decision)
 
-    assert context.resolve_planner_decision(False) is True
+    assert context.resolve_planner_decision(False, feedback_text="Use search before gather") is True
 
     assert pending["result"] == "rejected"
+    assert pending["feedback_text"] == "Use search before gather"
     assert pending["event"].is_set()
 
 

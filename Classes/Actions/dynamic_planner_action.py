@@ -194,13 +194,7 @@ class DynamicPlannerAction(Action):
             screen_changed=screen_changed,
             stuck_warning=stuck_warning,
         )
-        if decision.action_type == "wait":
-            self.feedback_service.record_wait(context, screenshot_path, decision, observation.detections)
-            return self.execution_service.execute(context, decision, observation.window_rect)
-        if decision.action_type == "stop":
-            return self.execution_service.execute(context, decision, observation.window_rect)
-
-        approved_decision, corrected = self.approval_service.approve_pointer_decision(
+        approved_decision, corrected = self.approval_service.approve_decision(
             context,
             decision,
             screenshot_path,
@@ -211,6 +205,12 @@ class DynamicPlannerAction(Action):
         if approved_decision is None:
             self.feedback_service.record_failure(context, decision)
             return False
+
+        if approved_decision.action_type == "wait":
+            self.feedback_service.record_wait(context, screenshot_path, approved_decision, observation.detections)
+            return self.execution_service.execute(context, approved_decision, observation.window_rect)
+        if approved_decision.action_type == "stop":
+            return self.execution_service.execute(context, approved_decision, observation.window_rect)
 
         executed = self.execution_service.execute(context, approved_decision, observation.window_rect)
         if not executed:

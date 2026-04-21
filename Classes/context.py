@@ -499,6 +499,7 @@ class Context:
             "event": threading.Event(),
             "result": None,
             "corrected_point": None,
+            "feedback_text": "",
         }
         with self._lock:
             self.extracted["planner_pending"] = pending
@@ -522,6 +523,7 @@ class Context:
         self,
         approved: bool,
         corrected_point: NormalizedPoint | None = None,
+        feedback_text: str = "",
     ) -> bool:
         """Resolve the pending planner decision and release any waiter."""
 
@@ -532,6 +534,7 @@ class Context:
             pending["result"] = "approved" if approved else "rejected"
             if corrected_point:
                 pending["corrected_point"] = corrected_point
+            pending["feedback_text"] = str(feedback_text or "").strip()
             event = pending.get("event")
         if event:
             event.set()

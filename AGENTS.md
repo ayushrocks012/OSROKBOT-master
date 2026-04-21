@@ -156,15 +156,18 @@ target IDs to normalized coordinates before validation. Missing or unknown
 target IDs, low confidence, non-finite resolved coordinates, out-of-window
 targets, and unsupported actions must be rejected before input execution.
 
-Current human approval UI covers pointer-target actions: `click`, `drag`, and
-`long_press`. `key` and `type` are still validated and routed through
-`InputController`, but they do not use the target approval prompt.
+In `L1 approve`, planner decisions wait for human OK/No review before input
+execution. Pointer-target actions (`click`, `drag`, and `long_press`) also
+support the `Fix` correction overlay. `key`, `type`, `wait`, and `stop` remain
+validated and routed through their existing guarded execution paths after
+manual approval. `L2 trusted` and `L3 auto` keep the existing automatic path for
+validated non-pointer decisions.
 
 ## Human-In-The-Loop Safety
 
 The UI autonomy levels are part of the safety model:
 
-- `L1 approve`: pointer-target actions wait for `OK`.
+- `L1 approve`: planner decisions wait for `OK`.
 - `L2 trusted`: locally trusted labels can auto-execute pointer actions after enough clean successes.
 - `L3 auto`: validated pointer actions can execute without approval.
 
@@ -177,7 +180,11 @@ topmost window layer, but approval, pause, CAPTCHA, and operator-action states
 must restore the console before human input is needed. Planner trace UI should
 show the latest focused goal, visible detector/OCR context, planner debug note,
 selected action, reason, and confidence without bypassing validation. When a
-gather/resource mission has no detector boxes, the planner may surface one
+human rejects a planner decision with a typed correction note, that note should
+be routed into bounded planner memory for future prompts in the same run; it
+must not directly execute hardware input or bypass action validation. In `L1
+approve`, non-pointer planner actions may also require manual OK/No review.
+When a gather/resource mission has no detector boxes, the planner may surface one
 OCR-only `Fix required` target instead of stopping, but only when the current
 OCR text also looks like a true resource/map screen; digit-only OCR targets
 must not be surfaced for review. Focused `Open the world map` steps on

@@ -30,7 +30,7 @@ EmergencyStop.start_once()
 
 MODE_SIZES = {
     "compact": QtCore.QSize(520, 104),
-    "approval": QtCore.QSize(560, 360),
+    "approval": QtCore.QSize(620, 520),
     "command": QtCore.QSize(680, 700),
 }
 STATUS_BADGE_MAX_CHARS = 30
@@ -1050,6 +1050,13 @@ class UI(QtWidgets.QWidget):
         self.intent_card = IntentCard()
         layout.addWidget(self.intent_card)
 
+        self.feedback_input = QtWidgets.QPlainTextEdit()
+        self.feedback_input.setPlaceholderText(
+            "Optional when pressing No: type the correct next action or what the planner missed."
+        )
+        self.feedback_input.setMaximumHeight(86)
+        layout.addWidget(self.feedback_input)
+
         button_row = QtWidgets.QHBoxLayout()
         button_row.setSpacing(10)
 
@@ -1060,7 +1067,7 @@ class UI(QtWidgets.QWidget):
 
         self.reject_button = QtWidgets.QPushButton("No")
         self.reject_button.setObjectName("ApprovalNo")
-        self.reject_button.setToolTip("Reject (F9)")
+        self.reject_button.setToolTip("Reject and teach from the note (F9)")
         self.reject_button.clicked.connect(self.reject_planner_action)
 
         self.correct_button = QtWidgets.QPushButton("Fix")
@@ -1380,6 +1387,11 @@ class UI(QtWidgets.QWidget):
         self.intent_card.apply_state(snapshot.intent)
         self.approve_button.setEnabled(not snapshot.intent.fix_required)
         self.approve_button.setToolTip("Approve (F8)" if not snapshot.intent.fix_required else "Use Fix or No for low-confidence targets")
+        self.correct_button.setVisible(snapshot.intent.can_fix)
+        self.correct_button.setEnabled(snapshot.intent.can_fix)
+        self.feedback_input.setVisible(snapshot.mode == "approval")
+        if snapshot.mode != "approval" and self.feedback_input.toPlainText():
+            self.feedback_input.clear()
         self.dashboard_tab.apply_snapshot(snapshot)
         self.guidance_label.setText(
             snapshot.status_detail
@@ -1488,11 +1500,14 @@ class UI(QtWidgets.QWidget):
         """Approve the currently pending planner action."""
 
         self.controller.approve_pending_action()
+        self.feedback_input.clear()
 
     def reject_planner_action(self) -> None:
         """Reject the currently pending planner action."""
 
-        self.controller.reject_pending_action()
+        feedback_text = self.feedback_input.toPlainText()
+        self.controller.reject_pending_action(feedback_text)
+        self.feedback_input.clear()
 
     def correct_planner_action(self) -> None:
         """Begin the blocking Fix workflow for the pending planner action."""

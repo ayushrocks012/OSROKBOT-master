@@ -244,7 +244,7 @@ class PlannerObservationService:
 
 
 class PlannerApprovalService:
-    """Handle autonomy-gated approval for pointer-based planner decisions."""
+    """Handle autonomy-gated approval for planner decisions."""
 
     def __init__(self, *, memory: VisionMemory, config: ConfigManager | None = None) -> None:
         self.memory = memory
@@ -380,6 +380,13 @@ class PlannerApprovalService:
         _update_step_scope(context, approval_id=None)
 
         if not pending or pending.get("result") != "approved":
+            feedback_text = str(pending.get("feedback_text", "") if pending else "").strip()
+            DynamicPlanner.remember_planner_feedback(
+                context,
+                decision,
+                feedback_text or "operator_rejected_manual_review",
+                prefix="OPERATOR_CORRECTION" if feedback_text else "REJECTED",
+            )
             LOGGER.warning("Dynamic planner action rejected by user.")
             return None, False
 
@@ -397,6 +404,85 @@ class PlannerApprovalService:
             LOGGER.warning("Low-confidence planner action requires Fix before execution.")
             return None, False
         return decision, False
+
+    def approve_decision(
+        self,
+        context: Any,
+        decision: PlannerDecision,
+        screenshot_path: Path,
+        window_rect: ClientRectLike,
+        detections: list[DetectionLike] | None = None,
+        sub_goal: str = "",
+    ) -> tuple[PlannerDecision | None, bool]:
+        """Return an autonomy-approved decision for pointer and non-pointer actions."""
+
+        if decision.action_type in {"click", "drag", "long_press"}:
+            return self.approve_pointer_decision(
+                context,
+                decision,
+                screenshot_path,
+                window_rect,
+                detections=detections,
+                sub_goal=sub_goal,
+            )
+
+        if self._autonomy_level(context) != 1:
+            return decision, False
+
+        try:
+            pending = self.wait_for_approval(
+                context,
+                decision,
+                screenshot_path,
+                window_rect,
+                detections=detections,
+                sub_goal=sub_goal,
+            )
+        finally:
+            context.clear_pending_planner_decision()
+
+        session_logger = _session_logger(context)
+        scope = _step_scope(context)
+        step_id = str(scope.get("step_id", "") or "")
+        machine_id = str(scope.get("machine_id", "") or "machine_unknown")
+        state_name = str(scope.get("state_name", "") or "")
+        decision_id = str(scope.get("decision_id", "") or "")
+        approval_id = str(scope.get("approval_id", "") or "")
+        if pending is None:
+            approval_outcome = "interrupted"
+        elif pending.get("result") == "approved":
+            approval_outcome = "approved"
+        else:
+            approval_outcome = "rejected"
+        if (
+            session_logger
+            and step_id
+            and decision_id
+            and approval_id
+            and hasattr(session_logger, "record_approval_resolved")
+        ):
+            session_logger.record_approval_resolved(
+                step_id=step_id,
+                machine_id=machine_id,
+                state_name=state_name,
+                decision_id=decision_id,
+                approval_id=approval_id,
+                outcome=approval_outcome,
+                corrected_point=None,
+            )
+        _update_step_scope(context, approval_id=None)
+        if pending and pending.get("result") == "approved":
+            return decision, False
+
+        feedback_text = str(pending.get("feedback_text", "") if pending else "").strip()
+        DynamicPlanner.remember_planner_feedback(
+            context,
+            decision,
+            feedback_text or "operator_rejected_manual_review",
+            prefix="OPERATOR_CORRECTION" if feedback_text else "REJECTED",
+        )
+        LOGGER.warning("Dynamic planner non-pointer action rejected by user.")
+        return None, False
 
 
 class PlannerExecutionService:

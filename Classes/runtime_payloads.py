@@ -105,6 +105,7 @@ class PlannerPendingPayload(TypedDict):
     event: Event
     result: PlannerApprovalResult | None
     corrected_point: NormalizedPoint | None
+    feedback_text: str
 
 
 class PlannerDecisionSignalPayload(TypedDict):

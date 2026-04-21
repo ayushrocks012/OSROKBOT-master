@@ -61,7 +61,7 @@ def test_dynamic_planner_action_orchestrates_services(tmp_path):
         ),
     )
     approval_service = SimpleNamespace(
-        approve_pointer_decision=lambda context, planner_decision, path, rect, detections=None, sub_goal=None: (
+        approve_decision=lambda context, planner_decision, path, rect, detections=None, sub_goal=None: (
             planner_decision,
             False,
         )
@@ -260,3 +260,41 @@ def test_low_confidence_approval_requires_manual_correction(tmp_path):
 
     assert approved is None
     assert corrected is False
+
+
+def test_manual_review_rejection_records_operator_feedback(tmp_path):
+    event = Event()
+    event.set()
+    pending = {
+        "event": event,
+        "result": "rejected",
+        "corrected_point": None,
+        "feedback_text": "Open the search panel first.",
+    }
+    context = SimpleNamespace(
+        planner_autonomy_level=1,
+        set_pending_planner_decision=lambda *args, **kwargs: pending,
+        clear_pending_planner_decision=lambda: None,
+        extracted={},
+    )
+    decision = PlannerDecision.from_mapping(
+        {
+            "action_type": "key",
+            "key_name": "f",
+            "label": "resource search hotkey",
+            "confidence": 0.91,
+            "reason": "Search is needed.",
+        }
+    )
+    service = PlannerApprovalService(memory=SimpleNamespace())
+
+    approved, corrected = service.approve_decision(
+        context,
+        decision,
+        tmp_path / "screen.png",
+        _WindowRect(),
+    )
+
+    assert approved is None
+    assert corrected is False
+    assert context.extracted["planner_memory"][0]["reason"] == "OPERATOR_CORRECTION: Open the search panel first."

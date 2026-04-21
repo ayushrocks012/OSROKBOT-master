@@ -226,7 +226,7 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 ## Autonomy Gate
 
 - Owner: `Classes/Actions/dynamic_planner_action.py`
-- L1: pointer-target actions require approval.
+- L1: planner decisions require OK/No approval before input execution.
 - L1 correction review: OCR-only pointer proposals below the normal confidence
   threshold can be shown for manual `Fix` correction when they meet
   `PLANNER_L1_REVIEW_MIN_CONFIDENCE`; uncorrected low-confidence proposals do
@@ -236,15 +236,18 @@ same change and review the matching sections in `README.md`, `AGENTS.md`, and
 - L2: trusted labels can auto-execute pointer actions after enough clean local
   successes.
 - L3: validated pointer actions can execute without approval.
-- Note: current target approval UI covers `click`, `drag`, and `long_press`,
-  and `L1 approve` now draws the current YOLO detector boxes, the selected
-  target, and an intent tooltip.
+- Note: pointer actions (`click`, `drag`, and `long_press`) draw the current
+  YOLO detector boxes, the selected target, and an intent tooltip.
 - Supervisor behavior: active runs collapse the console out of the topmost
   window layer until approval or operator attention is needed, and the
   Dashboard planner trace shows the latest focused goal, detector/OCR context,
   planner debug note, decision, reason, and confidence.
-  `key` and `type` are validation-gated and still route through
-  `InputController`, but do not use the target approval prompt.
+- Manual review: `L1 approve` pauses for OK/No on planner decisions. Operator
+  correction notes entered before `No` are stored in bounded planner memory for
+  later prompts in the same run; pointer actions still use `Fix` for corrected
+  coordinates.
+  `key`, `type`, `wait`, and `stop` are validation-gated and route through
+  their guarded execution paths after L1 review.
 
 ## Centralized Hardware Input
 

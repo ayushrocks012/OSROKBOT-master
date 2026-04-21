@@ -107,6 +107,7 @@ class IntentCardState:
     goal_text: str = ""
     view_text: str = ""
     planner_note_text: str = ""
+    can_fix: bool = False
     fix_required: bool = False
 
 
@@ -829,7 +830,7 @@ class UIController(QtCore.QObject):
         self._set_status("Planner action approved", "success", "")
         self._emit_snapshot()
 
-    def reject_pending_action(self) -> None:
+    def reject_pending_action(self, feedback_text: str = "") -> None:
         """Reject the pending planner action."""
 
         context = self._active_context()
@@ -840,14 +841,19 @@ class UIController(QtCore.QObject):
 
         pending = context.pending_planner_decision() or {}
         label = str(pending.get("decision", {}).get("label", ""))
-        context.resolve_planner_decision(False)
+        feedback = str(feedback_text or "").strip()
+        context.resolve_planner_decision(False, feedback_text=feedback)
         if self._session_logger:
-            self._session_logger.record_rejection(label)
+            self._session_logger.record_rejection(label, detail=feedback)
         self._pending_payload = None
         self._fix_capture_active = False
         self.planner_overlay_cleared.emit()
         self.fix_overlay_cleared.emit()
-        self._set_status("Planner action rejected", "warning", "")
+        self._set_status(
+            "Planner action rejected",
+            "warning",
+            "Operator correction was added to planner memory." if feedback else "",
+        )
         self._emit_snapshot()
 
     def begin_fix_capture(self) -> None:
@@ -867,6 +873,10 @@ class UIController(QtCore.QObject):
             return
 
         decision = pending.get("decision", {})
+        if str(decision.get("action_type", "") or "") not in {"click", "drag", "long_press"}:
+            self._set_status("Fix unavailable", "warning", "Fix only applies to pointer-target actions.")
+            self._emit_snapshot()
+            return
         prompt = f"Fix {decision.get('action_type', 'click')} target for {decision.get('label', 'target')}"
         self._fix_capture_active = True
         self._set_status("Click the corrected point", "accent", "The console is waiting for one precise click over the game window.")
@@ -1148,11 +1158,12 @@ class UIController(QtCore.QObject):
         decision = pending.get("decision", {})
         confidence = float(decision.get("confidence", 0.0) or 0.0)
         fix_required = self._pending_requires_fix_payload(pending)
+        action_type = str(decision.get("action_type", "click") or "click")
         trace = self._planner_trace_from_payload(pending, fallback=self._planner_trace)
         return IntentCardState(
             visible=True,
             title="Fix required" if fix_required else "Awaiting approval",
-            action_text=str(decision.get("action_type", "click") or "click").title(),
+            action_text=action_type.title(),
             target_text=self._pending_target_text(decision),
             confidence=confidence,
             confidence_tone=_confidence_tone(confidence),
@@ -1163,6 +1174,7 @@ class UIController(QtCore.QObject):
             goal_text=trace.goal_text,
             view_text=trace.view_text,
             planner_note_text=trace.planner_note_text,
+            can_fix=action_type in {"click", "drag", "long_press"},
             fix_required=fix_required,
         )
 

@@ -125,10 +125,11 @@ Safety validation rejects unsupported action types, unknown target IDs,
 low-confidence input actions, non-finite coordinates, coordinates outside
 `0.0..1.0`, and planner delays outside the bounded range.
 
-Current approval behavior is implemented for pointer-target actions:
-`click`, `drag`, and `long_press`. `key` and `type` decisions still pass
-planner validation and `InputController` pause/foreground/backend guards, but
-they do not use the target approval prompt.
+In `L1 approve`, planner decisions pause for manual OK/No review before input
+execution. Pointer-target actions (`click`, `drag`, and `long_press`) also
+support `Fix` for corrected coordinates. `L2 trusted` and `L3 auto` keep the
+existing automatic path for validated non-pointer decisions, while pointer
+actions still follow the trust/auto rules below.
 
 ## Architecture Map
 
@@ -304,7 +305,7 @@ input boundary, memory strategy, or operational contract.
 
 | Level | UI Label | Behavior |
 | --- | --- | --- |
-| L1 | `L1 approve` | `click`, `drag`, and `long_press` wait for human approval. The overlay shows current YOLO detector boxes, the selected target, and an intent tooltip. `Fix` opens a blocking crosshair overlay over the game client and waits indefinitely for one corrected click. When detector boxes are unavailable on a gather/resource mission, the planner can surface one OCR-only `Fix required` target instead of stopping, but only when the current OCR text still looks like a true resource/map screen; digit-only OCR targets are rejected. For the focused world-map/search-interface step, city-looking screens first use the guarded `space` hotkey, then fall back to the fixed map button if city view persists, and only use `f` after the city markers disappear. Use this by default. |
+| L1 | `L1 approve` | Every planner decision waits for human OK/No review. Pointer actions also show current YOLO detector boxes, the selected target, and an intent tooltip. `Fix` opens a blocking crosshair overlay over the game client and waits indefinitely for one corrected click. The approval note can capture a corrected next action before `No`, and that feedback is fed into bounded planner memory for later steps in the same run. When detector boxes are unavailable on a gather/resource mission, the planner can surface one OCR-only `Fix required` target instead of stopping, but only when the current OCR text still looks like a true resource/map screen; digit-only OCR targets are rejected. For the focused world-map/search-interface step, city-looking screens first use the guarded `space` hotkey, then fall back to the fixed map button if city view persists, and only use `f` after the city markers disappear. Use this by default. |
 | L2 | `L2 trusted` | Pointer actions with locally trusted labels can execute after enough clean successes. New or failed labels still require approval. |
 | L3 | `L3 auto` | Validated pointer actions can execute without approval. Use only for stable, supervised workflows. |
 
@@ -506,6 +507,12 @@ game stays foreground. It restores and raises itself when approval, pause, or
 operator action is needed. The Dashboard tab includes a `Planner Trace` panel
 with the focused goal, visible detector/OCR context, planner debug note,
 selected action, reason, and confidence for the latest step.
+
+In `L1 approve`, every planner decision pauses for manual review. Use `OK`
+when the selected action is correct, `No` to reject it, or type a corrected
+next action in the approval note before pressing `No`. Pointer actions still
+support `Fix` for corrected click targets. Rejection notes are fed into bounded
+planner memory for later steps in the same run.
 
 Example missions:
 
